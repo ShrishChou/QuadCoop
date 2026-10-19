@@ -58,6 +58,11 @@ def make_env(task: str, n: int, device: str, edit=None):
     cfg.seed = 0
     if edit is not None:
         edit(cfg)
+    # These tests hold zero action, so the robot is not expected to stand. Fall
+    # terminations would reset envs mid-test (and restart the force); they are
+    # tested separately in check_termination.py.
+    cfg.terminations.pop("illegal_contact", None)
+    cfg.terminations.pop("fell_over", None)
     torch.manual_seed(0)
     env = ManagerBasedRlEnv(cfg=cfg, device=device)
     env.reset()
@@ -151,8 +156,7 @@ def test_effect(task: str, device: str, seconds: float = 0.4) -> None:
             pf.curriculum_start_scale = 1.0
             pf.warmup_env_steps = 0.0
             cfg.events.pop("push_robot", None)
-            cfg.events.pop("object_interval", None)
-            cfg.events["object_reset"].params["p_override"] = 0.0
+            cfg.commands["twist"].p_override = 0.0
             cfg.events["reset_base"].params["pose_range"]["z"] = (1.5, 1.5)
         return _e
 
@@ -232,7 +236,7 @@ def test_effect(task: str, device: str, seconds: float = 0.4) -> None:
 
 # ---------------------------------------------------------------------------
 def test_resets(task: str, device: str) -> None:
-    from mjlab.utils.lab_api.math import yaw_quat
+    from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
 
     print("\n[3] resets: partial reset of half the envs")
     n = 16
@@ -243,8 +247,8 @@ def test_resets(task: str, device: str) -> None:
         pf.curriculum_start_scale = 1.0
         pf.warmup_env_steps = 0.0
         cfg.events.pop("push_robot", None)
-        cfg.events.pop("object_interval", None)
-        cfg.events["object_reset"].params.update(p_override=0.6, max_mass_override=30.0)
+        cfg.commands["twist"].p_override = 0.6
+        cfg.commands["twist"].max_mass_override = 30.0
 
     from quadcoop.robots.objects import OBJECT_NAMES
 
@@ -288,6 +292,20 @@ def test_resets(task: str, device: str) -> None:
                         ~near.any(-1))
     check(bool(match.all()), f"the object in front is the one chosen ({int((choice >= 0).sum())} "
           f"of {len(ids)} envs got one; shapes {sorted(set(choice[choice >= 0].tolist()))})")
+    # The object sits on the line the command points along, and the command is held.
+    tw = env.command_manager.get_term("twist")
+    cmd = tw.vel_command_b[ids]
+    rel = torch.stack([o.data.root_link_pos_w[ids] for o in objects], dim=1)
+    rel = rel[torch.arange(len(ids)), choice.clamp(min=0)] - robot.data.root_link_pos_w[ids]
+    rel_b = quat_apply_inverse(yaw_quat(robot.data.root_link_quat_w[ids]), rel)
+    bearing = torch.atan2(rel_b[:, 1], rel_b[:, 0])
+    heading_cmd = torch.atan2(cmd[:, 1], cmd[:, 0])
+    diff = torch.atan2(torch.sin(bearing - heading_cmd), torch.cos(bearing - heading_cmd)).abs()
+    has = choice >= 0
+    check(bool(has.any()) and float(diff[has].max()) < 0.8,
+          f"command points at the object (max bearing error {float(diff[has].max()):.2f} rad)")
+    check(bool((tw.time_left[ids][has] > 3.0).all()), "command is held for the push (>3 s left)")
+    check(bool((cmd[has, 2] == 0).all()), "no turning commanded while pushing")
     gap = dist.min(-1).values[near.any(-1)]
     if gap.numel():
         check(bool((gap > 0.85).all()), f"objects start clear of the body (closest {gap.min():.2f} m)")
@@ -338,8 +356,7 @@ def test_randomization(task: str, device: str) -> None:
 
     ev = env.event_manager.active_terms
     interval = ev.get("interval", []) if isinstance(ev, dict) else []
-    check("push_robot" in interval and "object_interval" in interval,
-          f"interval events scheduled: {interval}")
+    check("push_robot" in interval, f"interval events scheduled: {interval}")
     close(env)
 
 # ---------------------------------------------------------------------------
@@ -420,11 +437,59 @@ def test_curriculum(task: str, device: str) -> None:
     close(env)
 
 
+def test_push_hold(task: str, device: str) -> None:
+    """A re-sampled command keeps the object that is being pushed and re-aims at it."""
+    from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
+
+    from quadcoop.robots.objects import OBJECT_NAMES
+
+    print("\n[6] pushing: re-sampling keeps the object and keeps pointing at it")
+    n = 8
+
+    def edit(cfg):
+        cfg.commands["twist"].p_override = 1.0
+        cfg.commands["twist"].max_mass_override = 30.0
+        cfg.commands["twist"].p_forward = 1.0
+        cfg.events.pop("push_robot", None)
+        cfg.commands.pop("push_force", None)
+        cfg.observations["critic"].terms.pop("push_force", None)
+
+    env = make_env(task, n, device, edit)
+    objects = [env.scene[k] for k in OBJECT_NAMES]
+    robot = env.scene["robot"]
+    tw = env.command_manager.get_term("twist")
+    zero = torch.zeros(env.action_space.shape, device=device)
+    for _ in range(3):
+        env.step(zero)
+
+    def chosen_pos():
+        p = torch.stack([o.data.root_link_pos_w for o in objects], dim=1)
+        return p[torch.arange(n), env.qc_choice.clamp(min=0)]
+
+    before = chosen_pos().clone()
+    tw.time_left[:] = 0.0  # force a re-sample of every env
+    old_cmd = tw.vel_command_b.clone()
+    env.step(zero)
+    after = chosen_pos()
+    moved = torch.linalg.norm(after - before, dim=-1).max().item()
+    check(moved < 0.05, f"object stays put when the command is re-sampled (moved {moved*100:.1f} cm)")
+    rel = after - robot.data.root_link_pos_w
+    rel_b = quat_apply_inverse(yaw_quat(robot.data.root_link_quat_w), rel)
+    bearing = torch.atan2(rel_b[:, 1], rel_b[:, 0])
+    cmd = tw.vel_command_b
+    heading = torch.atan2(cmd[:, 1], cmd[:, 0])
+    diff = torch.atan2(torch.sin(bearing - heading), torch.cos(bearing - heading)).abs()
+    check(float(diff.max()) < 0.8, f"command still points at the object (max error {float(diff.max()):.2f} rad)")
+    check(bool((tw.time_left > 3.0).all()), "and is held again")
+    check(bool((env.qc_choice >= 0).all()), "every env still has its object")
+    close(env)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default=None, help="default: both walkers")
     ap.add_argument("--device", default=None)
-    ap.add_argument("--tests", default="12345", help="subset to run, e.g. 13")
+    ap.add_argument("--tests", default="123456", help="subset to run, e.g. 13")
     args = ap.parse_args()
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -443,6 +508,8 @@ def main() -> int:
             test_randomization(task, device)
         if "5" in args.tests:
             test_curriculum(task, device)
+        if "6" in args.tests:
+            test_push_hold(task, device)
 
     print()
     if FAILS:

@@ -37,8 +37,7 @@ def main() -> int:
     cfg = load_env_cfg(a.task)
     cfg.scene.num_envs = 4
     cfg.events.pop("push_robot", None)
-    cfg.events.pop("object_interval", None)
-    cfg.events["object_reset"].params.update(p_override=0.0)
+    cfg.commands["twist"].p_override = 0.0
     cfg.commands.pop("push_force", None)
     cfg.observations["critic"].terms.pop("push_force", None)
     env = ManagerBasedRlEnv(cfg=cfg, device=device)
