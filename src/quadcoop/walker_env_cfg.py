@@ -114,6 +114,18 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlE
             track_air_time=True,
         )
     )
+    # Any non-foot robot geom (body, hips, thighs, shanks) touching the ground ends the
+    # episode. Without this a policy can crawl on its knees/elbows and never "fall".
+    sensors.append(
+        ContactSensorCfg(
+            name="nonfoot_ground_touch",
+            primary=ContactMatch(mode="geom", pattern=robot.nonfoot_collision_regex, entity="robot"),
+            secondary=ContactMatch(mode="body", pattern="terrain"),
+            fields=("found",),
+            reduce="none",
+            num_slots=1,
+        )
+    )
     contact_sensors = []
     for name in OBJECT_NAMES:
         sensors.append(
@@ -158,9 +170,11 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlE
     cfg.rewards["angular_momentum"].weight = 0.0
     cfg.rewards["air_time"].weight = 0.0
 
-    # -- terminations: flat ground, so a bad orientation is a fall -------------
+    # -- terminations: a bad orientation or any non-foot ground contact is a fall -------------
     cfg.terminations.pop("out_of_terrain_bounds", None)
-    cfg.terminations.pop("illegal_contact", None)
+    cfg.terminations["illegal_contact"] = TerminationTermCfg(
+        func=mdp.illegal_contact, params={"sensor_name": "nonfoot_ground_touch"}
+    )
     cfg.terminations["fell_over"] = TerminationTermCfg(
         func=mdp.bad_orientation, params={"limit_angle": math.radians(70.0)}
     )
