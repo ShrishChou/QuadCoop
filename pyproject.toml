@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quadcoop"
+version = "0.1.0"
+description = "Stage 0 of the 6.7980 project: force-robust velocity walkers for ANYmal C and Spot in mjlab."
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    # Same mjlab revision as G1-Force-Movement (v1.5.0 + 1 commit), so the
+    # manager/command/observation APIs match code that already trains on GPU.
+    "mjlab @ git+https://github.com/mujocolab/mjlab.git@c0e0648d21324aaf922467bfa67782ed877d8c19",
+    # Required with that mjlab revision: mujoco_warp 3.10.0.2+ stopped broadcasting
+    # world-shared model fields, which makes every multi-env reset raise IndexError
+    # (fixed upstream in mjlab 1.5.1, mujocolab/mjlab#1091). 3.10.0.1 is what
+    # the revision was released against.
+    "mujoco-warp==3.10.0.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quadcoop = ["assets/**/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

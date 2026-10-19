@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.egg-info/
+logs/
+wandb/
+# Fetched by scripts/fetch_assets.py (pinned commits); not committed.
+src/quadcoop/assets/
+MUJOCO_LOG.TXT
