@@ -12,8 +12,8 @@ Three deterministic tests, each on --num-envs parallel robots for --seconds:
   A  track     walk at vx=0.5 m/s, no disturbance        -> falls, tracking error
   B  resist    walk at vx=0.5 m/s into a constant force   -> falls, forward speed kept
                of --force-frac x body weight (opposing)
-  C  push box  walk at vx=0.4 m/s into a --box-mass kg    -> falls, box displacement
-               box placed just in front
+  C  push obj  walk at vx=0.4 m/s into a --obj-mass kg --object -> falls, object displacement
+               object placed just in front
 
 Pass criteria are the Stage 0 gate from the proposal and are printed with the
 results; results are also written to <checkpoint dir>/validation.json.
@@ -65,22 +65,23 @@ def make_cfg(task: str, test: str, args) -> object:
     from mjlab.tasks.registry import load_env_cfg
 
     from quadcoop.mdp.push_force import PushForceCommandCfg
-    from quadcoop.robots.box import BOX_NOMINAL_MASS
+    from quadcoop.robots.objects import NOMINAL_MASS
     from quadcoop import TASKS as TASK_ROBOTS
 
     robot = TASK_ROBOTS[task]
     cfg = load_env_cfg(task, play=True)  # no corruption, no pushes, no curriculum
     cfg.episode_length_s = args.seconds + 1.0
-    cfg.events.pop("box_interval", None)
-    box = cfg.events["box_reset"].params
+    cfg.events.pop("object_interval", None)
+    obj = cfg.events["object_reset"].params
     if test == "C":
         fixed_twist(cfg, 0.4)
-        box.update(p_in_path=1.0, gap_range=(0.15, 0.15), lateral_range=(0.0, 0.0), yaw_jitter=0.0)
-        alpha = 0.5 * math.log(args.box_mass / BOX_NOMINAL_MASS)
-        cfg.events["box_mass"].params["alpha_range"] = (alpha, alpha)
+        obj.update(p_override=1.0, max_mass_override=1e9, only=args.object,
+                   gap_range=(0.15, 0.15), lateral_range=(0.0, 0.0), yaw_jitter=0.0)
+        alpha = 0.5 * math.log(args.obj_mass / NOMINAL_MASS)
+        cfg.events[f"{args.object}_mass"].params["alpha_range"] = (alpha, alpha)
     else:
         fixed_twist(cfg, 0.5)
-        box["p_in_path"] = 0.0
+        obj.update(p_override=0.0)
     if test == "B":
         cfg.commands["push_force"] = PushForceCommandCfg(
             resampling_time_range=(1e9, 1e9),
@@ -120,12 +121,24 @@ def run_test(task: str, test: str, args, device: str) -> dict:
 
     torch.manual_seed(args.seed)
     cfg = make_cfg(task, test, args)
-    base_env = ManagerBasedRlEnv(cfg=cfg, device=device)
-    env = RslRlVecEnvWrapper(base_env)
+    video_dir = getattr(args, "video_dir", None)
+    base_env = ManagerBasedRlEnv(
+        cfg=cfg, device=device, render_mode="rgb_array" if video_dir else None
+    )
+    wrapped = base_env
+    if video_dir:
+        from mjlab.utils.wrappers import VideoRecorder
+
+        wrapped = VideoRecorder(
+            base_env, video_folder=video_dir, step_trigger=lambda step: step == 0,
+            video_length=int(args.seconds / base_env.step_dt),
+            name_prefix=getattr(args, "video_name", f"{test}"), disable_logger=True,
+        )
+    env = RslRlVecEnvWrapper(wrapped)
     policy = load_policy(env, task, args.checkpoint, device)
 
     obs = env.get_observations()
-    robot, box = base_env.scene["robot"], base_env.scene["box"]
+    robot, box = base_env.scene["robot"], base_env.scene[args.object]
     n = base_env.num_envs
     alive = torch.ones(n, dtype=torch.bool, device=device)
     q0 = yaw_quat(robot.data.root_link_quat_w).clone()
@@ -166,7 +179,8 @@ def run_test(task: str, test: str, args, device: str) -> dict:
         term = base_env.command_manager.get_term("push_force")
         out["force_n"] = args.force_frac * term.robot_weight_n
     if test == "C":
-        out["box_mass_kg"] = args.box_mass
+        out["box_mass_kg"] = args.obj_mass
+        out["object"] = args.object
         out["box_disp_median"] = box_disp.median().item()
         out["box_disp_mean"] = box_disp.mean().item()
     base_env.close()
@@ -175,7 +189,7 @@ def run_test(task: str, test: str, args, device: str) -> dict:
 
     gc.collect()
     print(f"  {test}: " + ", ".join(
-        f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in out.items() if k != "test"
+        f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in out.items() if k not in ("test", "object")
     ))
     return out
 
@@ -193,9 +207,9 @@ def judge(results: dict) -> list[tuple[str, bool, str]]:
          f"{b['vx_kept']:.0%} of cmd >= {GATES['B_vx_kept_min']:.0%} at {b['force_n']:.0f} N"),
         ("C falls", c["fall_rate"] <= GATES["C_fall_rate_max"],
          f"{c['fall_rate']:.1%} <= {GATES['C_fall_rate_max']:.0%}"),
-        ("C box pushed", c["box_disp_median"] >= GATES["C_box_disp_median_min"],
+        ("C object pushed", c["box_disp_median"] >= GATES["C_box_disp_median_min"],
          f"median {c['box_disp_median']:.2f} m >= {GATES['C_box_disp_median_min']} m "
-         f"({c['box_mass_kg']:.0f} kg box)"),
+         f"({c['box_mass_kg']:.0f} kg {c['object']})"),
     ]
 
 
@@ -207,7 +221,9 @@ def main() -> int:
     ap.add_argument("--num-envs", type=int, default=64)
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--force-frac", type=float, default=0.25)
-    ap.add_argument("--box-mass", type=float, default=15.0)
+    ap.add_argument("--obj-mass", type=float, default=15.0)
+    ap.add_argument("--object", default="obj_cube",
+                    choices=["obj_cube", "obj_prism", "obj_cylinder", "obj_sphere"])
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tests", default="ABC")
     ap.add_argument("--device", default=None)

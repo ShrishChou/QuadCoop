@@ -8,9 +8,9 @@ For each walker task (ANYmal C, Spot):
   1. the env builds and steps without NaNs;
   2. the actor observation has NO force term and the critic has a 3-d one;
   3. the push force actually turns on, stays horizontal, and has the planned size;
-  4. the box lands in front of the robot when told to, and is parked otherwise.
+  4. an object lands in front of the robot when told to, and is parked otherwise.
 
-Then the day-one check for Stage 2: ANYmal C + Spot + a box in ONE scene.
+Then the day-one check for Stage 2: ANYmal C + Spot + the four objects in ONE scene.
 Exit code 0 = all passed.
 """
 
@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import torch  # noqa: E402
+from quadcoop.robots.objects import OBJECT_NAMES  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -51,9 +52,10 @@ def test_walker(task_id: str, device: str, steps: int) -> None:
     pf = cfg.commands["push_force"]
     pf.gap_s, pf.ramp_s, pf.hold_s = (0.0, 0.1), (0.1, 0.2), (2.0, 3.0)
     pf.curriculum_start_scale = 1.0
-    # Half the envs get a box in the path.
-    cfg.events["box_reset"].params["p_in_path"] = 0.5
-    cfg.events.pop("box_interval")
+    # Skip the plain-walking warm-up; half the envs get an object in the path.
+    pf.warmup_env_steps = 0.0
+    cfg.events["object_reset"].params.update(p_override=0.5, max_mass_override=30.0)
+    cfg.events.pop("object_interval")
     cfg.events.pop("push_robot")
 
     env = build(cfg, 8, device)
@@ -65,20 +67,23 @@ def test_walker(task_id: str, device: str, steps: int) -> None:
     check("push_force" in term_names["critic"], f"critic has push_force (dim {critic_dim})")
 
     robot = env.scene["robot"]
-    box = env.scene["box"]
+    objs = [env.scene[n] for n in OBJECT_NAMES]
     term = env.command_manager.get_term("push_force")
     print(f"       robot mass {term.robot_weight_n / 9.81:.1f} kg, "
           f"peak force {pf.max_frac_of_weight * term.robot_weight_n:.0f} N")
 
     # Box placement right after reset.
-    rel = box.data.root_link_pos_w[:, :2] - robot.data.root_link_pos_w[:, :2]
-    dist = torch.linalg.norm(rel, dim=-1)
+    rel = torch.stack([o.data.root_link_pos_w[:, :2] - robot.data.root_link_pos_w[:, :2]
+                       for o in objs], dim=1)  # (envs, K, 2)
+    d_all = torch.linalg.norm(rel, dim=-1)
+    dist = d_all.min(dim=1).values
     near = dist < 3.0
+    check(bool(((d_all < 3.0).sum(dim=1) <= 1).all()), "at most one object in front per env")
     check(bool(near.any()) and bool((~near).any()),
-          f"box near robot in {int(near.sum())}/8 envs, parked in the rest")
+          f"an object near robot in {int(near.sum())}/8 envs, parked in the rest")
     if near.any():
-        check(bool((dist[near] > cfg.events["box_reset"].params["robot_half_length"]).all()),
-              f"near boxes start clear of the body (min {dist[near].min():.2f} m)")
+        check(bool((dist[near] > cfg.events["object_reset"].params["robot_half_length"]).all()),
+              f"near objects start clear of the body (min {dist[near].min():.2f} m)")
 
     max_force, max_fz, nan = 0.0, 0.0, False
     zero = torch.zeros(env.action_space.shape, device=device)
@@ -99,20 +104,21 @@ def test_walker(task_id: str, device: str, steps: int) -> None:
 
 
 def test_two_robot_scene(device: str, steps: int) -> None:
-    """ANYmal C + Spot + box in one MuJoCo world: the Stage 2 scene, built early."""
+    """ANYmal C + Spot + objects in one MuJoCo world: the Stage 2 scene, built early."""
     from mjlab.tasks.registry import load_env_cfg
 
     from quadcoop.robots.spot import ROBOT as SPOT
 
-    print("\n[two-robot scene: ANYmal C + Spot + box]")
+    print("\n[two-robot scene: ANYmal C + Spot + objects]")
     from mjlab.envs.mdp.events import reset_joints_by_offset, reset_root_state_uniform
     from mjlab.managers.event_manager import EventTermCfg
     from mjlab.managers.scene_entity_config import SceneEntityCfg
 
     cfg = load_env_cfg("QuadCoop-Walker-AnymalC", play=True)
     spot = SPOT.get_robot_cfg()
-    spot.init_state.pos = (0.0, 3.0, 0.46)  # Beside ANYmal, clear of the box spot.
+    spot.init_state.pos = (0.0, 3.0, 0.46)  # Beside ANYmal, clear of the object spots.
     cfg.scene.entities["spot"] = spot
+    cfg.sim.njmax = 1600  # Two robots + objects: 668 constraints seen, 600 overflowed.
     # A second robot needs its OWN reset events: mjlab's reset events only target
     # "robot", so without these Spot starts with all joints at 0 (straight legs
     # ~0.2 m into the floor) and is launched. Stage 2 must do the same.
@@ -131,7 +137,7 @@ def test_two_robot_scene(device: str, steps: int) -> None:
     err = (spot_data.joint_pos - spot_data.default_joint_pos).abs().max().item()
     check(err < 1e-4, f"Spot's joints reset to its standing pose (max err {err:.1e} rad)")
     names = list(env.scene.entities.keys())
-    check({"robot", "spot", "box"} <= set(names), f"entities present: {names}")
+    check(({"robot", "spot"} | set(OBJECT_NAMES)) <= set(names), f"entities present: {names}")
     model = env.sim.mj_model
     spot_geoms = [model.geom(i).name for i in range(model.ngeom)
                   if model.geom(i).name.startswith("spot/")]
@@ -146,8 +152,8 @@ def test_two_robot_scene(device: str, steps: int) -> None:
         z = spot_data.root_link_pos_w[:, 2]
         z_min, z_max = min(z_min, z.min().item()), max(z_max, z.max().item())
     finite = all(bool(torch.isfinite(env.scene[k].data.root_link_pos_w).all())
-                 for k in ("robot", "spot", "box"))
-    check(finite, "ANYmal, Spot and box simulate together without NaNs")
+                 for k in ("robot", "spot", *OBJECT_NAMES))
+    check(finite, "ANYmal, Spot and objects simulate together without NaNs")
     # Checked at every step, so a launch-and-land can't slip through.
     check(0.3 < z_min and z_max < 0.6,
           f"Spot stays standing the whole time (base z {z_min:.2f}-{z_max:.2f} m)")
