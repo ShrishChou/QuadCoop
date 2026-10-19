@@ -71,17 +71,21 @@ def make_cfg(task: str, test: str, args) -> object:
     robot = TASK_ROBOTS[task]
     cfg = load_env_cfg(task, play=True)  # no corruption, no pushes, no curriculum
     cfg.episode_length_s = args.seconds + 1.0
-    cfg.events.pop("object_interval", None)
-    obj = cfg.events["object_reset"].params
+    def objects(**kw):
+        for k, v in kw.items():
+            setattr(cfg.commands["twist"], k, v)
+
+    objects(sample_from_ranges=True)  # eval commands come from fixed_twist's ranges
     if test == "C":
         fixed_twist(cfg, 0.4)
-        obj.update(p_override=1.0, max_mass_override=1e9, only=args.object,
-                   gap_range=(0.15, 0.15), lateral_range=(0.0, 0.0), yaw_jitter=0.0)
+        objects(p_override=1.0, max_mass_override=1e9, only=args.object,
+                gap_range=(0.15, 0.15), lateral_range=(0.0, 0.0), yaw_jitter=0.0,
+                p_forward=1.0, angle_jitter=0.0, speed_range=(0.4, 0.4), hold_s=(1e9, 1e9))
         alpha = 0.5 * math.log(args.obj_mass / NOMINAL_MASS)
         cfg.events[f"{args.object}_mass"].params["alpha_range"] = (alpha, alpha)
     else:
         fixed_twist(cfg, 0.5)
-        obj.update(p_override=0.0)
+        objects(p_override=0.0)
     if test == "B":
         cfg.commands["push_force"] = PushForceCommandCfg(
             resampling_time_range=(1e9, 1e9),

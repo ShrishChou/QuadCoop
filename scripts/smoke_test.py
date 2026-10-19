@@ -54,8 +54,8 @@ def test_walker(task_id: str, device: str, steps: int) -> None:
     pf.curriculum_start_scale = 1.0
     # Skip the plain-walking warm-up; half the envs get an object in the path.
     pf.warmup_env_steps = 0.0
-    cfg.events["object_reset"].params.update(p_override=0.5, max_mass_override=30.0)
-    cfg.events.pop("object_interval")
+    cfg.commands["twist"].p_override = 0.5
+    cfg.commands["twist"].max_mass_override = 30.0
     cfg.events.pop("push_robot")
 
     env = build(cfg, 8, device)
@@ -82,7 +82,7 @@ def test_walker(task_id: str, device: str, steps: int) -> None:
     check(bool(near.any()) and bool((~near).any()),
           f"an object near robot in {int(near.sum())}/8 envs, parked in the rest")
     if near.any():
-        check(bool((dist[near] > cfg.events["object_reset"].params["robot_half_length"]).all()),
+        check(bool((dist[near] > cfg.commands["twist"].robot_half_length).all()),
               f"near objects start clear of the body (min {dist[near].min():.2f} m)")
 
     max_force, max_fz, nan = 0.0, 0.0, False

@@ -87,7 +87,7 @@ ACTUATOR = BuiltinPositionActuatorCfg(
     stiffness=500.0,
     damping=1.0,
     effort_limit=80.0,
-    armature=0.0,
+    armature=0.05,
 )
 
 INIT_STATE = EntityCfg.InitialStateCfg(
@@ -124,7 +124,7 @@ ROBOT = RobotSpec(
     base_body="body",
     foot_geoms=FOOT_GEOMS,
     foot_sites=tuple(f"{leg}_foot" for leg in LEGS),
-    nonfoot_collision_regex=r".*_collision$",
+    nonfoot_collision_regex=r"^(body|.*_uleg)_collision$",
     action_scale={".*": 0.25 * 80.0 / 500.0},
     pose_std_standing={".*": 0.05},
     pose_std_walking={r".*_kn": 0.15, r".*_hy": 0.3, r".*_hx": 0.3},
