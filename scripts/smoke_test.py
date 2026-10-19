@@ -105,15 +105,31 @@ def test_two_robot_scene(device: str, steps: int) -> None:
     from quadcoop.robots.spot import ROBOT as SPOT
 
     print("\n[two-robot scene: ANYmal C + Spot + box]")
+    from mjlab.envs.mdp.events import reset_joints_by_offset, reset_root_state_uniform
+    from mjlab.managers.event_manager import EventTermCfg
+    from mjlab.managers.scene_entity_config import SceneEntityCfg
+
     cfg = load_env_cfg("QuadCoop-Walker-AnymalC", play=True)
     spot = SPOT.get_robot_cfg()
     spot.init_state.pos = (0.0, 3.0, 0.46)  # Beside ANYmal, clear of the box spot.
     cfg.scene.entities["spot"] = spot
+    # A second robot needs its OWN reset events: mjlab's reset events only target
+    # "robot", so without these Spot starts with all joints at 0 (straight legs
+    # ~0.2 m into the floor) and is launched. Stage 2 must do the same.
+    cfg.events["reset_spot_root"] = EventTermCfg(
+        mode="reset", func=reset_root_state_uniform,
+        params={"pose_range": {}, "velocity_range": {}, "asset_cfg": SceneEntityCfg("spot")},
+    )
+    cfg.events["reset_spot_joints"] = EventTermCfg(
+        mode="reset", func=reset_joints_by_offset,
+        params={"position_range": (0.0, 0.0), "velocity_range": (0.0, 0.0),
+                "asset_cfg": SceneEntityCfg("spot", joint_names=(".*",))},
+    )
     env = build(cfg, 2, device)
     env.reset()
-    # Only ANYmal has an action term here; hold Spot's PD targets at its stance.
     spot_data = env.scene["spot"].data
-    spot_data.joint_pos_target[:] = spot_data.default_joint_pos
+    err = (spot_data.joint_pos - spot_data.default_joint_pos).abs().max().item()
+    check(err < 1e-4, f"Spot's joints reset to its standing pose (max err {err:.1e} rad)")
     names = list(env.scene.entities.keys())
     check({"robot", "spot", "box"} <= set(names), f"entities present: {names}")
     model = env.sim.mj_model
@@ -122,13 +138,19 @@ def test_two_robot_scene(device: str, steps: int) -> None:
     check(any(n.endswith("body_collision") for n in spot_geoms),
           "Spot's body collision mesh is in the scene (prefixed 'spot/')")
     zero = torch.zeros(env.action_space.shape, device=device)
+    z_min, z_max = float("inf"), float("-inf")
     for _ in range(steps):
+        # Only ANYmal has an action term here; hold Spot's PD targets at its stance.
+        spot_data.joint_pos_target[:] = spot_data.default_joint_pos
         env.step(zero)
+        z = spot_data.root_link_pos_w[:, 2]
+        z_min, z_max = min(z_min, z.min().item()), max(z_max, z.max().item())
     finite = all(bool(torch.isfinite(env.scene[k].data.root_link_pos_w).all())
                  for k in ("robot", "spot", "box"))
     check(finite, "ANYmal, Spot and box simulate together without NaNs")
-    z = env.scene["spot"].data.root_link_pos_w[:, 2]
-    check(bool((z > 0.3).all()), f"Spot still standing on its held stance (base z {z.min():.2f} m)")
+    # Checked at every step, so a launch-and-land can't slip through.
+    check(0.3 < z_min and z_max < 0.6,
+          f"Spot stays standing the whole time (base z {z_min:.2f}-{z_max:.2f} m)")
     env.close()
     del env
     gc.collect()
