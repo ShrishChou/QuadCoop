@@ -12,10 +12,10 @@ quadruped that must *push objects*:
 * **Frame.** Direction is sampled in the yaw frame and kept horizontal, so a
   pitched base doesn't tilt the load into the ground. (The G1 torso field rotates
   by the full base quaternion; that is right for a torso payload, wrong here.)
-* **Where it acts.** MuJoCo applies ``xfrc_applied`` at the body COM, so the
-  moment of a push landing at ``push_point_b`` (the front of the body) is added
-  as an explicit torque ``r x F``. A frontal push therefore also tries to pitch
-  the robot, as it does in reality.
+* **Where it acts.** The force is attached to the base body at ``push_point_b``
+  (the front bumper, body frame), so it moves and turns with the robot. MuJoCo
+  applies ``xfrc_applied`` at the body COM, so the moment of a push landing at
+  that point is added as ``(point - COM) x F``, using the live (randomized) COM.
 * **Magnitude** is a fraction of the robot's own weight, so ANYmal C and Spot
   get comparable difficulty: ``|F| ~ U(0, max_frac_of_weight) * m * g``.
 * **Privileged only.** ``command`` exposes the applied force (yaw frame) so the
@@ -56,6 +56,7 @@ class PushForceCommand(CommandTerm):
         self.robot: Entity = env.scene[cfg.entity_name]
         body_ids, _ = self.robot.find_bodies((cfg.body_name,), preserve_order=True)
         self._body_id = int(body_ids[0])
+        self._body_local = self._body_id  # find_bodies returns entity-local indices.
 
         # Robot mass from the compiled model (sum over this entity's bodies).
         mass = env.sim.mj_model.body_mass[self.robot.indexing.body_ids.cpu().numpy()].sum()
@@ -88,10 +89,14 @@ class PushForceCommand(CommandTerm):
     # -- schedule ----------------------------------------------------------
 
     def _curriculum_scale(self) -> float:
+        """0 during warm-up (plain walking), then start -> 1 linearly."""
+        steps = float(getattr(self._env, "common_step_counter", 0))
+        steps -= float(self.cfg.warmup_env_steps)
+        if steps < 0.0:
+            return 0.0
         start = float(self.cfg.curriculum_start_scale)
         if start >= 1.0:
             return 1.0
-        steps = float(getattr(self._env, "common_step_counter", 0))
         progress = min(1.0, steps / max(float(self.cfg.curriculum_env_steps), 1.0))
         return start + (1.0 - start) * progress
 
@@ -155,9 +160,12 @@ class PushForceCommand(CommandTerm):
 
         quat_w = self.robot.data.root_link_quat_w
         force_w = quat_apply(yaw_quat(quat_w), f_yaw)
-        # Torque of a force applied at the push point instead of at the COM.
-        lever_w = quat_apply(quat_w, self.push_point_b)
-        torque_w = torch.linalg.cross(lever_w, force_w)
+        # MuJoCo applies xfrc_applied at the body's COM. A force acting at the push
+        # point is equivalent to that force at the COM plus (point - COM) x F. The
+        # COM is read live, so per-env COM randomization is accounted for.
+        point_w = self.robot.data.root_link_pos_w + quat_apply(quat_w, self.push_point_b)
+        com_w = self.robot.data.body_com_pos_w[:, self._body_local]
+        torque_w = torch.linalg.cross(point_w - com_w, force_w)
         self.robot.write_external_wrench_to_sim(
             force_w.unsqueeze(1), torque_w.unsqueeze(1), body_ids=[self._body_id]
         )
@@ -191,7 +199,9 @@ class PushForceCommandCfg(CommandTermCfg):
     hold_s: tuple[float, float] = (1.0, 3.0)
     curriculum_start_scale: float = 0.2
     curriculum_env_steps: float = 2_000 * 24
-    """Env steps (iterations x 24) to reach full intensity."""
+    """Env steps (iterations x 24), after warm-up, to reach full intensity."""
+    warmup_env_steps: float = 0.0
+    """Env steps of zero force at the start (plain walking first)."""
     fixed_frac: float | None = None
     """Evaluation only: every cycle uses exactly this fraction of weight."""
 
