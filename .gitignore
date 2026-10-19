@@ -6,3 +6,25 @@ wandb/
 # Fetched by scripts/fetch_assets.py (pinned commits); not committed.
 src/quadcoop/assets/
 MUJOCO_LOG.TXT
+
+# python / env
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# run outputs
+logs/
+old_runs/
+wandb/
+*.pt
+*.onnx
+*.mp4
+eval_*/
+outputs/
+nan_dumps/
+
+# slurm / misc
+slurm-*.out
+*.log
+.DS_Store
