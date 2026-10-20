@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
 import sys
+
+# These checks exercise the bumper force field, which training leaves off by default.
+os.environ.setdefault("QUADCOOP_PUSH_FORCE", "1")
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]

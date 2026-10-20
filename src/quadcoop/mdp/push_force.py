@@ -44,8 +44,8 @@ GRAVITY = 9.81
 
 
 def push_force_enabled() -> bool:
-    """Kill switch: ``QUADCOOP_PUSH_FORCE=0`` trains a plain walker for ablations."""
-    return os.environ.get("QUADCOOP_PUSH_FORCE", "1") not in ("0", "false", "False")
+    """Off by default (objects are the disturbance); ``QUADCOOP_PUSH_FORCE=1`` turns it on."""
+    return os.environ.get("QUADCOOP_PUSH_FORCE", "0") not in ("0", "false", "False")
 
 
 class PushForceCommand(CommandTerm):
@@ -71,6 +71,8 @@ class PushForceCommand(CommandTerm):
         self.target_mag = torch.zeros(n, device=dev)
         # Direction stored as an angle in the yaw frame (0 = robot forward).
         self.dir_angle = torch.zeros(n, device=dev)
+        self.oppose = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.jitter = torch.zeros(n, device=dev)
         self.applied_force_yaw = torch.zeros(n, 3, device=dev)
         # Episode-mean bookkeeping, so logged metrics aren't a snapshot that
         # happens to land in a zero-force gap.
@@ -128,6 +130,8 @@ class PushForceCommand(CommandTerm):
         )
         random_angle = self._uniform(n, (-math.pi, math.pi))
         self.dir_angle[env_ids] = torch.where(oppose, opposed_angle, random_angle)
+        self.oppose[env_ids] = oppose
+        self.jitter[env_ids] = opposed_angle - torch.atan2(-vel_xy[:, 1], -vel_xy[:, 0])
 
     def _envelope(self) -> torch.Tensor:
         """0 during the gap, ramps 0->1, holds 1, ramps 1->0."""
@@ -150,6 +154,12 @@ class PushForceCommand(CommandTerm):
         done = self.timer >= self.t_gap + 2.0 * self.t_ramp + self.t_hold
         if done.any():
             self._sample_cycle(done.nonzero(as_tuple=False).flatten())
+
+        # An opposing push keeps opposing the *current* command (it can change mid-push).
+        twist = self._env.command_manager.get_command(self.cfg.velocity_command_name)[:, :2]
+        follow = self.oppose & (torch.linalg.norm(twist, dim=-1) > self.cfg.moving_threshold)
+        self.dir_angle = torch.where(
+            follow, torch.atan2(-twist[:, 1], -twist[:, 0]) + self.jitter, self.dir_angle)
 
         scale = self._curriculum_scale()
         mag = self.target_mag * self._envelope() * scale * self.robot_weight_n

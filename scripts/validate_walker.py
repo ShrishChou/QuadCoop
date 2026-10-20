@@ -31,7 +31,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import torch  # noqa: E402
+import torch
+
+from quadcoop.robots.objects import OBJECT_NAMES  # noqa: E402
 
 GATES = {
     "A_fall_rate_max": 0.02,
@@ -75,17 +77,18 @@ def make_cfg(task: str, test: str, args) -> object:
         for k, v in kw.items():
             setattr(cfg.commands["twist"], k, v)
 
-    objects(sample_from_ranges=True)  # eval commands come from fixed_twist's ranges
     if test == "C":
         fixed_twist(cfg, 0.4)
-        objects(p_override=1.0, max_mass_override=1e9, only=args.object,
+        # A push episode straight ahead at 0.4 m/s with the chosen object, every env.
+        objects(p_override=1.0, max_mass_override=1e9, only=args.object, p_free_walk=0.0,
                 gap_range=(0.15, 0.15), lateral_range=(0.0, 0.0), yaw_jitter=0.0,
-                p_forward=1.0, angle_jitter=0.0, speed_range=(0.4, 0.4), hold_s=(1e9, 1e9))
+                fixed_bearing=math.radians(args.push_bearing), push_yaw_prob=0.0,
+                reaim_s=(1e9, 1e9), speed_range=(0.4, 0.4))
         alpha = 0.5 * math.log(args.obj_mass / NOMINAL_MASS)
         cfg.events[f"{args.object}_mass"].params["alpha_range"] = (alpha, alpha)
     else:
         fixed_twist(cfg, 0.5)
-        objects(p_override=0.0)
+        objects(sample_from_ranges=True, p_override=0.0)  # commands from fixed_twist
     if test == "B":
         cfg.commands["push_force"] = PushForceCommandCfg(
             resampling_time_range=(1e9, 1e9),
@@ -153,18 +156,21 @@ def run_test(task: str, test: str, args, device: str) -> dict:
     cmd_vx = 0.4 if test == "C" else 0.5
     warmup = int(1.0 / base_env.step_dt)
     steps = int(args.seconds / base_env.step_dt)
+    b = math.radians(getattr(args, "push_bearing", 0.0)) if test == "C" else 0.0
+    u = torch.tensor([math.cos(b), math.sin(b)], device=device)
 
     for t in range(steps):
         obs, _, dones, extras = env.step(policy(obs))
         time_outs = extras.get("time_outs", torch.zeros_like(dones)).bool()
         fell = dones.bool() & ~time_outs
         if t >= warmup:
-            vx_b = quat_apply_inverse(robot.data.root_link_quat_w, robot.data.root_link_lin_vel_w)[:, 0]
+            v_b = quat_apply_inverse(robot.data.root_link_quat_w, robot.data.root_link_lin_vel_w)
+            vx_b = (v_b[:, :2] * u).sum(-1)  # speed along the push direction (C) or forward
             vx_sum += torch.where(alive, vx_b, 0.0)
             vx_cnt += alive.float()
         # Box displacement along the robot's initial heading, frozen at death.
         d_w = box.data.root_link_pos_w - box0
-        d_heading = quat_apply_inverse(q0, d_w)[:, 0]
+        d_heading = (quat_apply_inverse(q0, d_w)[:, :2] * u).sum(-1)
         box_disp = torch.where(alive & ~fell, d_heading, box_disp)
         alive &= ~fell
 
@@ -226,8 +232,10 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--force-frac", type=float, default=0.25)
     ap.add_argument("--obj-mass", type=float, default=15.0)
+    ap.add_argument("--push-bearing", type=float, default=0.0,
+                    help="test C push direction in deg (0 = forward, 90 = left, 180 = back)")
     ap.add_argument("--object", default="obj_cube",
-                    choices=["obj_cube", "obj_prism", "obj_cylinder", "obj_sphere"])
+                    choices=list(OBJECT_NAMES))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tests", default="ABC")
     ap.add_argument("--device", default=None)

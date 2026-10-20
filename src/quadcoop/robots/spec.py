@@ -29,3 +29,5 @@ class RobotSpec:
     half_length: float
     """Base half-length (m); boxes are spawned beyond this."""
     viewer_distance: float = 2.5
+    nominal_height: float = 0.5
+    """Target base height (m) while walking; a little under the straight-leg default."""

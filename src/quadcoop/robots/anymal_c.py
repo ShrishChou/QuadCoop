@@ -103,4 +103,5 @@ ROBOT = RobotSpec(
     # Base half-length incl. bumpers, used to place boxes clear of the robot.
     half_length=0.55,
     viewer_distance=2.0,
+    nominal_height=0.53,  # default pose puts the base at 0.55 m
 )
