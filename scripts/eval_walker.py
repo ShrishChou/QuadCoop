@@ -7,7 +7,7 @@
 Runs, with 64 envs each by default:
   A  track     vx = 0.5 m/s, no disturbance
   B  resist    vx = 0.5 m/s against a constant 25% body-weight bumper force
-  C  push      vx = 0.4 m/s into each object (cube/prism/cylinder/sphere) at each mass
+  C  push      0.4 m/s into each object at each mass, in each push direction
 
 Writes eval.json next to the checkpoint and (with --video) MP4s to eval_videos/.
 Scores are the same quantities the validation gate uses (fall rate, speed kept,
@@ -31,7 +31,7 @@ import validate_walker as vw  # noqa: E402
 
 import quadcoop  # noqa: E402,F401  (registers tasks)
 
-OBJECTS = ("obj_cube", "obj_prism", "obj_cylinder", "obj_sphere")
+from quadcoop.robots.objects import OBJECT_NAMES as OBJECTS  # noqa: E402
 
 
 def main() -> int:
@@ -39,6 +39,8 @@ def main() -> int:
     ap.add_argument("--task", required=True)
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--masses", default="5,15,30")
+    ap.add_argument("--bearings", default="0,90,180",
+                    help="push directions in deg, robot frame (0 fwd, 90 left, 180 back)")
     ap.add_argument("--num-envs", type=int, default=64)
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--force-frac", type=float, default=0.25)
@@ -66,9 +68,11 @@ def main() -> int:
     rows["B_resist"] = vw.run_test(args.task, "B", ns(video_name="B_resist"), device)
     for obj in OBJECTS:
         for m in (float(x) for x in args.masses.split(",")):
-            a = ns(video_name=f"C_{obj}_{m:g}kg")
-            a.object, a.obj_mass = obj, m
-            rows[f"C_{obj}_{m:g}kg"] = vw.run_test(args.task, "C", a, device)
+            for bdeg in (float(x) for x in args.bearings.split(",")):
+                key = f"C_{obj}_{m:g}kg_{bdeg:g}deg"
+                a = ns(video_name=key)
+                a.object, a.obj_mass, a.push_bearing = obj, m, bdeg
+                rows[key] = vw.run_test(args.task, "C", a, device)
 
     (out_dir / "eval.json").write_text(json.dumps(rows, indent=2))
     print(f"\nwrote {out_dir/'eval.json'}")

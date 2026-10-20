@@ -1,14 +1,12 @@
-"""Object placement tied to the velocity command, and the object curriculum.
+"""Object placement for the push episodes, and the object curriculum.
 
-Why placement lives in the command term (``push_command.py``): mjlab resets in the
-order  events -> command resample, so an event that aims an object along "the
-command" at reset sees the *previous* episode's command. Here the command term
-resamples first and then calls ``place_objects``, which sets the command and the
-object together, so the object is always on the line the robot has been told to walk.
+Placement is driven by the command term (``push_command.py``): mjlab resets in the
+order  events -> command resample, so only the command term knows the episode's
+direction when it places objects.
 
 Curriculum state lives on the env (``env.qc_objects``):
 
-    p_place   probability a command segment contains an object
+    p_place   probability that a new object is put in the path when the path is clear
     max_mass  heaviest object (kg) currently allowed
 
 Schedule (PPO iterations, 1 iteration = 24 env steps):
@@ -46,71 +44,29 @@ def _state(env: ManagerBasedRlEnv, defaults: dict | None = None) -> dict:
     return env.qc_objects  # type: ignore[attr-defined]
 
 
-def _set_push_command(term, ids: torch.Tensor, angle: torch.Tensor, speed_range, hold_s) -> None:
-    """Walk toward bearing ``angle`` (body frame) at a sampled speed, no turning, for a while."""
-    dev = angle.device
-    speed = torch.empty(len(ids), device=dev).uniform_(*speed_range)
-    term.vel_command_b[ids, 0] = speed * torch.cos(angle)
-    term.vel_command_b[ids, 1] = speed * torch.sin(angle)
-    term.vel_command_b[ids, 2] = 0.0
-    term.is_standing_env[ids] = False
-    term.is_heading_env[ids] = False
-    term.vel_command_w[ids] = term.vel_command_b[ids]
-    term.time_left[ids] = torch.empty(len(ids), device=dev).uniform_(*hold_s)
+def place_ahead(env: ManagerBasedRlEnv, ids: torch.Tensor, bearing: torch.Tensor, c, p: float,
+                max_mass: float) -> torch.Tensor:
+    """Put one eligible object ahead of each robot on body-frame ``bearing`` (with prob. p).
 
-
-def place_objects(env: ManagerBasedRlEnv, env_ids: torch.Tensor, term, c, resetting: bool) -> None:
-    """Called by the command term after it samples a command for ``env_ids``.
-
-    * Env whose chosen object is still near the robot (and not a reset): keep it, and
-      re-aim the command at it so the robot keeps pushing it.
-    * Otherwise: with probability p_place put one eligible object ahead on a sampled
-      bearing and command the robot to walk along it; else park every object.
+    Every other object of those envs is parked far away. Returns the chosen object index
+    per env (-1 = none) and records it in ``env.qc_choice``.
     """
-    n = len(env_ids)
-    if n == 0:
-        return
+    m = len(ids)
     dev = env.device
-    st = _state(env)
-    p = st["p_place"] if c.p_override is None else c.p_override
-    max_mass = st["max_mass"] if c.max_mass_override is None else c.max_mass_override
-
     if not hasattr(env, "qc_choice"):
         env.qc_choice = torch.full((env.num_envs,), -1, dtype=torch.long, device=dev)  # type: ignore[attr-defined]
+    if m == 0:
+        return torch.empty(0, dtype=torch.long, device=dev)
 
     robot: Entity = env.scene["robot"]
-    # Root pose from qpos: derived quantities are stale inside reset.
+    # Root pose from qpos: always current, also inside reset (derived data is stale there).
     q_adr = robot.indexing.free_joint_q_adr
-    qpos = robot.data.data.qpos[env_ids]
+    qpos = robot.data.data.qpos[ids]
     root_pos = qpos[:, q_adr[0:3]]
     q_yaw = yaw_quat(qpos[:, q_adr[3:7]])
     robot_yaw = 2.0 * torch.atan2(q_yaw[:, 3], q_yaw[:, 0])
 
     entities = [env.scene[o.name] for o in OBJECTS]
-    K = len(entities)
-
-    # -- envs that are still pushing their object ------------------------------------
-    prev = env.qc_choice[env_ids]
-    engaged = torch.zeros(n, dtype=torch.bool, device=dev)
-    if not resetting:
-        obj_pos = torch.stack([e.data.root_link_pos_w[env_ids] for e in entities], dim=1)  # (n,K,3)
-        chosen = obj_pos[torch.arange(n, device=dev), prev.clamp(min=0)]
-        rel = chosen - root_pos
-        rel[:, 2] = 0.0
-        engaged = (prev >= 0) & (torch.linalg.norm(rel, dim=-1) < c.engaged_dist)
-        if engaged.any():
-            rel_b = quat_apply_inverse(q_yaw, rel)
-            bearing = torch.atan2(rel_b[:, 1], rel_b[:, 0])
-            _set_push_command(term, env_ids[engaged], bearing[engaged], c.speed_range, c.hold_s)
-
-    fresh = ~engaged
-    if not fresh.any():
-        return
-    ids = env_ids[fresh]
-    m = len(ids)
-    root_pos, q_yaw, robot_yaw = root_pos[fresh], q_yaw[fresh], robot_yaw[fresh]
-
-    # -- which object (if any) -------------------------------------------------------
     masses = torch.stack(
         [env.sim.model.body_mass[ids, e.indexing.body_ids[0]] for e in entities], dim=-1
     )  # (m, K)
@@ -122,24 +78,16 @@ def place_objects(env: ManagerBasedRlEnv, env_ids: torch.Tensor, term, c, resett
     place = (torch.rand(m, device=dev) < p) & eligible.any(dim=-1)
     choice = torch.where(place, choice, torch.full_like(choice, -1))
 
-    # -- bearing of the push: mostly straight ahead (the robot's bumper faces forward) --
-    side = torch.tensor([torch.pi / 2, -torch.pi / 2, torch.pi], device=dev)
-    other = side[torch.randint(0, 3, (m,), device=dev)]
-    angle = torch.where(torch.rand(m, device=dev) < c.p_forward, torch.zeros(m, device=dev), other)
-    angle = angle + torch.empty(m, device=dev).uniform_(-c.angle_jitter, c.angle_jitter)
-    if place.any():
-        _set_push_command(term, ids[place], angle[place], c.speed_range, c.hold_s)
-
     zeros = torch.zeros(m, device=dev)
     lat = torch.empty(m, device=dev).uniform_(*c.lateral_range)
     gap = torch.empty(m, device=dev).uniform_(*c.gap_range)
-    yaw = robot_yaw + angle + torch.empty(m, device=dev).uniform_(-c.yaw_jitter, c.yaw_jitter)
+    yaw = robot_yaw + bearing + torch.empty(m, device=dev).uniform_(-c.yaw_jitter, c.yaw_jitter)
     quat = quat_from_euler_xyz(zeros, zeros, yaw)
     for k, (obj, ent) in enumerate(zip(OBJECTS, entities, strict=True)):
         dist = c.robot_half_length + obj.half_extent_x + gap
         offset = torch.stack(
-            [dist * torch.cos(angle) - lat * torch.sin(angle),
-             dist * torch.sin(angle) + lat * torch.cos(angle), zeros], dim=-1)
+            [dist * torch.cos(bearing) - lat * torch.sin(bearing),
+             dist * torch.sin(bearing) + lat * torch.cos(bearing), zeros], dim=-1)
         in_path = root_pos + quat_apply(q_yaw, offset)
         parked = root_pos + torch.tensor([c.park_distance + 3.0 * k, 0.0, 0.0], device=dev)
         pos = torch.where((choice == k).unsqueeze(-1), in_path, parked)
@@ -149,6 +97,29 @@ def place_objects(env: ManagerBasedRlEnv, env_ids: torch.Tensor, term, c, resett
         state[:, 3:7] = quat
         ent.write_root_state_to_sim(state, ids)
     env.qc_choice[ids] = choice  # type: ignore[attr-defined]
+    return choice
+
+
+def object_is_done(env: ManagerBasedRlEnv, ids: torch.Tensor, bearing: torch.Tensor,
+                   behind: float = 0.3, off_line: float = 1.2, too_far: float = 6.0) -> torch.Tensor:
+    """True where the env's object is gone from the robot's path: none, passed, off the
+    line (slid or rolled aside), or far ahead (rolled away)."""
+    dev = env.device
+    choice = env.qc_choice[ids]
+    robot: Entity = env.scene["robot"]
+    q_adr = robot.indexing.free_joint_q_adr
+    qpos = robot.data.data.qpos[ids]
+    root_pos = qpos[:, q_adr[0:3]]
+    q_yaw = yaw_quat(qpos[:, q_adr[3:7]])
+    obj_pos = torch.stack([env.scene[o.name].data.root_link_pos_w[ids] for o in OBJECTS], dim=1)
+    rel = obj_pos[torch.arange(len(ids), device=dev), choice.clamp(min=0)] - root_pos
+    rel[:, 2] = 0.0
+    rel_b = quat_apply_inverse(q_yaw, rel)
+    u = torch.stack([torch.cos(bearing), torch.sin(bearing)], dim=-1)
+    s = (rel_b[:, :2] * u).sum(-1)
+    side = (rel_b[:, 0] * u[:, 1] - rel_b[:, 1] * u[:, 0]).abs()
+    gone = (s < -behind) | (side > off_line) | (torch.linalg.norm(rel_b[:, :2], dim=-1) > too_far)
+    return (choice < 0) | gone
 
 
 def object_curriculum(

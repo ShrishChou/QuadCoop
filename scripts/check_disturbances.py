@@ -32,7 +32,11 @@ from __future__ import annotations
 import argparse
 import gc
 import math
+import os
 import sys
+
+# These checks exercise the bumper force field, which training leaves off by default.
+os.environ.setdefault("QUADCOOP_PUSH_FORCE", "1")
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -249,6 +253,7 @@ def test_resets(task: str, device: str) -> None:
         cfg.events.pop("push_robot", None)
         cfg.commands["twist"].p_override = 0.6
         cfg.commands["twist"].max_mass_override = 30.0
+        cfg.commands["twist"].push_yaw_prob = 0.0
 
     from quadcoop.robots.objects import OBJECT_NAMES
 
@@ -349,6 +354,11 @@ def test_randomization(task: str, device: str) -> None:
         m = model.body_mass[:, env.scene[name].indexing.body_ids[0]]
         check(bool(((m > 2.9) & (m < 30.5)).all()) and m.std().item() > 1.0,
               f"{name} mass randomized in 3-30 kg (got {m.min():.1f}-{m.max():.1f}, std {m.std():.1f})")
+        gid = env.scene[name].indexing.geom_ids[0]
+        mu = env.sim.model.geom_friction[:, gid, 0].cpu()
+        prio = int(env.sim.mj_model.geom_priority[int(gid)])
+        check(bool(((mu >= 0.3 - 1e-6) & (mu <= 0.6 + 1e-6)).all()) and mu.std() > 0.01 and prio > 1,
+              f"  friction {mu.min():.2f}-{mu.max():.2f}, contact priority {prio} (object friction governs)")
 
     bias = robot.data.encoder_bias
     check(bias.abs().max().item() <= 0.015 + 1e-6 and bias.std().item() > 1e-4,
@@ -438,18 +448,18 @@ def test_curriculum(task: str, device: str) -> None:
 
 
 def test_push_hold(task: str, device: str) -> None:
-    """A re-sampled command keeps the object that is being pushed and re-aims at it."""
+    """Push episodes: the command never changes, and a passed object is replaced ahead."""
     from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
 
     from quadcoop.robots.objects import OBJECT_NAMES
 
-    print("\n[6] pushing: re-sampling keeps the object and keeps pointing at it")
+    print("\n[6] push episodes: fixed command, objects keep coming on the same line")
     n = 8
 
     def edit(cfg):
-        cfg.commands["twist"].p_override = 1.0
-        cfg.commands["twist"].max_mass_override = 30.0
-        cfg.commands["twist"].p_forward = 1.0
+        tw = cfg.commands["twist"]
+        tw.p_override, tw.max_mass_override, tw.p_free_walk = 1.0, 30.0, 0.0
+        tw.push_yaw_prob = 0.0
         cfg.events.pop("push_robot", None)
         cfg.commands.pop("push_force", None)
         cfg.observations["critic"].terms.pop("push_force", None)
@@ -459,29 +469,45 @@ def test_push_hold(task: str, device: str) -> None:
     robot = env.scene["robot"]
     tw = env.command_manager.get_term("twist")
     zero = torch.zeros(env.action_space.shape, device=device)
-    for _ in range(3):
+    cmd0 = tw.vel_command_b.clone()
+    check(bool(tw.push_mode.all()), "every env is in a push episode")
+    b = tw.bearing
+    check(float(b.std()) > 0.5, f"push directions span the circle (bearings {[round(float(x)) for x in torch.rad2deg(b)]} deg)")
+    check(bool((cmd0[:, 2] == 0).all()), "no turning in push episodes")
+    for _ in range(200):  # 4 s, longer than any free-walk segment
         env.step(zero)
+    check(torch.allclose(tw.vel_command_b, cmd0), "command unchanged after 4 s")
 
-    def chosen_pos():
+    def chosen_rel():
         p = torch.stack([o.data.root_link_pos_w for o in objects], dim=1)
-        return p[torch.arange(n), env.qc_choice.clamp(min=0)]
+        rel = p[torch.arange(n), env.qc_choice.clamp(min=0)] - robot.data.root_link_pos_w
+        rel_b = quat_apply_inverse(yaw_quat(robot.data.root_link_quat_w), rel)
+        u = torch.stack([torch.cos(tw.bearing), torch.sin(tw.bearing)], -1)
+        return (rel_b[:, :2] * u).sum(-1)
 
-    before = chosen_pos().clone()
-    tw.time_left[:] = 0.0  # force a re-sample of every env
-    old_cmd = tw.vel_command_b.clone()
-    env.step(zero)
-    after = chosen_pos()
-    moved = torch.linalg.norm(after - before, dim=-1).max().item()
-    check(moved < 0.05, f"object stays put when the command is re-sampled (moved {moved*100:.1f} cm)")
-    rel = after - robot.data.root_link_pos_w
-    rel_b = quat_apply_inverse(yaw_quat(robot.data.root_link_quat_w), rel)
-    bearing = torch.atan2(rel_b[:, 1], rel_b[:, 0])
-    cmd = tw.vel_command_b
-    heading = torch.atan2(cmd[:, 1], cmd[:, 0])
-    diff = torch.atan2(torch.sin(bearing - heading), torch.cos(bearing - heading)).abs()
-    check(float(diff.max()) < 0.8, f"command still points at the object (max error {float(diff.max()):.2f} rad)")
-    check(bool((tw.time_left > 3.0).all()), "and is held again")
-    check(bool((env.qc_choice >= 0).all()), "every env still has its object")
+    check(bool((env.qc_choice >= 0).all()) and bool((chosen_rel() > 0).all()),
+          "every env has an object ahead on its line")
+    # Move each object 2 m behind its robot: it has been "passed".
+    old = env.qc_choice.clone()
+    for k, o in enumerate(objects):
+        ids = (env.qc_choice == k).nonzero().flatten()
+        if len(ids) == 0:
+            continue
+        st = torch.zeros(len(ids), 13, device=device)
+        back = torch.stack([-torch.cos(tw.bearing[ids]), -torch.sin(tw.bearing[ids]),
+                            torch.zeros(len(ids), device=device)], -1)
+        from mjlab.utils.lab_api.math import quat_apply
+        st[:, :3] = robot.data.root_link_pos_w[ids] + 2.0 * quat_apply(
+            yaw_quat(robot.data.root_link_quat_w[ids]), back)
+        st[:, 2] = 0.5
+        st[:, 3] = 1.0
+        o.write_root_state_to_sim(st, ids)
+    env.step(zero)  # the command term notices and places a new object (end of this step)
+    env.step(zero)  # positions are read after the next physics step
+    ahead = chosen_rel()
+    check(bool((env.qc_choice >= 0).all()) and bool((ahead > 0.5).all()),
+          f"a passed object is replaced ahead on the same line (closest {float(ahead.min()):.2f} m ahead)")
+    print(f"       objects before/after: {old.tolist()} -> {env.qc_choice.tolist()}")
     close(env)
 
 

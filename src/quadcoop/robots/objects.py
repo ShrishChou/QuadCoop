@@ -7,7 +7,7 @@ startup; the object curriculum decides how heavy an object may be before it's
 allowed into the path.
 
 Geoms are in group 1 so the terrain-height raycasts (group 0) ignore them.
-Sizes are chosen so both robots meet each object with their bodies, not just legs.
+Sizes vary on purpose: most meet the robot at the bumper, ``obj_low`` meets the legs.
 """
 
 from __future__ import annotations
@@ -18,7 +18,11 @@ import mujoco
 from mjlab.entity import EntityCfg
 
 NOMINAL_MASS = 12.0
-FRICTION = 0.5
+FRICTION = 0.5  # nominal; randomized per env in [0.3, 0.6] by the walker config
+# Higher than the ground (0) and the robot (1), so the object's own friction is what
+# acts at object-ground and object-robot contacts. Without it MuJoCo takes the max of
+# the pair, i.e. the ground's 1.0, and a 30 kg box would need ~300 N to slide.
+PRIORITY = 2
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,12 @@ OBJECTS: tuple[ObjectSpec, ...] = (
     # Rolls away when pushed: the contact load comes and goes.
     ObjectSpec("obj_sphere", mujoco.mjtGeom.mjGEOM_SPHERE, (0.35,), 0.35, 0.35,
                (0.80, 0.30, 0.60, 1.0)),
+    # Tall and narrow: contact high on the body, can tip over if pushed hard.
+    ObjectSpec("obj_tall", mujoco.mjtGeom.mjGEOM_BOX, (0.18, 0.18, 0.45), 0.18, 0.45,
+               (0.95, 0.85, 0.30, 1.0)),
+    # Low and wide: hits the legs and the lower body, not the bumper.
+    ObjectSpec("obj_low", mujoco.mjtGeom.mjGEOM_BOX, (0.30, 0.50, 0.18), 0.30, 0.18,
+               (0.55, 0.55, 0.60, 1.0)),
 )
 OBJECT_NAMES = tuple(o.name for o in OBJECTS)
 
@@ -57,6 +67,7 @@ def _spec_fn(obj: ObjectSpec):
             size=list(obj.size) + [0.0] * (3 - len(obj.size)),
             mass=NOMINAL_MASS,
             friction=(FRICTION, 0.005, 0.0001),
+            priority=PRIORITY,
             rgba=obj.rgba,
             group=1,
         )

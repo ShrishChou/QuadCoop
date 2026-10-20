@@ -132,4 +132,5 @@ ROBOT = RobotSpec(
     push_point_b=(0.45, 0.0, 0.0),
     half_length=0.55,
     viewer_distance=2.5,
+    nominal_height=0.45,  # default pose puts the base at 0.46 m
 )
