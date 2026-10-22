@@ -65,6 +65,8 @@ class MarlCfg:
     critic_warmup: int = 100  # iterations with frozen actors while the fresh critics catch up
     effort_cost: float = 0.0  # lambda: r_i = r_team - lambda * effort_i * dt
     save_interval: int = 50
+    video_interval: int = 500  # record a training video every this many iterations (0 = never)
+    video_length: int = 750  # env steps per video (750 = 15 s)
     seed: int = 0
     init: dict = field(default_factory=dict)  # agent -> Stage 1b/1c checkpoint path
 
@@ -200,6 +202,13 @@ class MarlTrainer:
             self.wandb = wandb.init(project=self.wandb_project, name=self.log_dir.name, dir=str(self.log_dir),
                                     config=asdict(self.cfg), resume="allow", id=self.log_dir.name.replace("/", "_"))
 
+    def _log_video(self, path: Path, it: int) -> None:
+        print(f"[marl] video: {path}", flush=True)
+        if self.wandb is not None:
+            import wandb
+
+            self.wandb.log({"video/train_env0": wandb.Video(str(path), format="mp4")}, step=self.it)
+
     def _log(self, scalars: dict[str, float]) -> None:
         for k, v in scalars.items():
             self.writer.add_scalar(k, v, self.it)
@@ -210,6 +219,7 @@ class MarlTrainer:
     def learn(self) -> None:
         cfg, n, T, dev = self.cfg, self.n, self.cfg.num_steps_per_env, self.device
         self._open_logs()
+        video = TrainVideo(self.env, self.log_dir / "videos", cfg.video_length) if cfg.video_interval > 0 else None
         if self.it == 0:
             print(f"[marl] saved {self.save()} (iteration 0 = the warm-started policies, before any update)")
         groups = [ACTOR_GROUPS[a] for a in AGENTS] + [STATE_GROUPS[a] for a in AGENTS] + [PRIV]
@@ -254,6 +264,12 @@ class MarlTrainer:
                     v = self.values(obs)
                     val[t] = v
                     o, r, term, trunc, extras = self.env.step(action)
+                    if video is not None:
+                        if not video.active and self.it % cfg.video_interval == 0 and t == 0:
+                            video.start(self.it)
+                        path = video.step()
+                        if path is not None:
+                            self._log_video(path, video.started_at)
                     obs = self._td(o)
                     eff = agent_effort(self.env)
                     effort_sum += eff.mean(0)
@@ -392,6 +408,81 @@ class MarlTrainer:
         (self.cfg.value_loss_coef * loss).backward()
         torch.nn.utils.clip_grad_norm_(self.critics[key].parameters(), self.cfg.max_grad_norm)
         opt.step()
+
+
+# -- training videos ---------------------------------------------------------------------------------------
+class TrainVideo:
+    """Films env 0 of the training run (stochastic actions, as trained) for ``length``
+    steps, from a camera that follows both robots, the object and the goal; writes
+    videos/iter_<N>.mp4. Rendering failures (no EGL) switch it off with a warning."""
+
+    W, H = 640, 480
+
+    def __init__(self, env, folder: Path, length: int):
+        self.env, self.folder, self.length = env, Path(folder), length
+        self.active, self.ok = False, True
+        self.started_at = 0
+        self.r = None
+
+    def _setup(self) -> None:
+        import mujoco
+
+        m = self.env.sim.mj_model
+        m.vis.global_.offwidth = max(int(m.vis.global_.offwidth), self.W)
+        m.vis.global_.offheight = max(int(m.vis.global_.offheight), self.H)
+        self.m, self.d = m, mujoco.MjData(m)
+        self.r = mujoco.Renderer(m, height=self.H, width=self.W)
+        self.cam = mujoco.MjvCamera()
+        self.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        self.look = None
+
+    def start(self, it: int) -> None:
+        if not self.ok:
+            return
+        try:
+            if self.r is None:
+                self._setup()
+        except Exception as e:  # noqa: BLE001
+            print(f"[marl] training videos off: cannot render ({e}); set MUJOCO_GL=egl on a GPU node")
+            self.ok = False
+            return
+        import imageio_ffmpeg
+
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.path = self.folder / f"iter_{it}.mp4"
+        self.wr = imageio_ffmpeg.write_frames(str(self.path), (self.W, self.H), fps=1.0 / self.env.step_dt,
+                                              quality=6, ffmpeg_log_level="error")
+        self.wr.send(None)
+        self.active, self.n_frames, self.started_at, self.look = True, 0, it, None
+
+    def step(self) -> Path | None:
+        if not self.active:
+            return None
+        import mujoco
+        import numpy as np
+
+        env, sd = self.env, self.env.sim.data
+        self.d.qpos[:] = sd.qpos[0].cpu().numpy()
+        if self.m.nmocap:
+            self.d.mocap_pos[:] = sd.mocap_pos[0].cpu().numpy()
+            self.d.mocap_quat[:] = sd.mocap_quat[0].cpu().numpy()
+        mujoco.mj_forward(self.m, self.d)
+        g = env.command_manager.get_term("goal")
+        pts = np.stack([env.scene[a].data.root_link_pos_w[0, :2].cpu().numpy() for a in AGENTS]
+                       + [g.box_pos()[0, :2].cpu().numpy(), g.goal_xy[0].cpu().numpy()])
+        c = pts.mean(0)
+        dist = max(4.0, min(14.0, 1.1 * float(np.max(np.linalg.norm(pts[:, None] - pts[None], axis=-1))) + 3.0))
+        self.look = (c, dist) if self.look is None else (0.9 * self.look[0] + 0.1 * c, 0.95 * self.look[1] + 0.05 * dist)
+        self.cam.lookat[:] = [self.look[0][0], self.look[0][1], 0.3]
+        self.cam.distance, self.cam.azimuth, self.cam.elevation = self.look[1], 90.0, -40.0
+        self.r.update_scene(self.d, camera=self.cam)
+        self.wr.send(self.r.render().tobytes())
+        self.n_frames += 1
+        if self.n_frames < self.length:
+            return None
+        self.wr.close()
+        self.active = False
+        return self.path
 
 
 # -- loading a trained (or warm-start) checkpoint for evaluation ------------------------------------------
