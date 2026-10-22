@@ -5,6 +5,7 @@
 #   ROBOT=spot     sbatch slurm/eval_push.sbatch
 #   ROBOT=spot CKPT=<pushhard model.pt> WALKER=<walker model.pt> sbatch slurm/eval_push.sbatch
 #   ROBOT=anymal_c EVAL_ARGS="--objects cube,arch --masses 10,40" sbatch slurm/eval_push.sbatch
+#   ROBOT=spot STAGE=1c sbatch slurm/eval_push.sbatch    # the Stage 1c (v2) retrain
 #
 # Results go to eval_<checkpoint>/ next to the checkpoint: episodes.csv, summary.md,
 # summary.json, vs_mass.png, snapshots/ (open snapshots/index.html).
@@ -21,9 +22,11 @@ source .venv/bin/activate
 export MUJOCO_GL=egl   # snapshots / videos render on the GPU
 
 ROBOT=${ROBOT:-anymal_c}
+STAGE=${STAGE:-1b}   # 1b = QuadCoop-PushHard-*, 1c = QuadCoop-PushHard2-* (the v2 retrain)
+V=""; [[ "$STAGE" == "1c" ]] && V=2
 case "$ROBOT" in
-  anymal_c) TASK=QuadCoop-PushHard-AnymalC ;;
-  spot)     TASK=QuadCoop-PushHard-Spot ;;
+  anymal_c) TASK=QuadCoop-PushHard${V}-AnymalC ;;
+  spot)     TASK=QuadCoop-PushHard${V}-Spot ;;
   *) echo "ROBOT must be anymal_c or spot"; exit 1 ;;
 esac
 ARGS=(--task "$TASK")

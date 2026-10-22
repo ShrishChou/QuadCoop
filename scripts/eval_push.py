@@ -14,15 +14,19 @@ records, per episode:
     path_ratio       distance the object travelled / straight-line distance
     outcome          success | horizon | fell | tipped | lost  (training's termination rules)
 
-Falls are checked here with exactly the training rules (body tilt > 70 deg, or a
-non-foot collision geom touching the ground), but they do not stop the simulation, so
-the same episode is also scored as if falls did not end it:
+A fall is judged by the body's pose only (quadcoop/falls.py): on its side or upside
+down (tilt > 60 deg), or collapsed (base below 40% of standing height). Contacts do
+not count. A fall ends the official episode but not the simulation, so the same
+episode is also scored as if falls did not end it:
 
-    fall_detail               what triggered it: "tilt 74deg" and/or "contact: <geom names>"
+    fall_detail               "on its side (tilt 95 deg)", "upside down ...", "collapsed ..."
     t_fall                    when (s)
     tilt_at_end               robot tilt at the very end (deg): small = it was standing again
     success_ignoring_falls    success if the fall had not ended the episode
     outcome_ignoring_falls
+    success_train_rule / outcome_train_rule / t_fall_train_rule / train_rule_detail
+                              what the rule the policy was TRAINED with (tilt > 70 deg or
+                              listed collision geoms on the ground) would have said
 
 Videos (--videos K, default 4): the full rollout of up to K episodes per object, mass
 and outcome, rendered after the rollout from the recorded states (so they show exactly
@@ -100,6 +104,8 @@ def main() -> int:
                     help="full-rollout MP4s: up to this many episodes per object, mass and outcome "
                          "(fell / tipped / lost / horizon / success), picked at random (0 = none)")
     ap.add_argument("--video-size", default="480x360", help="size of each of the two video panels")
+    ap.add_argument("--shapes", default=None, choices=("v1", "v2"),
+                    help="object geometry (default: v2 for PushHard2 tasks, else $QUADCOOP_SHAPES or v1)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
@@ -113,6 +119,9 @@ def main() -> int:
     import os
 
     robot_name = "spot" if "spot" in a.task.lower() else "anymal_c"
+    os.environ["QUADCOOP_SHAPES"] = a.shapes or ("v2" if "PushHard2" in a.task
+                                                 else os.environ.get("QUADCOOP_SHAPES", "v1"))
+    exp_dir = ("pushhard2_" if "PushHard2" in a.task else "pushhard_") + robot_name
     per_robot = f"QUADCOOP_WALKER_CKPT_{robot_name.upper()}"
     if a.walker:
         os.environ["QUADCOOP_WALKER_CKPT"] = a.walker
@@ -120,13 +129,14 @@ def main() -> int:
     elif not (os.environ.get("QUADCOOP_WALKER_CKPT") or os.environ.get(per_robot)):
         os.environ["QUADCOOP_WALKER_CKPT"] = str(newest_checkpoint(ROOT / "logs/rsl_rl" / f"walker_{robot_name}"))
     if a.checkpoint is None:
-        a.checkpoint = str(newest_checkpoint(ROOT / "logs/rsl_rl" / f"pushhard_{robot_name}"))
+        a.checkpoint = str(newest_checkpoint(ROOT / "logs/rsl_rl" / exp_dir))
     walker = os.environ.get(per_robot) or os.environ["QUADCOOP_WALKER_CKPT"]
-    print(f"policy: {a.checkpoint}\nwalker: {walker}", flush=True)
+    print(f"policy: {a.checkpoint}\nwalker: {walker}\nshapes: {os.environ['QUADCOOP_SHAPES']}", flush=True)
 
     import quadcoop  # noqa: F401
     import quadcoop.stage1  # noqa: F401
     import quadcoop.stage1b  # noqa: F401
+    import quadcoop.stage1c  # noqa: F401
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
@@ -162,6 +172,11 @@ def main() -> int:
         # the env, so nothing is reset mid-episode and the simulation runs on after a fall:
         # that is what lets us score "ignoring falls" and film what happens next.
         end_cfgs = {k: cfg.terminations.pop(k) for k in END_TERMS if k in cfg.terminations}
+        # Falls are scored by the body's pose (quadcoop/falls.py: on its side, upside down
+        # or collapsed). What the policy's own training rule (contacts / tilt) would have
+        # said is reported alongside, in the *_train_rule columns.
+        from quadcoop.falls import NOMINAL_HEIGHT, fall_reason, fallen as pose_fallen
+        nom_h = NOMINAL_HEIGHT[robot_name]
         base = ManagerBasedRlEnv(cfg=cfg, device=device)
         env = RslRlVecEnvWrapper(base)
         runner = MjlabOnPolicyRunner(env, asdict(load_rl_cfg(a.task)), device=device)
@@ -264,6 +279,9 @@ def main() -> int:
         nan = lambda: torch.full((n,), float("nan"), device=dev)  # noqa: E731
         done_b = torch.zeros(n, dtype=torch.bool, device=dev)
         fallen = torch.zeros(n, dtype=torch.bool, device=dev)
+        fallen_t = torch.zeros(n, dtype=torch.bool, device=dev)  # under the policy's training rule
+        t_fall_t = torch.full((n,), float("nan"), device=dev)
+        detail_t = [""] * n
         how_b = ["horizon"] * n
         detail = [""] * n
         t_fall, t_reach, t_succ_b = nan(), nan(), nan()
@@ -296,13 +314,19 @@ def main() -> int:
                 t = (i + 1) * dt
                 live_b = ~done_b
 
-                # falls: recorded; the official track ends; the simulation goes on
-                f_over, f_cont = term("fell_over"), term("fell_contact")
-                new_fall = (f_over | f_cont) & live_b & ~fallen
+                # falls (pose): recorded; the official track ends; the simulation goes on
+                new_fall = pose_fallen(base, "robot", nom_h) & live_b & ~fallen
                 for j in new_fall.nonzero().flatten().tolist():
-                    detail[j] = fall_detail(j, bool(f_over[j]))
+                    detail[j] = fall_reason(base, j, "robot", nom_h)
                 t_fall = torch.where(new_fall, torch.full_like(t_fall, t), t_fall)
                 fallen |= new_fall
+                # what the training rule (tilt > 70 deg or a listed geom on the ground) says
+                f_over, f_cont = term("fell_over"), term("fell_contact")
+                new_tfall = (f_over | f_cont) & live_b & ~fallen_t
+                for j in new_tfall.nonzero().flatten().tolist():
+                    detail_t[j] = fall_detail(j, bool(f_over[j]))
+                t_fall_t = torch.where(new_tfall, torch.full_like(t_fall_t, t), t_fall_t)
+                fallen_t |= new_tfall
                 live_a = live_b & ~fallen
 
                 # object tipped over / lost: ends both tracks
@@ -375,6 +399,11 @@ def main() -> int:
                 "t_fall": rnd(tf), "fall_detail": detail[j],
                 "tilt_at_end": round(float(tilt_end[j]), 1),
                 "success_ignoring_falls": int(how_b[j] == "success"),
+                # what the policy's training rule (contacts / tilt) would have said
+                "outcome_train_rule": "fell" if bool(fallen_t[j]) else how_b[j],
+                "success_train_rule": int(how_b[j] == "success" and not bool(fallen_t[j])),
+                "t_fall_train_rule": rnd(float(t_fall_t[j])),
+                "train_rule_detail": detail_t[j],
                 "outcome_ignoring_falls": how_b[j],
                 "t_success_ignoring_falls": rnd(tsb),
                 "final_pos_err_ignoring_falls": round(float(last_db[j]), 3),
@@ -676,7 +705,9 @@ class VideoMaker:
                                          ffmpeg_log_level="error")
         wr.send(None)
         tf = float(row["t_fall"]) if row["t_fall"] != "" else float("nan")
-        red = [s for part in row["fall_detail"].split("; ") if part.startswith("contact: ")
+        # the geoms the old (training) contact rule flagged, painted red around that moment
+        tft = float(row["t_fall_train_rule"]) if row["t_fall_train_rule"] != "" else float("nan")
+        red = [s for part in row["train_rule_detail"].split("; ") if part.startswith("contact: ")
                for s in part[len("contact: "):].split()]
         red_ids = [self.geom_id[nm] for nm in red if nm in self.geom_id]
         side = -90.0 if red and all(nm.lower()[:2] in ("lf", "lh", "fl", "hl") for nm in red) else 90.0
@@ -710,7 +741,7 @@ class VideoMaker:
             yaw = math.degrees(math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz)))
             self.cam.lookat[:] = [rx, ry, 0.25]
             self.cam.distance, self.cam.azimuth, self.cam.elevation = 2.0, yaw + side, -18.0
-            paint = red_ids and not math.isnan(tf) and tf - 0.3 <= t <= tf + 1.5
+            paint = red_ids and not math.isnan(tft) and tft - 0.3 <= t <= tft + 1.5
             saved = []
             if paint:
                 for gid in red_ids:
@@ -730,11 +761,16 @@ class VideoMaker:
             dr.text((6, 3), label, font=self.font, fill=(255, 255, 255))
             dr.text((6, 23), f"t {t:5.1f} s   pos err {dist:5.2f} m   yaw err {yerr:5.1f} deg   "
                              f"hold {hold:3.1f} s   robot tilt {tilt:3.0f} deg", font=self.font, fill=(220, 220, 220))
-            dr.text((w + 6, 23), "robot close-up" + ("  (red = touching the ground)" if paint else ""),
+            dr.text((w + 6, 23), "robot close-up" + ("  (red = what the old contact rule flagged)" if paint else ""),
                     font=self.font, fill=(220, 220, 220))
+            if not math.isnan(tft) and t >= tft and (math.isnan(tf) or t < tf):
+                dr.rectangle([0, 44, 2 * w, 64], fill=(60, 60, 0, 150))
+                dr.text((6, 47), f"old training rule would have ended the episode at {tft:.1f} s "
+                                 f"({row['train_rule_detail']}); not a fall by pose", font=self.font,
+                        fill=(255, 240, 150))
             if not math.isnan(tf) and t >= tf:
                 dr.rectangle([0, 44, 2 * w, 64], fill=(120, 30, 0, 170))
-                dr.text((6, 47), f"COUNTED AS A FALL at {tf:.1f} s ({row['fall_detail']}): the official episode "
+                dr.text((6, 47), f"FELL at {tf:.1f} s: {row['fall_detail']}; the official episode "
                                  f"ends here; still simulating", font=self.font, fill=(255, 200, 160))
             if t >= t_end_b - 1e-6 and f > 0 and (row["outcome_ignoring_falls"] != "horizon" or f == nf - 1):
                 oc = row["outcome_ignoring_falls"]
@@ -778,6 +814,8 @@ def write_outputs(rows: list[dict], out: Path, a) -> None:
             "final_pos_err_success": round(sum(r["final_pos_err"] for r in succ) / len(succ), 3) if succ else None,
             "path_ratio_success": round(sum(r["path_ratio"] for r in succ) / len(succ), 2) if succ else None,
             "fell": round(len(fell) / n, 3) if n else None,
+            "success_train_rule": round(sum(r["success_train_rule"] for r in sel) / n, 3) if n else None,
+            "fell_train_rule": round(sum(r["outcome_train_rule"] == "fell" for r in sel) / n, 3) if n else None,
             # of the counted falls, the share whose robot was still down (tilt > 45 deg) at the end
             "fell_stayed_down": round(sum(float(r["tilt_at_end"]) > 45 for r in fell) / len(fell), 2) if fell else None,
             "tipped": round(sum(r["outcome"] == "tipped" for r in sel) / n, 3) if n else None,
@@ -790,15 +828,19 @@ def write_outputs(rows: list[dict], out: Path, a) -> None:
             groups[tuple(r[k] for k in keys)].append(r)
         return {" / ".join(str(x) for x in k): agg(v) for k, v in sorted(groups.items())}
 
-    triggers: dict[str, int] = defaultdict(int)  # what fired, over all counted falls
+    triggers: dict[str, int] = defaultdict(int)
     for r in rows:
-        if r["outcome"] == "fell":
-            for part in r["fall_detail"].split("; "):
+        if r["outcome"] == "fell":  # real falls, by pose
+            triggers["FALL: " + r["fall_detail"].split(" (")[0]] += 1
+        if r["outcome_train_rule"] == "fell":  # what the old training rule flagged
+            for part in r["train_rule_detail"].split("; "):
                 if part.startswith("contact: "):
                     for gname in part[len("contact: "):].split():
-                        triggers[f"ground contact: {gname}"] += 1
+                        triggers[f"training rule: ground contact {gname}"] += 1
                 elif part.startswith("tilt"):
-                    triggers["body tilt > 70 deg"] += 1
+                    triggers["training rule: tilt > 70 deg"] += 1
+        if r["outcome_train_rule"] == "fell" and r["outcome"] != "fell":
+            triggers["training rule flagged a fall, but the robot never fell by pose"] += 1
 
     summary = {
         "config": {k: v for k, v in vars(a).items()},
@@ -814,8 +856,9 @@ def write_outputs(rows: list[dict], out: Path, a) -> None:
     (out / "summary.json").write_text(json.dumps(summary, indent=2))
     write_snapshot_index(rows, out)
 
-    cols = ["episodes", "success", "success_loose", "success_ignoring_falls", "t_success_median",
-            "t_reach_median", "final_pos_err_mean", "final_yaw_err_mean", "fell", "fell_stayed_down",
+    cols = ["episodes", "success", "success_loose", "success_ignoring_falls", "success_train_rule",
+            "t_success_median", "t_reach_median", "final_pos_err_mean", "final_yaw_err_mean", "fell",
+            "fell_train_rule", "fell_stayed_down",
             "tipped", "lost"]
     lines = [f"# Push evaluation: {a.checkpoint}",
              f"tolerance {a.pos_tol} m / {a.yaw_tol} deg, hold {a.hold} s, horizon {a.horizon} s\n"]
@@ -829,7 +872,8 @@ def write_outputs(rows: list[dict], out: Path, a) -> None:
             lines.append(f"| {k} | " + " | ".join("" if v[c] is None else str(v[c]) for c in cols) + " |")
         lines.append("")
     lines.append("## fall_triggers\n")
-    lines.append("(counted falls by what fired; one fall can have several geoms touching)\n")
+    lines.append("(FALL = real falls by body pose; 'training rule' = what the rule the policy was trained "
+                 "with flagged, one fall can have several geoms)\n")
     for k, v in summary["fall_triggers"].items():
         lines.append(f"- {k}: {v}")
     lines.append("")

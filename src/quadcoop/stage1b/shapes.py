@@ -25,7 +25,8 @@ does not change it. ``roller`` objects may legitimately rotate about other axes.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 
 import mujoco
 from mjlab.entity import EntityCfg
@@ -93,7 +94,7 @@ class Shape:
         return r
 
 
-SHAPES: tuple[Shape, ...] = (
+SHAPES_V1: tuple[Shape, ...] = (
     Shape("cube", (Part(BOX, (0.30, 0.30, 0.30)),), 4, 0.30, (0.90, 0.55, 0.20, 1.0)),
     Shape("long", (Part(BOX, (0.25, 0.50, 0.30)),), 2, 0.30, (0.25, 0.60, 0.85, 1.0)),
     Shape("sphere", (Part(SPH, (0.35,)),), 0, 0.35, (0.80, 0.30, 0.60, 1.0), roller=True),
@@ -125,6 +126,27 @@ SHAPES: tuple[Shape, ...] = (
                    Part(BOX, (0.30, 0.30, 0.30), (0.0, -0.30, 0.0), 0.5, friction=0.90)),
           2, 0.30, (0.55, 0.55, 0.55, 1.0), fixed_friction=True),
 )
+
+# Geometry v2 (QUADCOOP_SHAPES=v2, used by Stage 1c and the two-robot stage):
+# * beam 0.5 m wide x 0.4 m tall (was 0.3 x 0.5): it slides instead of tipping when a
+#   robot body pushes it (tipping needs half-width / push height < friction; the old
+#   beam tipped at bumper height for mu > 0.3, so Spot tipped it in a third of episodes);
+# * arch feet 2 cm thick (were 8 cm): the robot no longer has to step onto a sliding
+#   8 cm plate to reach a pillar. Same 0.7 m depth, so it still slides before tipping.
+_V2 = {
+    "beam": dict(parts=(Part(BOX, (0.25, 1.20, 0.20)),), rest_height=0.20),
+    "arch": dict(parts=(Part(BOX, (0.35, 0.15, 0.01), (0.0, 0.90, -0.49), 0.25),   # feet
+                        Part(BOX, (0.35, 0.15, 0.01), (0.0, -0.90, -0.49), 0.25),
+                        Part(BOX, (0.12, 0.12, 0.49), (0.0, 0.90, 0.01), 0.15),    # pillars
+                        Part(BOX, (0.12, 0.12, 0.49), (0.0, -0.90, 0.01), 0.15),
+                        Part(BOX, (0.12, 1.02, 0.08), (0.0, 0.0, 0.58), 0.20))),   # top bar
+}
+SHAPES_V2: tuple[Shape, ...] = tuple(replace(s, **_V2[s.name]) if s.name in _V2 else s for s in SHAPES_V1)
+
+SHAPE_VERSION = os.environ.get("QUADCOOP_SHAPES", "v1").lower()
+if SHAPE_VERSION not in ("v1", "v2"):
+    raise ValueError(f"QUADCOOP_SHAPES must be v1 or v2, got {SHAPE_VERSION!r}")
+SHAPES: tuple[Shape, ...] = SHAPES_V2 if SHAPE_VERSION == "v2" else SHAPES_V1
 SHAPE_NAMES = tuple(s.name for s in SHAPES)
 OBJ_NAMES = tuple(f"obj_{s.name}" for s in SHAPES)
 GOAL_NAMES = tuple(f"goal_{s.name}" for s in SHAPES)
