@@ -14,4 +14,3 @@ cd "$SLURM_SUBMIT_DIR"
 source .venv/bin/activate
 QUADCOOP_WALKER_CKPT="$WALKER_ANYMAL" python scripts/check_stage1.py --task QuadCoop-Push-AnymalC --envs 64
 QUADCOOP_WALKER_CKPT="$WALKER_SPOT"   python scripts/check_stage1.py --task QuadCoop-Push-Spot   --envs 64
-EOF

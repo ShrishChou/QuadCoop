@@ -24,4 +24,3 @@ esac
 export QUADCOOP_WALKER_CKPT="$WALKER" QUADCOOP_PUSH_LEVEL="${LEVEL:-2}"
 python play_push.py "$TASK" --checkpoint-file "$CKPT" --num-envs 4 \
     --video True --video-length 1000
-EOF

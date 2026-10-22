@@ -44,4 +44,3 @@ fi
 nvidia-smi --query-gpu=name,memory.total --format=csv
 echo "task=$TASK walker=$WALKER args=${ARGS[*]}"
 python train_push.py "$TASK" "${ARGS[@]}"
-EOF
