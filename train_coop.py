@@ -64,6 +64,8 @@ def main() -> int:
     ap.add_argument("--effort-cost", type=float, default=0.0, help="lambda in r_i = r_team - lambda*effort_i*dt")
     ap.add_argument("--critic-warmup", type=int, default=100)
     ap.add_argument("--start-level", type=int, default=0)
+    ap.add_argument("--video-interval", type=int, default=500, help="training video every N iterations (0 = off)")
+    ap.add_argument("--video-length", type=int, default=750, help="steps per training video (50 per second)")
     ap.add_argument("--logger", choices=("wandb", "tensorboard"), default="tensorboard")
     ap.add_argument("--wandb-project", default="quadcoop")
     ap.add_argument("--device", default=None)
@@ -97,7 +99,8 @@ def main() -> int:
     env_cfg.commands["goal"].start_level = a.start_level
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     cfg = MarlCfg(algo=a.algo, num_envs=a.num_envs, max_iterations=a.max_iterations, seed=a.seed,
-                  effort_cost=a.effort_cost, critic_warmup=a.critic_warmup, init=inits)
+                  effort_cost=a.effort_cost, critic_warmup=a.critic_warmup, init=inits,
+                  video_interval=a.video_interval, video_length=a.video_length)
     trainer = MarlTrainer(env, cfg, log_dir, device, logger=a.logger, wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)
     if a.resume and last is not None:
