@@ -1,0 +1,50 @@
+{
+  "task": "QuadCoop-Walker-Spot",
+  "checkpoint": "/orcd/home/002/shrishc/quadcoop/logs/evals/walker-spot-rai-falcon/model.pt",
+  "gates": {
+    "A_fall_rate_max": 0.02,
+    "A_vx_error_max": 0.15,
+    "B_fall_rate_max": 0.05,
+    "B_vx_kept_min": 0.5,
+    "C_fall_rate_max": 0.05,
+    "C_box_disp_median_min": 2.0
+  },
+  "results": {
+    "A": {
+      "test": "A",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.5,
+      "vx_mean": 0.5527837872505188,
+      "vx_error": 0.0527837872505188,
+      "vx_kept": 1.1055675745010376
+    },
+    "B": {
+      "test": "B",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.5,
+      "vx_mean": 0.36036819219589233,
+      "vx_error": 0.13963180780410767,
+      "vx_kept": 0.7207363843917847,
+      "force_n": 123.45885
+    },
+    "C": {
+      "test": "C",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.4,
+      "vx_mean": 0.43674856424331665,
+      "vx_error": 0.03674856424331663,
+      "vx_kept": 1.0918714106082916,
+      "box_mass_kg": 15.0,
+      "object": "obj_cube",
+      "box_disp_median": 3.9607958793640137,
+      "box_disp_mean": 3.904927968978882
+    }
+  },
+  "passed": true
+}

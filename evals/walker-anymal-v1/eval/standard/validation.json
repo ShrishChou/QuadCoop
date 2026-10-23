@@ -1,0 +1,50 @@
+{
+  "task": "QuadCoop-Walker-AnymalC",
+  "checkpoint": "/orcd/home/002/shrishc/quadcoop/logs/evals/walker-anymal-v1/model.pt",
+  "gates": {
+    "A_fall_rate_max": 0.02,
+    "A_vx_error_max": 0.15,
+    "B_fall_rate_max": 0.05,
+    "B_vx_kept_min": 0.5,
+    "C_fall_rate_max": 0.05,
+    "C_box_disp_median_min": 2.0
+  },
+  "results": {
+    "A": {
+      "test": "A",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.5,
+      "vx_mean": 0.5428827404975891,
+      "vx_error": 0.04288274049758911,
+      "vx_kept": 1.0857654809951782
+    },
+    "B": {
+      "test": "B",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.5,
+      "vx_mean": 0.25190943479537964,
+      "vx_error": 0.24809056520462036,
+      "vx_kept": 0.5038188695907593,
+      "force_n": 110.27710394999998
+    },
+    "C": {
+      "test": "C",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.4,
+      "vx_mean": 0.3777616322040558,
+      "vx_error": 0.022238367795944236,
+      "vx_kept": 0.9444040805101395,
+      "box_mass_kg": 15.0,
+      "object": "obj_cube",
+      "box_disp_median": 3.2966065406799316,
+      "box_disp_mean": 3.2751660346984863
+    }
+  },
+  "passed": true
+}
