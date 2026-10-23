@@ -40,6 +40,8 @@ Env-var knobs (read when the config is built, i.e. at ``train.py`` start):
 * ``QUADCOOP_HEIGHT_REWARD``  weight of the base-height reward (0.5)
 * ``QUADCOOP_SMOOTH_REWARD``  weight of the smooth-base (COM) reward (0.5)
 * ``QUADCOOP_PUSH_FORCE``     1 turns on the bumper force field (off)
+* ``QUADCOOP_PUSH_ADAPTIVE``  1: force scale follows tracking performance instead of time (off)
+* ``QUADCOOP_WALKER_HISTORY`` N > 1: actor sees its last N proprioceptive frames (off)
 * ``QUADCOOP_PUSH_MAX_FRAC`` / ``_START`` / ``_ITERS``  force field peak (0.4 x weight),
   starting intensity (0.2), iterations to full (2000)
 """
@@ -163,6 +165,16 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlE
     cfg.scene.sensors = tuple(sensors)
     for group in ("actor", "critic"):
         cfg.observations[group].terms.pop("height_scan", None)
+    # Proprioceptive history for the actor (FALCON-style force adaptation: a sustained push
+    # is inferred from how the body and joints have been responding). QUADCOOP_WALKER_HISTORY=N
+    # stacks the last N frames of every actor term except the velocity command. Later stages
+    # copy the walker's observation group, so they get the same history automatically.
+    hist = int(_env_float("QUADCOOP_WALKER_HISTORY", 0))
+    if hist > 1:
+        for name, term in cfg.observations["actor"].terms.items():
+            if name != "command":
+                term.history_length = hist
+                term.flatten_history_dim = True
 
     # Logged as Episode_Metrics/<name>.
     cfg.metrics["object_contact"] = MetricsTermCfg(
@@ -249,6 +261,9 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlE
             curriculum_start_scale=_env_float("QUADCOOP_PUSH_START", 0.2),
             curriculum_env_steps=_env_float("QUADCOOP_PUSH_ITERS", 2000) * STEPS_PER_ITER,
             warmup_env_steps=warmup * STEPS_PER_ITER,
+            # QUADCOOP_PUSH_ADAPTIVE=1: FALCON-style curriculum, the force scale grows only
+            # while velocity tracking stays good (and shrinks when it degrades)
+            adaptive=os.environ.get("QUADCOOP_PUSH_ADAPTIVE", "0") == "1",
         )
         cfg.observations["critic"].terms["push_force"] = ObservationTermCfg(
             func=envs_mdp.generated_commands, params={"command_name": "push_force"}

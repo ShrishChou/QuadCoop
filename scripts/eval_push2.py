@@ -91,6 +91,10 @@ def main() -> int:
     ap.add_argument("--pos-tol", type=float, default=0.10)
     ap.add_argument("--yaw-tol", type=float, default=6.0)
     ap.add_argument("--hold", type=float, default=1.0)
+    ap.add_argument("--settle-speed", type=float, default=None,
+                    help="also require the object nearly at rest (m/s), as in the 'terminate' success "
+                         "rule; e.g. --yaw-tol 3 --hold 0.02 --settle-speed 0.15")
+    ap.add_argument("--settle-yaw-rate", type=float, default=0.3)
     ap.add_argument("--obs-level", type=int, default=5)
     ap.add_argument("--probe-every", type=int, default=10, help="steps between action-sensitivity probes")
     ap.add_argument("--videos", type=int, default=2,
@@ -172,6 +176,7 @@ def main() -> int:
         for name in OBJ_NAMES2:
             cfg.events[f"{name}_mass"].params["alpha_range"] = (alpha, alpha)
         end_cfgs = {k: cfg.terminations.pop(k) for k in ("fell_over", "box_tipped", "box_lost")}
+        cfg.terminations.pop("goal_reached", None)  # success is scored here, never auto-reset
         torch.manual_seed(a.seed)
         base = ManagerBasedRlEnv(cfg=cfg, device=device)
         env = RslRlVecEnvWrapper(base)
@@ -297,14 +302,15 @@ def main() -> int:
                         act = policy(obs)
                         if probe_conds and i % a.probe_every == 0 and bool((~done).any()):
                             live = ~done
-                            act_mag.append(act[live].abs().cpu())
+                            act_mag.append(act[live].cpu())  # raw policy output (the walker clips it to [-1, 1])
                             keep_top, keep_front = g.profile_top.clone(), g.profile_front.clone()
                             for pc in probe_conds:
                                 set_condition(g, pc)
                                 if pc == "heading_zero_map":
                                     g.refresh_profiles(ids)
                                 alt = policy(obs_now())
-                                sens[pc].append((alt - act)[live].abs().cpu())
+                                # what the walker is actually commanded: the clipped action
+                                sens[pc].append((alt.clamp(-1, 1) - act.clamp(-1, 1))[live].abs().cpu())
                                 g.profile_top.copy_(keep_top)
                                 g.profile_front.copy_(keep_front)
                             set_condition(g, "normal")
@@ -331,6 +337,9 @@ def main() -> int:
                         min_d = torch.where(live_a, torch.minimum(min_d, d), min_d)
                         ok = live_a & ~tip & ~lost
                         inside = ok & (d < pt) & (ea < yt)
+                        if a.settle_speed is not None:
+                            inside &= (torch.linalg.norm(g.box_vel()[:, :2], dim=-1) < a.settle_speed) & \
+                                      (g.box_ang_vel()[:, 2].abs() < a.settle_yaw_rate)
                         t_reach = torch.where(inside & torch.isnan(t_reach), torch.full_like(t_reach, t), t_reach)
                         hold = torch.where(inside, hold + dt, torch.zeros_like(hold))
                         succ = (hold >= a.hold) & ok
@@ -417,13 +426,16 @@ def main() -> int:
 
     sens_summary = {}
     if act_mag:
-        mag = torch.cat(act_mag).mean(0)
+        raw = torch.cat(act_mag)
+        mag = raw.clamp(-1, 1).abs().mean(0)
         for c, v in sens.items():
             dv = torch.cat(v)
             sens_summary[c] = {"mean_abs_change": [round(float(x), 4) for x in dv.mean(0)],
                                "relative_to_mean_abs_action": round(float(dv.mean() / mag.mean().clamp(min=1e-6)), 3),
                                "share_of_samples_changed_gt_0.05": round(float((dv.max(-1).values > 0.05).float().mean()), 3)}
         sens_summary["_mean_abs_action"] = [round(float(x), 4) for x in mag]
+        sens_summary["_mean_abs_raw_action"] = [round(float(x), 2) for x in raw.abs().mean(0)]
+        sens_summary["_share_saturated"] = [round(float(x), 3) for x in (raw.abs() > 1).float().mean(0)]
     write_outputs(rows, out, a, variant, conds, sens_summary, HELDOUT_NAMES)
     return 0
 
@@ -523,9 +535,12 @@ def write_outputs(rows, out: Path, a, variant: str, conds, sens_summary: dict, h
     lines += table("success by object group", groups)
     if sens_summary:
         lines.append("## action sensitivity (does the output change at all?)\n")
-        lines.append("Same observation, one input ablated; |action change| per walker command (vx, vy, yaw rate), "
-                     f"averaged over live envs every {a.probe_every} steps of the normal rollouts. "
-                     f"Mean |action| = {sens_summary.get('_mean_abs_action')}.\n")
+        lines.append("Same observation, one input ablated; |change| in the command the walker receives (policy "
+                     "output clipped to [-1, 1], per vx, vy, yaw rate), averaged over live envs every "
+                     f"{a.probe_every} steps of the normal rollouts. Mean |clipped action| = "
+                     f"{sens_summary.get('_mean_abs_action')}; mean |raw output| = "
+                     f"{sens_summary.get('_mean_abs_raw_action')}; share of outputs beyond the clip = "
+                     f"{sens_summary.get('_share_saturated')}.\n")
         lines.append("| ablation | mean abs change (vx, vy, wz) | relative to mean abs action | share of samples changed > 0.05 |")
         lines.append("|---|---|---|---|")
         for c, s in sens_summary.items():

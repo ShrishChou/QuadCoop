@@ -23,6 +23,7 @@ quality is poor.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import mujoco
@@ -82,11 +83,38 @@ def get_spec() -> mujoco.MjSpec:
     return spec
 
 
+# Actuator / gait-prior profiles for the walker sweep (QUADCOOP_SPOT_PROFILE). Every stage
+# that uses a Spot walker must run with the profile the walker was trained with; the walker
+# loader checks the gains saved next to the checkpoint and refuses a mismatch.
+#   v1      the original: kp 500, kd 1 (+ joint damping 1), knee pose prior std 0.15
+#   pose    v1 gains, knee pose prior relaxed to 0.4 (lets the gait bend its knees)
+#   soft    ANYmal-style gains (10 Hz, damping ratio 2 on the 0.05 armature): kp 197, kd 12.6,
+#           relaxed knee prior
+#   damped  Menagerie's gains (kp 500, kv 40), relaxed knee prior
+#   rai     the gains used to train Spot policies that ran on the real robot (kp 60, kd 1.5,
+#           action scale 0.2 rad; arXiv:2504.17857), scaled by 1.5 for Menagerie's heavier Spot
+#           (50 kg vs ~33 kg): kp 90, kd 2.25; original knee prior
+# Unless a profile sets "scale", the action scale keeps "1 unit of walker output = 25% of the
+# 80 Nm limit".
+_W = 2.0 * 3.1415926535 * 10.0
+SPOT_PROFILES = {
+    "v1": {"kp": 500.0, "kd": 1.0, "knee_std": 0.15},
+    "pose": {"kp": 500.0, "kd": 1.0, "knee_std": 0.4},
+    "soft": {"kp": 0.05 * _W**2, "kd": 2 * 2.0 * 0.05 * _W, "knee_std": 0.4},
+    "damped": {"kp": 500.0, "kd": 40.0, "knee_std": 0.4},
+    "rai": {"kp": 90.0, "kd": 2.25, "knee_std": 0.15, "scale": 0.2},
+}
+PROFILE = os.environ.get("QUADCOOP_SPOT_PROFILE", "v1")
+if PROFILE not in SPOT_PROFILES:
+    raise ValueError(f"QUADCOOP_SPOT_PROFILE={PROFILE!r}: choose from {sorted(SPOT_PROFILES)}")
+_P = SPOT_PROFILES[PROFILE]
+EFFORT = 80.0
+
 ACTUATOR = BuiltinPositionActuatorCfg(
     target_names_expr=(".*",),
-    stiffness=500.0,
-    damping=1.0,
-    effort_limit=80.0,
+    stiffness=_P["kp"],
+    damping=_P["kd"],
+    effort_limit=EFFORT,
     armature=0.05,
 )
 
@@ -125,9 +153,9 @@ ROBOT = RobotSpec(
     foot_geoms=FOOT_GEOMS,
     foot_sites=tuple(f"{leg}_foot" for leg in LEGS),
     nonfoot_collision_regex=r"^(body|.*_uleg)_collision$",
-    action_scale={".*": 0.25 * 80.0 / 500.0},
+    action_scale={".*": _P.get("scale", 0.25 * EFFORT / _P["kp"])},
     pose_std_standing={".*": 0.05},
-    pose_std_walking={r".*_kn": 0.15, r".*_hy": 0.3, r".*_hx": 0.3},
+    pose_std_walking={r".*_kn": _P["knee_std"], r".*_hy": 0.3, r".*_hx": 0.3},
     # Front of Spot's body collision mesh, mid height (checked by smoke_test.py).
     push_point_b=(0.45, 0.0, 0.0),
     half_length=0.55,

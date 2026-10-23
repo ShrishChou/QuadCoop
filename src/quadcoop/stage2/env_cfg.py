@@ -10,7 +10,13 @@ Changes:
 * approach reward measured to the object's surface (``near_surface``) instead of its centre;
 * shapes practised in proportion to how badly each is going;
 * falls by body pose (quadcoop/falls.py), masses uniform in 5-40 kg, 45 s episodes,
-  curriculum starting at level 3.
+  curriculum starting at level 3;
+* optional (QUADCOOP_ACTION_FIX=1, off by default): actions kept inside the walker's range: the
+  action-rate penalty and the last-action input use the clipped command, and outputs past the
+  clip are penalized (``action_limit``);
+* episode length QUADCOOP_EPISODE_S (default 45 s);
+* optional (QUADCOOP_SUCCESS_MODE=terminate): end the episode on a precise, settled success,
+  with a success bonus that decays with time.
 
 Rates: physics 200 Hz, policy and walker 50 Hz, robot-frame map ("b") 10 Hz by default
 (``QUADCOOP_MAP_HZ``); object-frame images ("a") are fixed per episode.
@@ -42,7 +48,17 @@ from quadcoop.stage2.shapes import FACTOR_RANGE, OBJ_NAMES2, SHAPES2, get_goal_c
 
 MASS_RANGE = (5.0, 40.0)
 FRICTION_RANGE = (0.4, 0.6)
-EPISODE_S = 45.0
+EPISODE_S = float(os.environ.get("QUADCOOP_EPISODE_S", "45"))  # training episode length (s)
+# QUADCOOP_ACTION_FIX=1: clipped last-action input + clipped action-rate penalty + penalty on
+# outputs past the walker's clip. Off by default: the policies trained so far saw the raw last
+# action, and evaluating them with a different input changes their behaviour.
+ACTION_FIX = os.environ.get("QUADCOOP_ACTION_FIX", "0") == "1"
+# QUADCOOP_SUCCESS_MODE=terminate: success = within 10 cm / 3 deg with the object at rest
+# (QUADCOOP_SUCCESS_POS / QUADCOOP_SUCCESS_YAW override), the episode then ends and a new one
+# starts; reward = potential-based progress + a success bonus that shrinks the later it comes,
+# with no reward for lingering near the goal. Default "hold" = the original Stage 1b rule.
+SUCCESS_MODE = os.environ.get("QUADCOOP_SUCCESS_MODE", "hold")
+BONUS = float(os.environ.get("QUADCOOP_GOAL_BONUS", "50"))  # bonus for an immediate success
 START_LEVEL = 3
 VARIANTS = ("a", "b", "ctrl")
 
@@ -56,7 +72,10 @@ def make_push2_env_cfg(robot: RobotSpec, variant: str, play: bool = False):
 
     cfg.commands["goal"] = mdp.Push2CommandCfg(
         robot_reach=robot.half_length, variant=variant,
-        map_hz=float(os.environ.get("QUADCOOP_MAP_HZ", "10")), start_level=START_LEVEL)
+        map_hz=float(os.environ.get("QUADCOOP_MAP_HZ", "10")), start_level=START_LEVEL,
+        success_mode=SUCCESS_MODE,
+        success_pos_tol=float(os.environ.get("QUADCOOP_SUCCESS_POS", "0.10")),
+        success_yaw_tol_deg=float(os.environ.get("QUADCOOP_SUCCESS_YAW", "3")))
 
     # -- events --------------------------------------------------------------------------
     cfg.events = {k: v for k, v in cfg.events.items() if not k.startswith("box_")}
@@ -82,7 +101,7 @@ def make_push2_env_cfg(robot: RobotSpec, variant: str, play: bool = False):
         "box": T(func=mdp.box_obs, noise=Unoise(n_min=-0.02, n_max=0.02)),
         "goal": T(func=hb.goal_in_robot_frame, noise=Unoise(n_min=-0.02, n_max=0.02)),
         "walker_command": T(func=s1.walker_command),
-        "last_action": T(func=envs_mdp.last_action),
+        "last_action": T(func=mdp.last_action_clipped if ACTION_FIX else envs_mdp.last_action),
         "object_desc": T(func=mdp.object_desc),
         "hold_progress": T(func=hb.hold_progress),
     }
@@ -114,9 +133,24 @@ def make_push2_env_cfg(robot: RobotSpec, variant: str, play: bool = False):
         "precise_pose": R(func=hb.precise_pose, weight=4.0),
         "box_settle": R(func=hb.box_settle, weight=-1.0),
         "box_runaway": R(func=hb.box_runaway, weight=-3.0),
-        "action_rate": R(func=s1.hl_action_rate, weight=-0.05),
+        "action_rate": R(func=mdp.action_rate_clipped if ACTION_FIX else s1.hl_action_rate, weight=-0.05),
         "terminated": R(func=envs_mdp.is_terminated, weight=-20.0),
     }
+    if ACTION_FIX:
+        cfg.rewards["action_limit"] = R(func=mdp.action_beyond_limit, weight=-0.1)
+    if SUCCESS_MODE == "terminate":
+        # rewards for being near / at / held at the goal would pay for lingering instead of
+        # finishing; replace them by a potential (precise_progress) and the success bonus
+        for k in ("box_near_goal", "yaw_aligned", "at_goal", "held", "precise_pose"):
+            cfg.rewards.pop(k)
+        cfg.rewards["precise_progress"] = R(func=mdp.precise_progress, weight=4.0)
+        # rewards are multiplied by the step length, so the weight is bonus / dt
+        step_dt = cfg.sim.mujoco.timestep * cfg.decimation
+        cfg.rewards["goal_bonus"] = R(func=mdp.goal_bonus, weight=BONUS / step_dt,
+                                      params={"horizon_s": EPISODE_S})
+        # a fall / tip / loss costs half an immediate success (the old -20 weight was scaled
+        # by the step length too, i.e. only -0.4, negligible next to a 50-point bonus)
+        cfg.rewards["terminated"] = R(func=mdp.failed, weight=-0.5 * BONUS / step_dt)
     cfg.terminations = {
         "time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True),
         "fell_over": TerminationTermCfg(func=falls.fallen, params={"asset_name": "robot",
@@ -124,6 +158,8 @@ def make_push2_env_cfg(robot: RobotSpec, variant: str, play: bool = False):
         "box_tipped": TerminationTermCfg(func=hb.box_tipped),
         "box_lost": TerminationTermCfg(func=hb.box_lost),
     }
+    if SUCCESS_MODE == "terminate":
+        cfg.terminations["goal_reached"] = TerminationTermCfg(func=mdp.goal_reached)
     cfg.curriculum = {"push": CurriculumTermCfg(func=mdp.push2_curriculum)}
     cfg.viewer.distance = 6.0
 

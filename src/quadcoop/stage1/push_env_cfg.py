@@ -81,7 +81,10 @@ def make_push_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlEnv
     # -- observations ---------------------------------------------------------------------
     walker_group = copy.deepcopy(cfg.observations["actor"])
     walker_group.terms.pop("height_scan", None)
-    walker_group.terms["actions"] = ObservationTermCfg(func=mdp.walker_last_action)
+    old = walker_group.terms["actions"]  # keep the walker's history setting, if any
+    walker_group.terms["actions"] = ObservationTermCfg(func=mdp.walker_last_action,
+                                                       history_length=old.history_length,
+                                                       flatten_history_dim=old.flatten_history_dim)
     walker_group.terms["command"] = ObservationTermCfg(
         func=envs_mdp.generated_commands, params={"command_name": "twist"})
     hl = {
