@@ -1,0 +1,161 @@
+s1b-anymal:
+  stage: stage1b
+  task: QuadCoop-PushHard-AnymalC
+  checkpoint: logs/evals/s1b-anymal/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v1
+  source: logs/rsl_rl/pushhard_anymal_c/2026-10-20_13-46-24_seed0/model_16000.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: Stage 1b push-to-pose, v1 shapes
+s1b-spot:
+  stage: stage1b
+  task: QuadCoop-PushHard-Spot
+  checkpoint: logs/evals/s1b-spot/model.pt
+  walker: walker-spot-v1
+  env:
+    QUADCOOP_SHAPES: v1
+  source: logs/rsl_rl/pushhard_spot/2026-10-20_13-46-24_seed0/model_16698.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: Stage 1b push-to-pose, v1 shapes
+s1c-anymal:
+  stage: stage1c
+  task: QuadCoop-PushHard2-AnymalC
+  checkpoint: logs/evals/s1c-anymal/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/pushhard2_anymal_c/2026-10-22_00-17-13_seed0/model_25998.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 1c: pose falls, uniform masses, v2 shapes'
+s1c-spot:
+  stage: stage1c
+  task: QuadCoop-PushHard2-Spot
+  checkpoint: logs/evals/s1c-spot/model.pt
+  walker: walker-spot-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/pushhard2_spot/2026-10-21_17-47-40_seed0/model_16700.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 1c: pose falls, uniform masses, v2 shapes'
+s2a-anymal:
+  stage: stage2
+  task: QuadCoop-Push2a-AnymalC
+  checkpoint: logs/evals/s2a-anymal/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2a_anymal_c/2026-10-22_10-31-59_seed0/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2a: object-frame profiles; seed 0, 6000 it'
+s2a-spot:
+  stage: stage2
+  task: QuadCoop-Push2a-Spot
+  checkpoint: logs/evals/s2a-spot/model.pt
+  walker: walker-spot-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2a_spot/2026-10-22_10-39-43_seed0/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2a: object-frame profiles; seed 0, 6000 it'
+s2b-anymal:
+  stage: stage2
+  task: QuadCoop-Push2b-AnymalC
+  checkpoint: logs/evals/s2b-anymal/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2b_anymal_c/2026-10-22_10-31-59_seed0/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2b: robot-frame map 10 Hz; seed 0, 6000 it'
+s2b-anymal-term80:
+  stage: stage2
+  task: QuadCoop-Push2b-AnymalC
+  checkpoint: logs/evals/s2b-anymal-term80/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2b_anymal_c/2026-10-23_02-32-23_term80/model_9998.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2b continued 4000 it: success = 10 cm / 3 deg at rest ends the episode, time-decaying bonus, 80 s'
+s2b-spot:
+  stage: stage2
+  task: QuadCoop-Push2b-Spot
+  checkpoint: logs/evals/s2b-spot/model.pt
+  walker: walker-spot-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2b_spot/2026-10-22_14-49-36_seed0/model_6000.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2b: robot-frame map 10 Hz; seed 0, 6000 it'
+s2ctrl-anymal:
+  stage: stage2
+  task: QuadCoop-Push2ctrl-AnymalC
+  checkpoint: logs/evals/s2ctrl-anymal/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2ctrl_anymal_c/2026-10-22_10-29-41_seed0/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2ctrl: control, 42 inputs; seed 0, 6000 it'
+s2ctrl-spot:
+  stage: stage2
+  task: QuadCoop-Push2ctrl-Spot
+  checkpoint: logs/evals/s2ctrl-spot/model.pt
+  walker: walker-spot-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2ctrl_spot/2026-10-22_12-52-47_seed0/model_6000.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: 'Stage 2ctrl: control, 42 inputs; seed 0, 6000 it'
+walker-anymal-v1:
+  stage: walker
+  task: QuadCoop-Walker-AnymalC
+  checkpoint: logs/evals/walker-anymal-v1/model.pt
+  env: {}
+  source: logs/rsl_rl/walker_anymal_c/2026-10-19_11-44-16_seed0/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: ANYmal walker (all stages use it)
+walker-spot-rai:
+  stage: walker
+  task: QuadCoop-Walker-Spot
+  checkpoint: logs/evals/walker-spot-rai/model.pt
+  env:
+    QUADCOOP_SPOT_PROFILE: rai
+  source: logs/rsl_rl/walker_spot/2026-10-23_01-59-47_rai/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: Spot walker, real-robot gains (kp 90, kd 2.25, 0.2 rad), no force
+walker-spot-rai-falcon:
+  stage: walker
+  task: QuadCoop-Walker-Spot
+  checkpoint: logs/evals/walker-spot-rai-falcon/model.pt
+  env:
+    QUADCOOP_SPOT_PROFILE: rai
+    QUADCOOP_WALKER_HISTORY: '5'
+  source: logs/rsl_rl/walker_spot/2026-10-23_02-03-26_rai_falcon/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: Spot walker, rai gains + FALCON-style adaptive push curriculum + 5-step history
+walker-spot-v1:
+  stage: walker
+  task: QuadCoop-Walker-Spot
+  checkpoint: logs/evals/walker-spot-v1/model.pt
+  env:
+    QUADCOOP_SPOT_PROFILE: v1
+  source: logs/rsl_rl/walker_spot/2026-10-19_11-45-37_seed0/model_5999.pt
+  registered: '2026-10-23'
+  commit: 23b9e16
+  note: Spot walker, kp 500 (all stages so far use it)
