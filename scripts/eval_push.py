@@ -486,6 +486,9 @@ class Snapper:
         self.mj, self.base, self.robot, self.g, self.q_adr = mujoco, base, robot, g, q_adr
         self.folder, self.quota, self.after = folder, quota, int(round(2.0 / dt))
         m = base.sim.mj_model
+        from mjlab.viewer.model_sync import disable_model_sameframe_shortcuts
+
+        disable_model_sameframe_shortcuts(m)  # else rotated geoms (lying cylinder) render wrongly
         m.vis.global_.offwidth = max(int(m.vis.global_.offwidth), self.W)
         m.vis.global_.offheight = max(int(m.vis.global_.offheight), self.H)
         m.stat.extent = 12.0
@@ -512,6 +515,7 @@ class Snapper:
         self.label, self.stem, self.obj = {}, {}, {}
         self.panels: dict[int, list] = defaultdict(list)
         self.pending: dict[int, int] = {}  # env -> step of the "2 s after the fall" shot
+        self.sync = None  # optional callable(env) run before rendering that env
         self.count: dict[tuple, int] = defaultdict(int)
         self.keep: set[int] = set()
         self.n = n
@@ -562,6 +566,8 @@ class Snapper:
         row = {j: k for k, j in enumerate(envs)}
         for j, view, caption, red in jobs:
             k = row[j]
+            if self.sync is not None:
+                self.sync(j)  # per-env geometry (Stage 2 randomizes object sizes per env)
             self.d.qpos[:] = qpos[k]
             if mpos is not None:
                 self.d.mocap_pos[:] = mpos[k]
@@ -669,6 +675,9 @@ class VideoMaker:
         self.mj, self.rec, self.folder, self.w, self.h = mujoco, rec, folder, w, h
         folder.mkdir(parents=True, exist_ok=True)
         m = base.sim.mj_model
+        from mjlab.viewer.model_sync import disable_model_sameframe_shortcuts
+
+        disable_model_sameframe_shortcuts(m)  # else rotated geoms (lying cylinder) render wrongly
         m.vis.global_.offwidth = max(int(m.vis.global_.offwidth), w)
         m.vis.global_.offheight = max(int(m.vis.global_.offheight), h)
         m.stat.extent = 12.0
@@ -686,6 +695,8 @@ class VideoMaker:
             nm = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, gid) or ""
             if nm.startswith("robot/"):
                 self.geom_id[nm.split("/")[-1]] = gid
+        self.sync = None  # optional callable(env) run before rendering that env (per-env geometry)
+        self.overlay = None  # optional callable(env, frame index, PIL image) to draw extra panels
         try:
             self.font, self.big = ImageFont.load_default(size=13), ImageFont.load_default(size=20)
         except TypeError:
@@ -717,6 +728,8 @@ class VideoMaker:
         rx0, ry0 = (float(rec.q[0][j, self.rq[0]]), float(rec.q[0][j, self.rq[1]]))
         az = math.degrees(math.atan2(gy - ry0, gx - rx0)) + 90.0
         look = None
+        if self.sync is not None:
+            self.sync(j)
         for f in range(nf):
             q = rec.q[f][j].numpy().astype(np.float64)
             t = rec.t[f]
@@ -775,11 +788,14 @@ class VideoMaker:
             if t >= t_end_b - 1e-6 and f > 0 and (row["outcome_ignoring_falls"] != "horizon" or f == nf - 1):
                 oc = row["outcome_ignoring_falls"]
                 msg, col = {"success": ("SUCCESS", (110, 255, 120)), "tipped": ("OBJECT TIPPED OVER", (255, 90, 90)),
-                            "lost": ("OBJECT LOST", (255, 90, 90)), "horizon": ("TIME UP", (255, 200, 80))}[oc]
+                            "lost": ("OBJECT LOST", (255, 90, 90)), "horizon": ("TIME UP", (255, 200, 80)),
+                            "fell": ("FELL", (255, 90, 90))}[oc]
                 if oc == "success" and not math.isnan(tf):
                     msg += " (after the counted fall, so officially a failure)"
                 dr.rectangle([0, h - 32, 2 * w, h], fill=(0, 0, 0, 170))
                 dr.text((8, h - 29), msg, font=self.big, fill=col)
+            if self.overlay is not None:
+                self.overlay(j, f, im)
             wr.send(im.tobytes())
         wr.close()
         return f"videos/{row['outcome']}/{path.name}"

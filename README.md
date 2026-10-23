@@ -59,6 +59,27 @@ object mass, friction and curriculum level.
 - Penalties: the object moving fast near the goal, the object running away, action
   changes, falls (−20).
 
+## Stage 2a / 2b: Shape Profiles (in progress)
+
+Stage 2 with the object's shape as an image, so the policy can handle shapes it has not
+seen. Seven shapes are trained (cube, long box, sphere, cylinder, arch, dumbbell, T) with
+sizes randomized ±20% per environment; beam, L, U-channel, plus and the split-friction box
+are held out. Profiles are signed-distance images computed exactly from the object's
+geometry (no rendering):
+
+- **2a:** a top view of the object at body height (32×32, object frame) and a front
+  silhouette (16×32).
+- **2b:** a top map around the robot (32×32, robot frame, the object where it actually is,
+  like an ideal 2D scan) refreshed at 10 Hz, plus the front silhouette.
+- **Control:** the same task and training with the 42 Stage 2 inputs only.
+
+Each image goes through a small CNN whose features join the 42 inputs. Training starts
+from the Stage 2 policy with the image weights at zero, so it starts out behaving exactly
+like Stage 2. Shapes that are failing get practised more, and the approach reward
+measures distance to the object's surface. Evaluation covers seen shapes, sizes outside
+the training range and unseen shapes, plus ablations (object heading reported as 0,
+images zeroed or swapped between objects) that show whether the policy uses each input.
+
 ## Stage 3: Cooperative Push (in progress)
 
 Both robots keep their frozen walkers. Each robot's policy starts from its Stage 2
@@ -75,6 +96,9 @@ bash slurm/setup_engaging.sh && source .venv/bin/activate          # one-time se
 ROBOT=anymal_c sbatch slurm/train_walker.sbatch                     # Stage 1
 ROBOT=anymal_c sbatch slurm/train_push_v2.sbatch                    # Stage 2
 ROBOT=anymal_c STAGE=1c sbatch slurm/eval_push.sbatch               # Stage 2 evaluation
+ROBOT=anymal_c sbatch slurm/check_push2.sbatch                      # Stage 2a/2b input checks
+VARIANT=a ROBOT=anymal_c sbatch slurm/train_push2.sbatch            # Stage 2a (b, ctrl likewise)
+VARIANT=a ROBOT=anymal_c sbatch slurm/eval_push2.sbatch             # Stage 2a/2b evaluation + ablations
 sbatch --array=0-5 slurm/train_coop.sbatch                          # Stage 3: MAPPO + IPPO, 3 seeds each
 RUN=mappo_seed0 sbatch slurm/eval_coop.sbatch                       # Stage 3 evaluation
 ```
