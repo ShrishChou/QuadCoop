@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -94,6 +95,31 @@ class HighLevelTwistCfg(CommandTermCfg):
 # ---------------------------------------------------------------------------------
 # high-level action -> frozen walker -> joints
 # ---------------------------------------------------------------------------------
+def _check_walker_gains(path: str, env) -> None:
+    """Refuse a walker trained with different joint gains than this env's robot.
+
+    The walker's actions only make sense with the PD gains (and action scale, which follows
+    them) it was trained with. Its run folder keeps params/env.yaml; the gains saved there
+    must match. Matters for Spot, whose gains are selected by QUADCOOP_SPOT_PROFILE."""
+    import re as _re
+
+    yml = Path(path).resolve().parent / "params" / "env.yaml"
+    if not yml.exists():
+        print(f"[stage1] note: {yml} not found, cannot check the walker's joint gains")
+        return
+    m = _re.search(r"stiffness: ([0-9.eE+-]+)\s*\n\s*damping: ([0-9.eE+-]+)", yml.read_text())
+    if m is None:
+        return
+    saved = (float(m.group(1)), float(m.group(2)))
+    act = env.scene["robot"].cfg.articulation.actuators[0]
+    now = (float(act.stiffness), float(act.damping))
+    if any(abs(a - b) > 1e-6 * max(1.0, abs(b)) for a, b in zip(saved, now, strict=True)):
+        raise RuntimeError(
+            f"walker {path} was trained with kp={saved[0]:g}, kd={saved[1]:g} but this robot has "
+            f"kp={now[0]:g}, kd={now[1]:g}. For Spot set QUADCOOP_SPOT_PROFILE to the profile the "
+            f"walker was trained with (see quadcoop/robots/spot.py).")
+
+
 class WalkerCommandAction(ActionTerm):
     cfg: WalkerCommandActionCfg
 
@@ -106,6 +132,7 @@ class WalkerCommandAction(ActionTerm):
                 f"No walker checkpoint: set {cfg.checkpoint_env}=/path/to/model_<iter>.pt "
                 f"(the Stage 0 checkpoint for this robot).")
         self.walker = FrozenWalker(path, self.device)
+        _check_walker_gains(path, env)
         if self.walker.act_dim != self._joint.action_dim:
             raise RuntimeError(f"walker outputs {self.walker.act_dim} actions, robot has "
                                f"{self._joint.action_dim} joints: wrong checkpoint for this robot?")

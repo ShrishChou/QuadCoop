@@ -96,7 +96,7 @@ def main() -> int:
                          tuple(rl.actor.hidden_dims), rl.actor.activation, obs_normalization=True,
                          distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.5, "std_type": "scalar"})
     old_actor.load_state_dict(old["actor_state_dict"])
-    old_actor.to(a.device)
+    old_actor.to(a.device)  # built on the CPU; the env's observations are on a.device
     old_actor.eval()
     policy = runner.alg.get_policy()
     policy.eval()

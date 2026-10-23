@@ -49,12 +49,13 @@ def main() -> int:
     ap.add_argument("--wandb-project", default="quadcoop")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--out-dir", default=None, help="default: eval_<ckpt> next to the checkpoint")
     args = ap.parse_args()
 
     device = args.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     ckpt = Path(args.checkpoint)
-    out_dir = ckpt.parent / f"eval_{ckpt.stem}"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent / f"eval_{ckpt.stem}"
+    out_dir.mkdir(parents=True, exist_ok=True)
     video_dir = str(out_dir / "videos") if args.video else None
 
     def ns(**kw):

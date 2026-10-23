@@ -79,6 +79,12 @@ class PushForceCommand(CommandTerm):
         self._sum_frac = torch.zeros(n, device=dev)
         self._steps = torch.zeros(n, device=dev)
 
+        # adaptive (FALCON-style) curriculum state: episode-mean velocity tracking error
+        self.adaptive_scale = 0.0
+        self._err_sum = torch.zeros(n, device=dev)
+        self._err_ema = None
+        self._last_adapt = 0
+        self.metrics["track_err"] = torch.zeros(n, device=dev)
         self.metrics["force_n"] = torch.zeros(n, device=dev)
         self.metrics["force_frac_weight"] = torch.zeros(n, device=dev)
         self.metrics["curriculum_scale"] = torch.zeros(n, device=dev)
@@ -91,11 +97,13 @@ class PushForceCommand(CommandTerm):
     # -- schedule ----------------------------------------------------------
 
     def _curriculum_scale(self) -> float:
-        """0 during warm-up (plain walking), then start -> 1 linearly."""
+        """0 during warm-up (plain walking), then start -> 1 linearly (or adaptively)."""
         steps = float(getattr(self._env, "common_step_counter", 0))
         steps -= float(self.cfg.warmup_env_steps)
         if steps < 0.0:
             return 0.0
+        if self.cfg.adaptive:
+            return self.adaptive_scale
         start = float(self.cfg.curriculum_start_scale)
         if start >= 1.0:
             return 1.0
@@ -143,8 +151,30 @@ class PushForceCommand(CommandTerm):
 
     # -- CommandTerm hooks ---------------------------------------------------
 
+    def _adapt(self, env_ids: torch.Tensor) -> None:
+        """Episodes that just ended update an EMA of velocity tracking error; once per
+        iteration the force scale steps up if tracking is good, down if it is poor."""
+        steps = self._steps[env_ids]
+        ok = steps > 50
+        if ok.any():
+            err = (self._err_sum[env_ids][ok] / steps[ok]).mean().item()
+            self._err_ema = err if self._err_ema is None else 0.9 * self._err_ema + 0.1 * err
+        counter = int(getattr(self._env, "common_step_counter", 0))
+        if self._err_ema is None or counter - self._last_adapt < self.cfg.adapt_every_steps:
+            return
+        self._last_adapt = counter
+        if counter < self.cfg.warmup_env_steps:
+            return
+        if self._err_ema < self.cfg.adapt_err_good:
+            self.adaptive_scale = min(1.0, self.adaptive_scale + self.cfg.adapt_step)
+        elif self._err_ema > self.cfg.adapt_err_bad:
+            self.adaptive_scale = max(0.0, self.adaptive_scale - self.cfg.adapt_step)
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         # Called on episode reset (manager resampling is disabled via a huge range).
+        if self.cfg.adaptive:
+            self._adapt(env_ids)
+        self._err_sum[env_ids] = 0.0
         self._sum_frac[env_ids] = 0.0
         self._steps[env_ids] = 0.0
         self._sample_cycle(env_ids)
@@ -183,6 +213,11 @@ class PushForceCommand(CommandTerm):
         frac = mag / self.robot_weight_n
         self._sum_frac += frac
         self._steps += 1.0
+        # planar velocity tracking error (body frame), for the adaptive curriculum
+        v_b = self.robot.data.root_link_lin_vel_b[:, :2]
+        err = torch.linalg.norm(v_b - twist, dim=-1)
+        self._err_sum += err
+        self.metrics["track_err"] = self._err_sum / self._steps
         mean_frac = self._sum_frac / self._steps
         # Episode means; the peak a robot faces is curriculum_scale * max_frac.
         self.metrics["force_frac_weight"] = mean_frac
@@ -214,6 +249,14 @@ class PushForceCommandCfg(CommandTermCfg):
     """Env steps of zero force at the start (plain walking first)."""
     fixed_frac: float | None = None
     """Evaluation only: every cycle uses exactly this fraction of weight."""
+    adaptive: bool = False
+    """FALCON-style: the intensity scale starts at 0 after warm-up and moves by adapt_step
+    once per iteration: up while the episode-mean velocity error is below adapt_err_good,
+    down when above adapt_err_bad (m/s)."""
+    adapt_step: float = 0.01
+    adapt_err_good: float = 0.20
+    adapt_err_bad: float = 0.35
+    adapt_every_steps: int = 24
 
     def build(self, env: ManagerBasedRlEnv) -> PushForceCommand:
         return PushForceCommand(self, env)

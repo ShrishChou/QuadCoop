@@ -83,6 +83,8 @@ class Push2Command(HardGoalCommand):
         self.steps = 0
         self.map_updates = 0
         # evaluation switches
+        self.success_flag = torch.zeros(n, dtype=torch.bool, device=dev)  # success_mode "terminate"
+        self.prev_precise = torch.zeros(n, device=dev)
         self.heading_zero = False  # numeric heading input reads 0
         self.heading_zero_map = False  # robot-frame map ("b") also drawn with the object unrotated
         self.profile_mode = "normal"  # normal | zero | roll
@@ -154,8 +156,26 @@ class Push2Command(HardGoalCommand):
         return pf.point_distance(parts, kinds, rest, p_obj)
 
     # -- hooks --------------------------------------------------------------------------------------
+    def precise_value(self) -> torch.Tensor:
+        """Stage 1b's precise_pose (1 at the exact pose, ~0.37 at 15 cm / 6 deg)."""
+        d, e = self.errors()
+        pos = torch.exp(-(d / 0.15).square())
+        yaw = torch.exp(-(e / math.radians(6.0)).square())
+        return pos * torch.where(self.symmetry() > 0, yaw, torch.ones_like(yaw))
+
+    def _update_metrics(self) -> None:
+        super()._update_metrics()
+        if self.cfg.success_mode == "terminate":
+            c = self.cfg
+            d, e = self.errors()
+            still = (torch.linalg.norm(self.box_vel()[:, :2], dim=-1) < c.success_max_speed) & \
+                    (self.box_ang_vel()[:, 2].abs() < c.success_max_yaw_rate)
+            self.success_flag[:] = (d < c.success_pos_tol) & (e.abs() < math.radians(c.success_yaw_tol_deg)) & still
+            self.metrics["success"][:] = self.success_flag.float()
+
     def _update_command(self) -> None:
         super()._update_command()
+        self.prev_precise[:] = self.precise_value()
         self.steps += 1
         if self.variant == "b" and self.steps % self.map_every == 0:
             self.refresh_profiles()
@@ -168,6 +188,7 @@ class Push2Command(HardGoalCommand):
             return
         self.metrics["success"][env_ids] = 0.0
         self.in_goal_time[env_ids] = 0.0
+        self.success_flag[env_ids] = False
         lvl = torch.full((m,), self.level, dtype=torch.long, device=dev)
         replay = torch.rand(m, device=dev) < c.replay_frac
         lvl = torch.where(replay, torch.randint(0, self.level + 1, (m,), device=dev), lvl)
@@ -238,6 +259,8 @@ class Push2Command(HardGoalCommand):
         rel_xy = torch.stack([cs * dxy[:, 0] + sn * dxy[:, 1], -sn * dxy[:, 0] + cs * dxy[:, 1]], -1)
         rel_yaw = torch.zeros(m, device=dev) if self.heading_zero_map else wrap(obj_heading - ryaw)
         self.refresh_profiles(env_ids, rel_xy, rel_yaw)
+        # precise-pose potential of the new start (the goal is >= 1 m away, so ~0)
+        self.prev_precise[env_ids] = 0.0
 
 
 @dataclass(kw_only=True)
@@ -245,6 +268,15 @@ class Push2CommandCfg(HardGoalCommandCfg):
     variant: str = "a"  # "a" object-frame profiles | "b" robot-frame top map | "ctrl" no images
     map_hz: float = 10.0  # how often the robot-frame map is recomputed (variant b)
     allow_heldout: bool = False  # eval only: let the sampler pick held-out shapes
+    # "hold": Stage 1b's rule (inside the level's tolerance for the level's hold time, the
+    # episode then runs on to its time limit). "terminate": success = inside success_pos_tol /
+    # success_yaw_tol_deg with the object nearly at rest; the episode ends there (goal_reached
+    # termination + goal_bonus reward) and a new one starts.
+    success_mode: str = "hold"
+    success_pos_tol: float = 0.10
+    success_yaw_tol_deg: float = 3.0
+    success_max_speed: float = 0.15  # m/s, object nearly at rest
+    success_max_yaw_rate: float = 0.3  # rad/s
 
     def build(self, env) -> Push2Command:
         return Push2Command(self, env)
@@ -366,9 +398,63 @@ def profile_front(env) -> torch.Tensor:
     return _image(_g(env), _g(env).profile_front)
 
 
+def last_action_clipped(env) -> torch.Tensor:
+    """The last action as the walker received it (clipped to [-1, 1])."""
+    return env.action_manager.action.clamp(-1.0, 1.0)
+
+
 # ---------------------------------------------------------------------------------
 # rewards / curriculum
 # ---------------------------------------------------------------------------------
+def action_rate_clipped(env) -> torch.Tensor:
+    """Squared change of the command the walker actually gets (clipped actions).
+
+    Stage 1b's version used the raw policy output. Once outputs drift past the clip
+    (nothing stops them: every value beyond 1 gives the same command), that term charges
+    (60)^2 for reversing a saturated command and nothing for staying pinned, so the policy
+    became bang-bang with outputs of 20-35."""
+    a = env.action_manager.action.clamp(-1.0, 1.0)
+    p = env.action_manager.prev_action.clamp(-1.0, 1.0)
+    return torch.sum(torch.square(a - p), dim=-1)
+
+
+def action_beyond_limit(env) -> torch.Tensor:
+    """How far the raw policy output is past the walker's [-1, 1] clip (summed over vx, vy, wz).
+    Linear, so a saturated warm start is pulled back steadily rather than blown up."""
+    return torch.sum(torch.relu(env.action_manager.action.abs() - 1.0), dim=-1)
+
+
+def goal_reached(env) -> torch.Tensor:
+    """Termination (success_mode "terminate"): the object is at the goal pose and at rest."""
+    return _g(env).success_flag.clone()
+
+
+def goal_bonus(env, horizon_s: float, floor: float = 0.25) -> torch.Tensor:
+    """One-off reward on the success step, larger the earlier it comes: 1 at t = 0 falling
+    linearly to `floor` at t = horizon_s (the episode limit)."""
+    t = env.episode_length_buf.float() * env.step_dt
+    scale = torch.clamp(1.0 - (1.0 - floor) * t / horizon_s, min=floor)
+    return _g(env).success_flag.float() * scale
+
+
+def precise_progress(env) -> torch.Tensor:
+    """Change of the precise-pose potential per second (clipped): pays for closing the last
+    centimetres and degrees, and only for closing them, so there is no reward for lingering
+    near the goal instead of finishing."""
+    g = _g(env)
+    return torch.clamp((g.precise_value() - g.prev_precise) / env.step_dt, -1.0, 1.0)
+
+
+def failed(env, names: tuple[str, ...] = ("fell_over", "box_tipped", "box_lost")) -> torch.Tensor:
+    """A failure termination this step (unlike envs_mdp.is_terminated, not a success)."""
+    tm = env.termination_manager
+    out = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for n in names:
+        if n in tm.active_terms:
+            out |= tm.get_term(n)
+    return out.float()
+
+
 def near_surface(env, std: float = 0.4) -> torch.Tensor:
     """1 when the robot's front is at the object's surface, falling off over ~std metres."""
     d = _g(env).surface_distance().clamp(min=0.0)
