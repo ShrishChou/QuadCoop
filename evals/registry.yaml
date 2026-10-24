@@ -97,6 +97,17 @@ s2b-spot:
   registered: '2026-10-23'
   commit: 23b9e16
   note: 'Stage 2b: robot-frame map 10 Hz; seed 0, 6000 it'
+s2b-spot-falcon:
+  stage: stage2
+  task: QuadCoop-Push2b-Spot
+  checkpoint: logs/evals/s2b-spot-falcon/model.pt
+  walker: walker-spot-rai-falcon
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2b_spot/2026-10-23_22-12-44_falcon_term80/model_11999.pt
+  registered: '2026-10-24'
+  commit: 725a95d
+  note: Stage 2b on rai-falcon walker, continued 6000 it with terminate success, 80 s
 s2ctrl-anymal:
   stage: stage2
   task: QuadCoop-Push2ctrl-AnymalC
@@ -108,6 +119,17 @@ s2ctrl-anymal:
   registered: '2026-10-23'
   commit: 23b9e16
   note: 'Stage 2ctrl: control, 42 inputs; seed 0, 6000 it'
+s2ctrl-anymal-term80:
+  stage: stage2
+  task: QuadCoop-Push2ctrl-AnymalC
+  checkpoint: logs/evals/s2ctrl-anymal-term80/model.pt
+  walker: walker-anymal-v1
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2ctrl_anymal_c/2026-10-23_18-16-09_term80/model_9998.pt
+  registered: '2026-10-24'
+  commit: 725a95d
+  note: Stage 2ctrl continued 4000 it with terminate success, 80 s
 s2ctrl-spot:
   stage: stage2
   task: QuadCoop-Push2ctrl-Spot
@@ -119,6 +141,17 @@ s2ctrl-spot:
   registered: '2026-10-23'
   commit: 23b9e16
   note: 'Stage 2ctrl: control, 42 inputs; seed 0, 6000 it'
+s2ctrl-spot-falcon:
+  stage: stage2
+  task: QuadCoop-Push2ctrl-Spot
+  checkpoint: logs/evals/s2ctrl-spot-falcon/model.pt
+  walker: walker-spot-rai-falcon
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2ctrl_spot/2026-10-23_18-23-02_falcon_term80/model_11999.pt
+  registered: '2026-10-24'
+  commit: 725a95d
+  note: Stage 2ctrl on rai-falcon walker, continued 6000 it with terminate success, 80 s
 walker-anymal-v1:
   stage: walker
   task: QuadCoop-Walker-AnymalC
