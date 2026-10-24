@@ -28,3 +28,9 @@ nan_dumps/
 slurm-*.out
 *.log
 .DS_Store
+
+# final per-object evaluation videos (scripts/showcase.py); stats go to evals/
+eval_videos/
+
+# one-off installer scripts
+install_*.py
