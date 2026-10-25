@@ -11,11 +11,21 @@
 #
 # Spot: SPOT_PROFILE=<profile> selects the walker's actuator profile (quadcoop/robots/spot.py)
 # and, unless WALKER is given, the newest walker_spot/*_<profile> run.
+# WALKER_ID=<registered walker> (evals/registry.yaml) instead sets the walker checkpoint and every
+# env var it was trained with (e.g. walker-spot-rai-falcon: rai gains + 5-step history).
+#
+# SCRATCH=1: a new run starts from random weights (no Stage 1b/1c warm start) at curriculum level
+# START_LEVEL (default 0). Later jobs of the same RUN_NAME resume it (the curriculum level is
+# saved in the checkpoints), so the same command with a larger ITERS continues it.
+# INIT_RUN may also be a run name (e.g. fs): the newest <date>_<name> folder is used.
+# REQUIRE_ITERS=<n>: with INIT_RUN, refuse to start unless that run reached iteration n - 1.
 #
 #   VARIANT=a ROBOT=anymal_c SEED=0 sbatch slurm/train_push2.sbatch
 #   # continue an existing run with longer episodes (env vars pass through to the env):
 #   VARIANT=b ROBOT=anymal_c RUN_NAME=ep90 INIT_RUN=<run folder> ITERS=3000 QUADCOOP_EPISODE_S=90 sbatch ...
 #   VARIANT=b ROBOT=spot SPOT_PROFILE=soft sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_push2.sbatch
+#   # from scratch on a registered walker, then continue it (slurm/chain_push2_scratch.sh does both):
+#   VARIANT=b ROBOT=spot WALKER_ID=walker-spot-rai-falcon SCRATCH=1 RUN_NAME=fs ITERS=10000 sbatch ...
 #SBATCH -J qc-push2
 #SBATCH -p mit_normal_gpu
 #SBATCH -G l40s:1
@@ -41,12 +51,20 @@ newest_ckpt() {  # newest run dir matching $1 (glob) -> its highest model_N.pt
   [[ -n "$run" ]] || { echo "no runs matching $1" >&2; return 1; }
   ls "$run"model_*.pt | sed -E 's/.*model_([0-9]+)\.pt$/\1 &/' | sort -n | tail -1 | cut -d' ' -f2
 }
-WGLOB="logs/rsl_rl/walker_$ROBOT/2*"
-if [[ "$ROBOT" == spot && -n "${SPOT_PROFILE:-}" ]]; then
-  export QUADCOOP_SPOT_PROFILE=$SPOT_PROFILE
-  WGLOB="logs/rsl_rl/walker_spot/2*_$SPOT_PROFILE"
+if [[ -n "${WALKER_ID:-}" ]]; then
+  WENV=$(python scripts/methods.py env --id "$WALKER_ID")
+  eval "$WENV"
+  WALKER=$QUADCOOP_WALKER_CKPT
+  echo "walker $WALKER_ID:"; echo "$WENV" | sed 's/^/  /'
+else
+  WGLOB="logs/rsl_rl/walker_$ROBOT/2*"
+  if [[ "$ROBOT" == spot && -n "${SPOT_PROFILE:-}" ]]; then
+    export QUADCOOP_SPOT_PROFILE=$SPOT_PROFILE
+    WGLOB="logs/rsl_rl/walker_spot/2*_$SPOT_PROFILE"
+  fi
+  WALKER=${WALKER:-$(newest_ckpt "$WGLOB")}
 fi
-WALKER=${WALKER:-$(newest_ckpt "$WGLOB")}
+[[ -f "$WALKER" ]] || { echo "walker checkpoint not found: $WALKER"; exit 1; }
 export QUADCOOP_WALKER_CKPT="$WALKER"
 unset QUADCOOP_WALKER_CKPT_ANYMAL_C QUADCOOP_WALKER_CKPT_SPOT
 EXP=logs/rsl_rl/push2${VARIANT}_$ROBOT
@@ -61,8 +79,17 @@ nvidia-smi --query-gpu=name,memory.total --format=csv
 if [[ -n "${INIT_RUN:-}" ]]; then
   # continue an existing Stage 2 run of the same variant under a new name (e.g. with longer
   # episodes): checkpoints continue its numbering, so the target is START + ITERS
+  if [[ ! -d "$EXP/$INIT_RUN" ]]; then  # a run name: newest <date>_<name> folder with checkpoints
+    for d in $(ls -d "$EXP"/2*_"$INIT_RUN"/ 2>/dev/null | sort -r); do
+      if ls "$d"model_*.pt >/dev/null 2>&1; then INIT_RUN=$(basename "$d"); break; fi
+    done
+    [[ -d "$EXP/$INIT_RUN" ]] || { echo "INIT_RUN $INIT_RUN: no such run in $EXP"; exit 1; }
+  fi
   CK=${INIT_CKPT:-$(basename "$(ls "$EXP/$INIT_RUN"/model_*.pt | sed -E 's/.*model_([0-9]+)\.pt$/\1 &/' | sort -n | tail -1 | cut -d' ' -f2)")}
   START=$(echo "$CK" | sed -E 's/model_([0-9]+)\.pt/\1/')
+  if [[ -n "${REQUIRE_ITERS:-}" ]] && (( START < REQUIRE_ITERS - 1 )); then
+    echo "$EXP/$INIT_RUN is at iteration $START, not $REQUIRE_ITERS: not starting (finish it first)"; exit 1
+  fi
   if [[ -n "$PREV" ]]; then
     LAST=$(ls "$EXP/$PREV"/model_*.pt | sed -E 's/.*model_([0-9]+)\.pt$/\1/' | sort -n | tail -1)
     LEFT=$(( START + ITERS - LAST ))
@@ -82,6 +109,10 @@ elif [[ -n "$PREV" ]]; then
   ARGS+=(--agent.resume True --agent.load-run "$PREV" --agent.load-checkpoint "model_$LAST.pt"
          --agent.max-iterations "$LEFT")
   echo "continuing $EXP/$PREV from $LAST for $LEFT more iterations"
+elif [[ "${SCRATCH:-0}" == "1" ]]; then
+  export QUADCOOP_START_LEVEL=${START_LEVEL:-0}
+  ARGS+=(--agent.max-iterations "$ITERS")
+  echo "new run $RUN from scratch (random weights), curriculum level $QUADCOOP_START_LEVEL, $ITERS iterations"
 else
   # warm start: newest Stage 1c run (pushhard2_<robot>, same falls/masses/episode length)
   # if there is one, else the Stage 1b run (pushhard_<robot>); INIT=<model_N.pt> overrides
@@ -92,5 +123,7 @@ else
   ARGS+=(--agent.resume True --agent.load-run "$WS\$" --agent.load-checkpoint model_0.pt
          --agent.max-iterations "$ITERS")
 fi
-echo "task=$TASK walker=$WALKER map_hz=$QUADCOOP_MAP_HZ args=${ARGS[*]}"
+echo "task=$TASK walker=$WALKER map_hz=$QUADCOOP_MAP_HZ success_mode=${QUADCOOP_SUCCESS_MODE:-hold}" \
+     "episode_s=${QUADCOOP_EPISODE_S:-45} spot_profile=${QUADCOOP_SPOT_PROFILE:-v1}" \
+     "walker_history=${QUADCOOP_WALKER_HISTORY:-1} args=${ARGS[*]}"
 python train_push2.py "$TASK" "${ARGS[@]}"

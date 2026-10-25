@@ -76,6 +76,27 @@ def push_rows(mid: str, m: dict) -> list[str]:
     return rows
 
 
+def pair_rows() -> list[str]:
+    """Two-robot (and solo) evaluations from scripts/eval_coop2.py: evals/<name>/eval/pair/."""
+    found = sorted(EVALS.glob("*/eval/pair/summary.json"))
+    if not found:
+        return []
+    out = ["", "## Two robots (scripts/eval_coop2.py)", "",
+           "Same fixed tasks for every policy (12 objects x 4 scenarios, nominal sizes); success = 10 cm / 6 deg "
+           "held 1 s within 80 s. Cells: success (ANYmal falls / Spot falls).", ""]
+    data = [(f, json.loads(f.read_text())) for f in found]
+    masses = sorted({f"{float(m):g}" for _, d in data for m in d.get("masses", [])}, key=float)
+    rows = []
+    for f, d in data:
+        cells = []
+        for m in masses:
+            s = d["by_mass"].get(m) or {}
+            cells.append(f"{f2(s.get('success'))} ({f2(s.get('fell_anymal'))} / {f2(s.get('fell_spot'))})" if s else "")
+        rows.append(f"| {f.parents[2].name} | {d.get('policy', '')} | " + " | ".join(cells) + " |")
+    out += ["| name | policy | " + " | ".join(f"{m} kg" for m in masses) + " |", "|---|---|" + "---|" * len(masses)]
+    return out + rows
+
+
 def main() -> int:
     reg = load()
     lines = ["# Evaluations", "",
@@ -100,6 +121,7 @@ def main() -> int:
     for mid, m in reg.items():
         if m["stage"] != "walker":
             lines += push_rows(mid, m)
+    lines += pair_rows()
     (EVALS / "README.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     return 0

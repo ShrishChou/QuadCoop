@@ -16,7 +16,8 @@ Changes:
   clip are penalized (``action_limit``);
 * episode length QUADCOOP_EPISODE_S (default 45 s);
 * optional (QUADCOOP_SUCCESS_MODE=terminate): end the episode on a precise, settled success,
-  with a success bonus that decays with time.
+  with a success bonus that decays with time;
+* curriculum start level QUADCOOP_START_LEVEL (default 3 = warm start from Stage 1c; 0 = from scratch).
 
 Rates: physics 200 Hz, policy and walker 50 Hz, robot-frame map ("b") 10 Hz by default
 (``QUADCOOP_MAP_HZ``); object-frame images ("a") are fixed per episode.
@@ -59,7 +60,10 @@ ACTION_FIX = os.environ.get("QUADCOOP_ACTION_FIX", "0") == "1"
 # with no reward for lingering near the goal. Default "hold" = the original Stage 1b rule.
 SUCCESS_MODE = os.environ.get("QUADCOOP_SUCCESS_MODE", "hold")
 BONUS = float(os.environ.get("QUADCOOP_GOAL_BONUS", "50"))  # bonus for an immediate success
-START_LEVEL = 3
+# curriculum level a new run starts at: 3 for runs warm-started from Stage 1c (the default),
+# 0 for runs trained from scratch (QUADCOOP_START_LEVEL=0). On resume the saved level is restored
+# (Push2Runner), so this only matters for the first job of a run.
+START_LEVEL = int(os.environ.get("QUADCOOP_START_LEVEL", "3"))
 VARIANTS = ("a", "b", "ctrl")
 
 

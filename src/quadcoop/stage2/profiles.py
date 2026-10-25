@@ -93,6 +93,21 @@ def top_robot_frame(parts: torch.Tensor, kinds: torch.Tensor, rest: torch.Tensor
     return _to_image(sdf_union(p_obj, c, h, circ, valid), ROBOT_TOP["hw"])
 
 
+def top_robot_frame_box(centre_r: torch.Tensor, yaw_r: torch.Tensor, half: torch.Tensor) -> torch.Tensor:
+    """An oriented rectangle (e.g. another robot's footprint) on the robot-frame grid, same
+    scaling as the object map. centre_r (B, 2) and yaw_r (B,) in the robot's yaw frame;
+    half (B, 2) half-length / half-width. -> (B, 1, 32, 32)."""
+    b = centre_r.shape[0]
+    pts = grid(ROBOT_TOP["x"], ROBOT_TOP["y"], ROBOT_TOP["hw"], centre_r.device).expand(b, -1, -1)
+    rel = pts - centre_r.unsqueeze(1)
+    cs, sn = torch.cos(yaw_r).unsqueeze(1), torch.sin(yaw_r).unsqueeze(1)
+    p = torch.stack([cs * rel[..., 0] + sn * rel[..., 1], -sn * rel[..., 0] + cs * rel[..., 1]], -1)
+    zeros = torch.zeros(b, 1, 2, device=centre_r.device)
+    ones = torch.ones(b, 1, dtype=torch.bool, device=centre_r.device)
+    sd = sdf_union(p, zeros, half.unsqueeze(1), ~ones, ones)
+    return _to_image(sd, ROBOT_TOP["hw"])
+
+
 def front_object_frame(parts: torch.Tensor, kinds: torch.Tensor, rest: torch.Tensor) -> torch.Tensor:
     """Silhouette looking along the object's x axis: (B, 1, 16, 32), rows = height."""
     b = parts.shape[0]

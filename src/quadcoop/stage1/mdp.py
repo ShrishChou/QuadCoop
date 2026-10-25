@@ -95,7 +95,7 @@ class HighLevelTwistCfg(CommandTermCfg):
 # ---------------------------------------------------------------------------------
 # high-level action -> frozen walker -> joints
 # ---------------------------------------------------------------------------------
-def _check_walker_gains(path: str, env) -> None:
+def _check_walker_gains(path: str, env, entity: str = "robot") -> None:
     """Refuse a walker trained with different joint gains than this env's robot.
 
     The walker's actions only make sense with the PD gains (and action scale, which follows
@@ -111,7 +111,7 @@ def _check_walker_gains(path: str, env) -> None:
     if m is None:
         return
     saved = (float(m.group(1)), float(m.group(2)))
-    act = env.scene["robot"].cfg.articulation.actuators[0]
+    act = env.scene[entity].cfg.articulation.actuators[0]
     now = (float(act.stiffness), float(act.damping))
     if any(abs(a - b) > 1e-6 * max(1.0, abs(b)) for a, b in zip(saved, now, strict=True)):
         raise RuntimeError(
@@ -132,7 +132,7 @@ class WalkerCommandAction(ActionTerm):
                 f"No walker checkpoint: set {cfg.checkpoint_env}=/path/to/model_<iter>.pt "
                 f"(the Stage 0 checkpoint for this robot).")
         self.walker = FrozenWalker(path, self.device)
-        _check_walker_gains(path, env)
+        _check_walker_gains(path, env, cfg.entity_name)
         if self.walker.act_dim != self._joint.action_dim:
             raise RuntimeError(f"walker outputs {self.walker.act_dim} actions, robot has "
                                f"{self._joint.action_dim} joints: wrong checkpoint for this robot?")
