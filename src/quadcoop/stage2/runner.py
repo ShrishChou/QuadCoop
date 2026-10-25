@@ -10,6 +10,11 @@ Added to the PPO losses every iteration (W&B "Loss/..."):
                                        the encoders are receiving gradients and changing.
 
 For the control (no images) nothing is added.
+
+Checkpoints also store the curriculum state (level, success EMA, per-shape success) under
+infos["push2_curriculum"], and loading a checkpoint restores it, so a resumed or requeued run
+continues at the level it reached instead of restarting at the configured start level.
+Checkpoints written before this (no such entry) load as before.
 """
 
 from __future__ import annotations
@@ -38,6 +43,35 @@ class Push2Runner(MjlabOnPolicyRunner):
             return out
 
         self.alg.update = update_and_report
+
+    def _goal(self):
+        return self.env.unwrapped.command_manager.get_term("goal")
+
+    def save(self, path: str, infos=None) -> None:
+        try:
+            g = self._goal()
+            cur = {"level": int(g.level), "ema_success": float(g.ema_success),
+                   "shape_success": [float(x) for x in g.shape_success.tolist()]}
+            infos = {**(infos or {}), "push2_curriculum": cur}
+        except Exception:  # noqa: BLE001  (never block saving)
+            pass
+        super().save(path, infos)
+
+    def load(self, path: str, load_cfg: dict | None = None, strict: bool = True,
+             map_location: str | None = None) -> dict:
+        infos = super().load(path, load_cfg=load_cfg, strict=strict, map_location=map_location)
+        cur = (infos or {}).get("push2_curriculum")
+        if cur:
+            g = self._goal()
+            g.level = min(int(cur["level"]), len(g.cfg.levels) - 1)
+            g.ema_success = float(cur["ema_success"])
+            ss = torch.tensor(cur["shape_success"], device=g.shape_success.device, dtype=g.shape_success.dtype)
+            if ss.shape == g.shape_success.shape:
+                g.shape_success[:] = ss
+            # the iteration counter is restored with common_step_counter: let the level dwell restart
+            g.last_change_iter = self.env.unwrapped.common_step_counter / 24
+            print(f"[push2] curriculum restored from checkpoint: level {g.level}, success EMA {g.ema_success:.2f}")
+        return infos
 
     def _cnn_params(self, model) -> list[torch.Tensor]:
         cnns = getattr(model, "cnns", None)

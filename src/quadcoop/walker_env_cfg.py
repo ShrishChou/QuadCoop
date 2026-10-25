@@ -99,7 +99,7 @@ def _mass_alpha(kg: tuple[float, float]) -> tuple[float, float]:
     return (0.5 * math.log(kg[0] / NOMINAL_MASS), 0.5 * math.log(kg[1] / NOMINAL_MASS))
 
 
-def make_walker_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlEnvCfg:
+def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | None = None) -> ManagerBasedRlEnvCfg:
     cfg = make_velocity_env_cfg()
     warmup = int(_env_float("QUADCOOP_WARMUP_ITERS", 1000))
 
@@ -169,7 +169,8 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False) -> ManagerBasedRlE
     # is inferred from how the body and joints have been responding). QUADCOOP_WALKER_HISTORY=N
     # stacks the last N frames of every actor term except the velocity command. Later stages
     # copy the walker's observation group, so they get the same history automatically.
-    hist = int(_env_float("QUADCOOP_WALKER_HISTORY", 0))
+    # (history=N overrides the env var: the two-robot env builds each robot with its own walker's N)
+    hist = int(_env_float("QUADCOOP_WALKER_HISTORY", 0)) if history is None else int(history)
     if hist > 1:
         for name, term in cfg.observations["actor"].terms.items():
             if name != "command":

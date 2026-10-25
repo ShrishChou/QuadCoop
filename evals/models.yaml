@@ -1,0 +1,8 @@
+# The models we currently use, by role -> registered method id (evals/registry.yaml).
+# `python scripts/select_models.py` copies each one into models/<role>/ (git-ignored) with a
+# model.yaml saying what it is; change a role with
+# `python scripts/select_models.py --set push2b_spot=<id>`. The multi-agent stage reads these.
+walker_anymal: walker-anymal-v1        # ANYmal C walker (all ANYmal policies run on it)
+walker_spot: walker-spot-rai-falcon    # Spot walker: rai gains + FALCON-style push curriculum + 5-step history
+push2b_anymal: s2b-anymal-term80       # ANYmal C Stage 2b (robot-frame map + front profile, CNN)
+push2b_spot: s2b-spot-falcon           # Spot Stage 2b; replace with s2b-spot-fs if the from-scratch run wins

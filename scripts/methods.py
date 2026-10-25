@@ -23,6 +23,9 @@ evals/README.md.
         --checkpoint logs/rsl_rl/push2b_anymal_c/<run>/model_5999.pt --walker walker-anymal-v1 \\
         --env QUADCOOP_SHAPES=v2 --note "Stage 2b, 6000 it"
     python scripts/methods.py list
+    eval "$(python scripts/methods.py env --id walker-spot-rai-falcon)"   # shell exports for a walker:
+        # QUADCOOP_WALKER_CKPT=<its checkpoint> + the env vars it was trained with (e.g. Spot profile, history)
+    python scripts/methods.py latest --run-dir logs/rsl_rl/push2b_spot --run-name fs   # newest checkpoint
 """
 
 from __future__ import annotations
@@ -108,6 +111,27 @@ def register(a) -> int:
     return 0
 
 
+def shell_env(mid: str) -> str:
+    """`export` lines that make a training/eval job use registered walker `mid` exactly as it was
+    trained: its checkpoint and its env vars (robot profile, history length, ...)."""
+    import shlex
+
+    m = resolve(mid)
+    if m["stage"] != "walker":
+        raise SystemExit(f"{mid} is a {m['stage']} policy; `env` is for walkers")
+    lines = [f"export QUADCOOP_WALKER_CKPT={shlex.quote(m['checkpoint_abs'])}"]
+    lines += [f"export {k}={shlex.quote(v)}" for k, v in m["env_all"].items()]
+    return "\n".join(lines)
+
+
+def latest(run_dir: str, run_name: str) -> str:
+    """Newest checkpoint (highest iteration) of the newest run folder <date>_<run_name>."""
+    runs = sorted(p for p in Path(run_dir).glob(f"2*_{run_name}") if p.is_dir() and any(p.glob("model_*.pt")))
+    if not runs:
+        raise SystemExit(f"no run {run_dir}/*_{run_name} with checkpoints")
+    return str(max(runs[-1].glob("model_*.pt"), key=lambda p: int(p.stem.split("_")[1])))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -121,9 +145,20 @@ def main() -> int:
     r.add_argument("--note", default="")
     r.add_argument("--force", action="store_true")
     sub.add_parser("list")
+    e = sub.add_parser("env")
+    e.add_argument("--id", required=True)
+    lt = sub.add_parser("latest")
+    lt.add_argument("--run-dir", required=True)
+    lt.add_argument("--run-name", required=True)
     a = ap.parse_args()
     if a.cmd == "register":
         return register(a)
+    if a.cmd == "env":
+        print(shell_env(a.id))
+        return 0
+    if a.cmd == "latest":
+        print(latest(a.run_dir, a.run_name))
+        return 0
     for k, v in load().items():
         print(f"{k:28s} {v['stage']:8s} {v['task']:30s} {v.get('walker', ''):20s} {v.get('note', '')}")
     return 0

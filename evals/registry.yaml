@@ -108,6 +108,17 @@ s2b-spot-falcon:
   registered: '2026-10-24'
   commit: 725a95d
   note: Stage 2b on rai-falcon walker, continued 6000 it with terminate success, 80 s
+s2b-spot-fs-it9999:
+  stage: stage2
+  task: QuadCoop-Push2b-Spot
+  checkpoint: logs/evals/s2b-spot-fs-it9999/model.pt
+  walker: walker-spot-rai-falcon
+  env:
+    QUADCOOP_SHAPES: v2
+  source: logs/rsl_rl/push2b_spot/2026-10-24_06-30-33_fs/model_9999.pt
+  registered: '2026-10-24'
+  commit: 72c4fa0
+  note: 's2b-spot-fs: from scratch on walker-spot-rai-falcon (hold rule, 45 s) (iteration 9999)'
 s2ctrl-anymal:
   stage: stage2
   task: QuadCoop-Push2ctrl-AnymalC
