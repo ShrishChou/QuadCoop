@@ -83,16 +83,18 @@ def pair_rows() -> list[str]:
         return []
     out = ["", "## Two robots (scripts/eval_coop2.py)", "",
            "Same fixed tasks for every policy (12 objects x 4 scenarios, nominal sizes); success = 10 cm / 6 deg "
-           "held 1 s within 80 s. Cells: success (ANYmal falls / Spot falls).", ""]
+           "held 1 s within 80 s. Cells: success (first robot falls / second robot falls); robots "
+           "listed under each name.", ""]
     data = [(f, json.loads(f.read_text())) for f in found]
     masses = sorted({f"{float(m):g}" for _, d in data for m in d.get("masses", [])}, key=float)
     rows = []
     for f, d in data:
         cells = []
+        ag = d.get("agents") or ["anymal", "spot"]
         for m in masses:
             s = d["by_mass"].get(m) or {}
-            cells.append(f"{f2(s.get('success'))} ({f2(s.get('fell_anymal'))} / {f2(s.get('fell_spot'))})" if s else "")
-        rows.append(f"| {f.parents[2].name} | {d.get('policy', '')} | " + " | ".join(cells) + " |")
+            cells.append(f"{f2(s.get('success'))} ({f2(s.get(f'fell_{ag[0]}'))} / {f2(s.get(f'fell_{ag[1]}'))})" if s else "")
+        rows.append(f"| {f.parents[2].name} ({' + '.join(ag)}) | {d.get('policy', '')} | " + " | ".join(cells) + " |")
     out += ["| name | policy | " + " | ".join(f"{m} kg" for m in masses) + " |", "|---|---|" + "---|" * len(masses)]
     return out + rows
 

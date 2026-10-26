@@ -1,5 +1,9 @@
 """Two-robot environment on Stage 2: ANYmal C ("anymal") and Spot ("spot") push one object.
 
+Which two robots is set by QUADCOOP_PAIR (quadcoop/coop2/pairs.py): "mixed" (default, as above),
+"anymal" (two ANYmal C, entities "anymal1"/"anymal2") or "spot" (two Spot). Everything below
+applies per robot slot.
+
 Each robot is driven exactly as in Stage 2: a high-level (vx, vy, wz) action -> its own frozen
 walker -> its 12 joints. The env action is (anymal vx, vy, wz, spot vx, vy, wz).
 
@@ -51,7 +55,8 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from quadcoop import falls
 from quadcoop.coop2 import mdp
-from quadcoop.coop2.mdp import AGENTS
+from quadcoop.coop2.mdp import AGENTS, PARTNER
+from quadcoop.coop2.pairs import ROBOT_TYPE
 from quadcoop.robots.anymal_c import ROBOT as ANYMAL_C
 from quadcoop.robots.spot import ROBOT as SPOT
 from quadcoop.stage1 import mdp as s1
@@ -62,13 +67,13 @@ from quadcoop.stage2 import mdp as m2
 from quadcoop.stage2.shapes import FACTOR_RANGE, OBJ_NAMES2, SHAPES2, get_goal_cfgs, get_object_cfgs
 from quadcoop.walker_env_cfg import make_walker_env_cfg
 
-SPECS = {"anymal": ANYMAL_C, "spot": SPOT}
+SPECS = {a: {"anymal_c": ANYMAL_C, "spot": SPOT}[ROBOT_TYPE[a]] for a in AGENTS}  # per slot (QUADCOOP_PAIR)
 MASS_RANGE = (10.0, 90.0)  # kg per object copy per env (uniform); the level picks a window
 FRICTION_RANGE = (0.4, 0.6)  # Stage 2's
 EPISODE_S = float(os.environ.get("QUADCOOP_COOP_EPISODE_S", "80"))
 BONUS = 50.0  # Stage 2's success bonus (for an immediate success)
 KEEP_EVENTS = ("foot_friction", "base_com", "encoder_bias", "reset_base", "reset_robot_joints")
-START_OFFSET = {"anymal": (0.0, -2.0), "spot": (0.0, 2.0)}  # before the first reset places them
+START_OFFSET = {AGENTS[0]: (0.0, -2.0), AGENTS[1]: (0.0, 2.0)}  # before the first reset places them
 
 
 def _rename_entity(params: dict, name: str) -> dict:
@@ -124,20 +129,43 @@ def walker_history(robot_name: str) -> int:
     return int(float(os.environ.get(f"QUADCOOP_WALKER_HISTORY_{robot_name.upper()}", "0")))
 
 
-REWARD_SETS = ("r3", "r4")
+REWARD_SETS = ("r3", "r4", "r5", "r7")
+GOAL_ERROR_COST = 0.25  # r7: per second at the start error (distance fraction 1 + heading fraction)
 
 
 def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool = False,
                        reward_set: str = "r3") -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
-    reward_set: "r3" (first runs) | "r4": no per-robot "behind the object" term (it sent both
-    robots to the same spot) and an exponential proximity penalty below 0.6 m instead of the
-    linear one from 1 m (which punished pushing side by side)."""
+    reward_set:
+      "r3" first runs.
+      "r4" no per-robot "behind the object" term (it sent both robots to the same spot); proximity
+           penalty exponential below 0.6 m instead of linear from 1 m (which punished pushing
+           side by side).
+      "r5" r4, plus: the surface-approach reward pays for getting closer (potential-based, weight 2)
+           instead of 0.5/s for standing there (camping paid each robot up to 40 per episode,
+           more than a whole successful push); a team time cost of 0.2/s (running out of time
+           was free); push_along 0.3 -> 1.0 (the only per-robot credit for pushing);
+           yaw_progress 0.5 -> 1.0 (turning objects).
+      "r7" outcome-based: every dense term measures the object against its goal, plus one
+           credit-assignment term; everything else is an outcome cost.
+           - goal-error cost (team, 0.25/s x [distance / start distance + heading error / max
+             heading error]): the area under the error curve, so faster and more direct pushing
+             and no needless turning cost less; replaces r5's flat time cost;
+           - a failure also pays that cost for the time left (failing early is never cheaper);
+           - push_credit (per robot) replaces push_along: the object's speed toward the goal,
+             credited while the robot's front is on the object and it is behind it (push_along
+             paid the robot's own speed near the object: walking past the object toward the goal
+             earned more than pushing a heavy one);
+           - proximity on the gap between the bodies (exponential below 0.15 m) instead of the
+             centre distance (which was ~0.6 m shoulder to shoulder, where r4's penalty was ~0);
+           - kept from r5: object / heading / precise progress (potential-based), the success
+             bonus, settle / runaway, failure -25, robots touching, approach (potential-based),
+             action terms, own fall."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
     assert not (partner_map and variant != "b"), "the partner map needs variant b (maps)"
     wcfg = {a: make_walker_env_cfg(SPECS[a], history=walker_history(SPECS[a].name)) for a in AGENTS}
-    cfg = wcfg["anymal"]  # sim, terrain and viewer settings; everything task-related is replaced
+    cfg = wcfg[AGENTS[0]]  # sim, terrain and viewer settings; everything task-related is replaced
 
     # -- scene: two robots, the Stage 2 objects and goal markers, a robot-robot contact sensor --
     robots = {}
@@ -150,8 +178,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     cfg.scene.entities = {**robots, **get_object_cfgs(), **get_goal_cfgs()}
     cfg.scene.sensors = (ContactSensorCfg(
         name="robots_touch",
-        primary=ContactMatch(mode="subtree", pattern=SPECS["anymal"].base_body, entity="anymal"),
-        secondary=ContactMatch(mode="subtree", pattern=SPECS["spot"].base_body, entity="spot"),
+        primary=ContactMatch(mode="subtree", pattern=SPECS[AGENTS[0]].base_body, entity=AGENTS[0]),
+        secondary=ContactMatch(mode="subtree", pattern=SPECS[AGENTS[1]].base_body, entity=AGENTS[1]),
         fields=("found",), reduce="none", num_slots=1,
     ),)
     cfg.sim.njmax = 1500
@@ -174,14 +202,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     # -- commands ---------------------------------------------------------------------------------
     cfg.commands = {f"twist_{a}": s1.HighLevelTwistCfg() for a in AGENTS}
     cfg.commands["goal"] = mdp.CoopPush2CommandCfg(
-        variant=variant, reach=tuple(SPECS[a].half_length for a in AGENTS), robot_reach=SPECS["anymal"].half_length,
+        variant=variant, reach=tuple(SPECS[a].half_length for a in AGENTS), robot_reach=SPECS[AGENTS[0]].half_length,
         map_hz=float(os.environ.get("QUADCOOP_MAP_HZ", "10")), start_level=0, success_mode="terminate",
-        partner_map=partner_map)
+        partner_map=partner_map, track_approach=reward_set in ("r5", "r7"))
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
     obs = {}
-    for a, o in (("anymal", "spot"), ("spot", "anymal")):
+    for a, o in PARTNER.items():
         obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True), concatenate_terms=True,
                                                 enable_corruption=not play)
         obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False), concatenate_terms=True,
@@ -229,11 +257,11 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     # -- rewards ------------------------------------------------------------------------------------
     R = RewardTermCfg
     step_dt = cfg.sim.mujoco.timestep * cfg.decimation
-    fails = ("anymal_fell", "spot_fell", "box_tipped", "box_lost")
+    fails = tuple(f"{a}_fell" for a in AGENTS) + ("box_tipped", "box_lost")
     rewards = {
         # team (Stage 2, terminate rule)
         "box_progress": R(func=hb.box_progress, weight=3.0),
-        "yaw_progress": R(func=hb.yaw_progress, weight=0.5),
+        "yaw_progress": R(func=hb.yaw_progress, weight=1.0 if reward_set in ("r5", "r7") else 0.5),
         "precise_progress": R(func=m2.precise_progress, weight=4.0),
         "goal_bonus": R(func=m2.goal_bonus, weight=BONUS / step_dt, params={"horizon_s": EPISODE_S}),
         "box_settle": R(func=hb.box_settle, weight=-1.0),
@@ -241,16 +269,31 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "terminated": R(func=m2.failed, weight=-0.5 * BONUS / step_dt, params={"names": fails}),
         # team (new): keep out of each other's way
         "robots_close": (R(func=mdp.robots_close, weight=-1.0) if reward_set == "r3" else
+                         R(func=mdp.robots_gap_exp, weight=-1.0, params={"threshold": 0.15, "rate": 20.0})
+                         if reward_set == "r7" else
                          R(func=mdp.robots_close_exp, weight=-1.0, params={"threshold": 0.6, "rate": 8.0})),
         "robots_touch": R(func=mdp.robots_touching, weight=-1.0),
     }
+    if reward_set == "r5":
+        rewards["time_cost"] = R(func=mdp.time_cost, weight=-0.2)
+    if reward_set == "r7":
+        rewards["goal_error"] = R(func=mdp.goal_error, weight=-GOAL_ERROR_COST)
+        rewards["fail_remaining"] = R(func=mdp.failed_remaining, weight=-GOAL_ERROR_COST,
+                                      params={"names": fails, "horizon_s": EPISODE_S})
     for k, a in enumerate(AGENTS):
-        rewards[f"near_surface_{a}"] = R(func=mdp.near_surface, weight=0.5, params={"robot": a})
+        if reward_set in ("r5", "r7"):
+            rewards[f"approach_{a}"] = R(func=mdp.approach, weight=2.0, params={"robot": a})
+        else:
+            rewards[f"near_surface_{a}"] = R(func=mdp.near_surface, weight=0.5, params={"robot": a})
         if reward_set == "r3":
             rewards[f"behind_box_{a}"] = R(func=mdp.behind_box, weight=0.3, params={"robot": a})
         rewards[f"action_rate_{a}"] = R(func=mdp.agent_action_rate, weight=-0.05, params={"agent": k})
         rewards[f"action_limit_{a}"] = R(func=mdp.agent_action_limit, weight=-0.02, params={"agent": k})
-        rewards[f"push_along_{a}"] = R(func=mdp.push_along, weight=0.3, params={"robot": a})
+        if reward_set == "r7":
+            rewards[f"push_credit_{a}"] = R(func=mdp.push_credit, weight=1.0, params={"robot": a})
+        else:
+            rewards[f"push_along_{a}"] = R(func=mdp.push_along, weight=1.0 if reward_set == "r5" else 0.3,
+                                           params={"robot": a})
         rewards[f"own_fall_{a}"] = R(func=mdp.own_fall, weight=-0.2 * BONUS / step_dt,
                                      params={"robot": a, "nominal_height": SPECS[a].nominal_height})
     cfg.rewards = rewards
