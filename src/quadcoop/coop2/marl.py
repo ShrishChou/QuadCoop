@@ -22,6 +22,21 @@ Stability around the warm start: critics train alone for ``critic_warmup`` itera
 actors' observation normalizers stay as loaded (the partner inputs are O(1) already); actor
 learning rates start low and adapt to the KL target; the action noise is floored at
 ``min_std``. Checkpoints: logs/marl2/<run>/model_<iter>.pt (with the curriculum state).
+
+Exploration where outputs are saturated (``mean_clip``, ``bound_coef``; r6): the warm-started
+policies put many outputs far past the walker's [-1, 1] clip (ANYmal: 4-8), where sampling noise
+changes nothing the robot does, so those outputs get no learning signal. With ``mean_clip`` the
+Gaussian that actions are sampled from (and scored under) is centred on the mean clamped to
++-mean_clip, with the gradient passed straight through the clamp, so the noise acts on the
+command again. The deterministic output (evaluation) is the raw mean, unchanged: iteration 0
+still acts exactly like the Stage 2b policies. ``bound_coef`` adds a penalty on the raw mean
+past +-mean_clip so it comes back inside instead of sitting where the clamp hides it.
+
+From scratch (``scratch``): no Stage 2 policies at all. Actors and critics start from random
+weights on top of the same frozen walkers, the actors' observation normalizers learn from the
+data (they are frozen only after a warm start), and the action noise is capped at
+max_std_factor x its starting value (``_dist_cfg``'s init_std). Same environment, rewards and PPO
+settings otherwise, so it isolates what the single-robot warm start contributes.
 """
 
 from __future__ import annotations
@@ -50,6 +65,7 @@ class MarlCfg:
     variant: str = "b"  # "b" (maps, CNN) | "ctrl" (numbers only)
     partner_map: bool = False  # env option (recorded so evaluations rebuild the same env)
     reward_set: str = "r3"  # env option, see quadcoop/coop2/env_cfg.py
+    pair: str = "mixed"  # which two robots (quadcoop/coop2/pairs.py), recorded for evaluations
     num_envs: int = 4096
     num_steps_per_env: int = 24
     max_iterations: int = 6000
@@ -70,6 +86,9 @@ class MarlCfg:
     hidden_dims: tuple[int, ...] = (256, 128, 64)  # Stage 2's (actors and IPPO critics)
     central_hidden_dims: tuple[int, ...] = (512, 256, 128)  # MAPPO's critic
     min_std: float = 0.2
+    mean_clip: float = 0.0  # > 0: sample around the mean clamped to +-this (straight-through); r6: 1.1
+    bound_coef: float = 0.0  # penalty on the raw mean past +-mean_clip (or +-1.1 if mean_clip is 0); r6: 0.01
+    scratch: bool = False  # random initial actors and critics (no Stage 2 warm start); see the module docstring
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
     max_actor_learning_rate: float = 3.0e-4
     reward_clip: float = 100.0  # per robot per step (a success is +50 at most, a fall -35)
@@ -107,6 +126,20 @@ def make_model(obs: TensorDict, groups: list[str], out: int, hidden, variant: st
     if variant == "b":
         return CNNModel(obs, {"x": groups}, "x", out, cnn_cfg=dict(CNN), **kw)
     return MLPModel(obs, {"x": groups}, "x", out, **kw)
+
+
+def clamp_sampling_mean(model, limit: float) -> None:
+    """Sample (and score) actions around the mean clamped to +-limit, the gradient passing straight
+    through the clamp. The raw mean stays available as ``model.distribution.raw_mean`` and is
+    still the deterministic output. Weights and checkpoints are unchanged."""
+    dist = model.distribution
+    plain_update = dist.update
+
+    def update(mlp_output: torch.Tensor) -> None:
+        dist.raw_mean = mlp_output
+        plain_update(mlp_output + (mlp_output.clamp(-limit, limit) - mlp_output).detach())
+
+    dist.update = update
 
 
 def warm_start_model(model, single: dict, cols: list[tuple[slice, slice]], n1d_new: int, cnn_names: dict[str, str],
@@ -190,6 +223,13 @@ class MarlTrainer:
         v = cfg.variant
         self.actors = {a: make_model(self.obs, actor_groups(a, v), 3, cfg.hidden_dims, v, True).to(device)
                        for a in AGENTS}
+        self.bound = cfg.mean_clip if cfg.mean_clip > 0 else 1.1
+        for m_ in self.actors.values():  # no clamp (inf) still records the raw mean for the bound penalty/logs
+            clamp_sampling_mean(m_, cfg.mean_clip if cfg.mean_clip > 0 else float("inf"))
+        if cfg.mean_clip > 0 or cfg.bound_coef > 0:
+            print(f"[marl2] sampling mean clamped to +-{cfg.mean_clip:g} (straight-through): "
+                  f"{cfg.mean_clip > 0}; penalty on the raw mean past +-{self.bound:g}: {cfg.bound_coef:g}; "
+                  f"entropy bonus {cfg.entropy_coef:g}")
         if cfg.algo == "ippo":
             self.critics = {a: make_model(self.obs, critic_groups("ippo", v, a), 1, cfg.hidden_dims, v, False).to(device)
                             for a in AGENTS}
@@ -265,6 +305,18 @@ class MarlTrainer:
                                        cnn if v == "b" else {}, None, f"{a} critic <- {path}")
                 print(f"[marl2] {a}: critic warm-started from {path} ({', '.join(rep)})")
             self.warm_from[a] = str(path)
+
+    def init_scratch(self) -> None:
+        """Random initial actors and critics (as built). Only the noise cap is set here."""
+        for a in AGENTS:
+            sp = self.actors[a].distribution.std_param
+            with torch.no_grad():
+                sp.clamp_(min=self.cfg.min_std)
+            self.std_cap[a] = (sp.detach() * self.cfg.max_std_factor).clamp(min=self.cfg.min_std).clone()
+            print(f"[marl2] {a}: actor from scratch (random weights, normalizer learns from data); action noise "
+                  f"{[round(x, 2) for x in sp.tolist()]}, capped at {[round(x, 2) for x in self.std_cap[a].tolist()]}")
+        print(f"[marl2] critics from scratch ({', '.join(self.critics)})")
+        self.warm_from = {"scratch": "random initial weights"}
 
     # -- checkpoints ---------------------------------------------------------------------------------
     def save(self) -> Path:
@@ -351,7 +403,8 @@ class MarlTrainer:
         self._open_logs()
         video = PairVideo(self.env, self.log_dir / "videos", cfg.video_length) if cfg.video_interval > 0 else None
         if self.it == 0:
-            print(f"[marl2] saved {self.save()} (iteration 0 = the warm-started policies, before any update)")
+            what = "random initial policies" if self.cfg.scratch else "the warm-started policies"
+            print(f"[marl2] saved {self.save()} (iteration 0 = {what}, before any update)")
         groups = self.groups()
         A = len(AGENTS)
         ep_ret = torch.zeros(n, A, device=dev)
@@ -410,6 +463,9 @@ class MarlTrainer:
                     done[t] = d
                     for c in self.critics.values():
                         c.update_normalization(obs)
+                    if cfg.scratch:  # warm-started actors keep their loaded normalizers
+                        for m_ in self.actors.values():
+                            m_.update_normalization(obs)
                     ended = d.bool()
                     n_ended += float(ended.sum())
                     for nm in tm.active_terms:
@@ -453,6 +509,8 @@ class MarlTrainer:
                             actor = self.actors[a]
                             sl = slice(3 * k, 3 * k + 3)
                             actor(o_mb, stochastic_output=True)
+                            excess = torch.relu(actor.distribution.raw_mean.abs() - self.bound)
+                            bound_loss = excess.pow(2).sum(-1).mean()
                             lp = actor.get_output_log_prob(f_act[idx, sl])
                             ent = actor.output_entropy
                             new_params = actor.output_distribution_params
@@ -471,6 +529,8 @@ class MarlTrainer:
                             surr = -torch.min(adv_k * ratio,
                                               adv_k * torch.clamp(ratio, 1 - cfg.clip_param, 1 + cfg.clip_param)).mean()
                             loss = surr - cfg.entropy_coef * ent.mean()
+                            if cfg.bound_coef > 0:
+                                loss = loss + cfg.bound_coef * bound_loss
                             if not torch.isfinite(loss):
                                 skipped += 1
                                 continue
@@ -493,6 +553,8 @@ class MarlTrainer:
                             stats[f"Loss/surrogate_{a}"] += surr.item()
                             stats[f"Loss/entropy_{a}"] += ent.mean().item()
                             stats[f"Loss/kl_{a}"] += float(kl)
+                            stats[f"Loss/bound_{a}"] += bound_loss.item()
+                            stats[f"Policy/out_of_range_{a}"] += float((excess > 0).float().mean())
                     if cfg.algo == "ippo":
                         for k, a in enumerate(AGENTS):
                             vl = self._value_loss(self.critics[a](o_mb).squeeze(-1), f_val[idx, k], f_ret[idx, k])
@@ -535,11 +597,11 @@ class MarlTrainer:
             if self.it % 10 == 0 or self.it == 1:
                 succ = out.get("Outcome/goal_reached", float("nan"))
                 lvl = out.get("Curriculum/push/level", float("nan"))
-                fa = out.get("Outcome/anymal_fell", float("nan"))
-                fs = out.get("Outcome/spot_fell", float("nan"))
+                fa = out.get(f"Outcome/{AGENTS[0]}_fell", float("nan"))
+                fs = out.get(f"Outcome/{AGENTS[1]}_fell", float("nan"))
                 print(f"[marl2 {cfg.algo}] it {self.it}/{cfg.max_iterations}  return "
-                      f"{out.get('Train/mean_return_anymal', float('nan')):.2f}/"
-                      f"{out.get('Train/mean_return_spot', float('nan')):.2f}  success {succ:.2f}  level {lvl}  "
+                      f"{out.get(f'Train/mean_return_{AGENTS[0]}', float('nan')):.2f}/"
+                      f"{out.get(f'Train/mean_return_{AGENTS[1]}', float('nan')):.2f}  success {succ:.2f}  level {lvl}  "
                       f"fell {fa:.2f}/{fs:.2f}  {B / dt_s:.0f} steps/s{'  (critic warm-up)' if warm else ''}"
                       f"{f'  skipped {skipped}' if skipped else ''}",
                       flush=True)

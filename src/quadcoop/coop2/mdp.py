@@ -14,7 +14,8 @@ rewards. ``CoopPush2Command`` extends Stage 2's goal command to two robots:
 * the object mass window rises with the level past what one robot can push.
 
 Per-robot observation and reward functions take the robot's entity name (``robot="spot"``).
-Entity names: "anymal" and "spot"; agent order everywhere: (anymal, spot).
+Entity names come from quadcoop.coop2.pairs (QUADCOOP_PAIR): "anymal" and "spot" by default,
+"anymal1"/"anymal2" or "spot1"/"spot2" for two robots of one type; agent order everywhere: AGENTS.
 """
 
 from __future__ import annotations
@@ -35,9 +36,10 @@ from quadcoop.stage2.shapes import (
     GOAL_NAMES2, OBJ_NAMES2, SHAPES2, TRAIN_MASK, bbox_and_radius, kinds_tensor, nominal_parts,
 )
 
-AGENTS = ("anymal", "spot")
-PARTNER = {"anymal": "spot", "spot": "anymal"}
-FOOTPRINT_HALF = {"anymal": (0.55, 0.30), "spot": (0.55, 0.28)}  # m, drawn into the partner map
+from quadcoop.coop2.pairs import AGENTS, PARTNER, ROBOT_TYPE  # noqa: E402
+
+_FOOTPRINT_OF_TYPE = {"anymal_c": (0.55, 0.30), "spot": (0.55, 0.28)}  # m: half-length, half-width
+FOOTPRINT_HALF = {a: _FOOTPRINT_OF_TYPE[ROBOT_TYPE[a]] for a in AGENTS}  # partner map, body gap
 SPREAD = 2  # level-table column 2: each robot's spread around "behind", +- deg
 BEHIND = 3  # level-table column 3: "behind" rotated away from straight behind the object, +- deg
 MASS_LO = 10  # extra column: lightest object at this level (kg)
@@ -95,6 +97,10 @@ class CoopPush2Command(Push2Command):
         self.map_updates = 0
         self.success_flag = torch.zeros(n, dtype=torch.bool, device=dev)
         self.prev_precise = torch.zeros(n, device=dev)
+        # approach potential per robot (r5's approach reward pays for its change, not its value)
+        self.prev_near = {a: torch.zeros(n, device=dev) for a in AGENTS}
+        # start distance to the goal, per episode (r7's goal-error cost is measured against it)
+        self.d0 = torch.ones(n, device=dev)
         # evaluation switches (as in Stage 2)
         self.heading_zero = False
         self.heading_zero_map = False
@@ -163,6 +169,17 @@ class CoopPush2Command(Push2Command):
     def command(self) -> torch.Tensor:
         _, e = self.errors()
         return torch.cat([self.goal_xy, e.unsqueeze(-1)], -1)
+
+    def near_value(self, robot: str, std: float = 0.4) -> torch.Tensor:
+        """Approach potential: 1 with the robot's front at the object's surface, fading over ~std m."""
+        d = self.surface_distance(robot).clamp(min=0.0)
+        return 1.0 - torch.tanh(torch.clamp(d - 0.05, min=0.0) / std)
+
+    def _update_command(self) -> None:
+        super()._update_command()  # Stage 2: progress bookkeeping, precise potential, map refresh
+        if self.cfg.track_approach:  # after the rewards and resets of this step: next step's baseline
+            for a in AGENTS:
+                self.prev_near[a][:] = self.near_value(a)
 
     # -- placement --------------------------------------------------------------------------------
     def _resample_command(self, env_ids: torch.Tensor) -> None:
@@ -279,6 +296,7 @@ class CoopPush2Command(Push2Command):
             g.write_mocap_pose_to_sim(pose, env_ids)
         self.prev_dist[env_ids] = torch.linalg.norm(goal_xy - obj_xy, dim=-1)
         self.prev_yaw_err[env_ids] = fold(wrap(goal_yaw - obj_heading), self.sym[shape]).abs()
+        self.d0[env_ids] = self.prev_dist[env_ids].clamp(min=0.5)
         partner = {}
         for a in AGENTS:
             (pos, yaw), (ppos, pyaw) = poses[a], poses[PARTNER[a]]
@@ -300,6 +318,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     robot_yaw_noise_deg: float = 20.0
     park_distance: float = 40.0
     partner_map: bool = False  # second map channel: the partner's footprint
+    track_approach: bool = False  # keep each robot's approach potential (r5's approach reward)
     # d_lo, d_hi [m] | robot spread +- [deg] | "behind" offset +- [deg] | object start yaw +- |
     # goal yaw change +- | pos tol [m] | yaw tol [deg] | hold [s] (tolerances: "hold" mode only;
     # "terminate" uses success_pos_tol / success_yaw_tol_deg) | max mass [kg] | min mass [kg]
@@ -383,6 +402,21 @@ def near_surface(env, robot: str, std: float = 0.4) -> torch.Tensor:
     return 1.0 - torch.tanh(torch.clamp(d - 0.05, min=0.0) / std)
 
 
+def approach(env, robot: str, max_rate: float = 10.0) -> torch.Tensor:
+    """r5: change of this robot's approach potential per second (potential-based shaping): pays
+    for getting to the object's surface, nothing for staying there, the same back for leaving.
+    Summed over an episode it is at most the potential's range (1). The clip is only a guard
+    against glitches: walking changes the potential by at most ~2/s, and a tighter clip would let
+    a robot dash away (loss clipped) and walk back (full gain) for a net profit."""
+    g = _g(env)
+    return torch.clamp((g.near_value(robot) - g.prev_near[robot]) / env.step_dt, -max_rate, max_rate)
+
+
+def time_cost(env) -> torch.Tensor:
+    """r5 (team): 1 per second the episode lasts, so running out of time is not free."""
+    return torch.ones(env.num_envs, device=env.device)
+
+
 def behind_box(env, robot: str, done_dist: float = 0.25) -> torch.Tensor:
     """Stage 1b/2's robot_behind_box for this robot."""
     g = _g(env)
@@ -447,6 +481,89 @@ def robots_close_exp(env, threshold: float = 0.6, rate: float = 8.0, cap: float 
     a, b = (env.scene[x].data.root_link_pos_w[:, :2] for x in AGENTS)
     d = torch.linalg.norm(a - b, dim=-1)
     pen = torch.exp(rate * torch.clamp(threshold - d, min=0.0)) - 1.0
+    return pen.clamp(max=cap)
+
+
+def goal_error(env, yaw_weight: float = 1.0, max_dist_frac: float = 2.0) -> torch.Tensor:
+    """r7: how far the object is from its goal pose right now, normalized: distance / distance at
+    the start of the episode (capped at max_dist_frac) + yaw_weight * heading error / the largest
+    heading error the shape can have (pi / symmetry; 0 for the sphere). 1-2 at the start, 0 at
+    the goal. As a per-second cost it charges the area under the error-over-time curve: faster
+    and more direct pushing (and no needless turning) costs less, without saying how to push."""
+    g = _g(env)
+    d, e = g.errors()
+    k = g.symmetry()
+    yaw = torch.where(k > 0, e.abs() / (math.pi / k.clamp(min=1)), torch.zeros_like(e))
+    return (d / g.d0).clamp(max=max_dist_frac) + yaw_weight * yaw
+
+
+def failed_remaining(env, names: tuple[str, ...], horizon_s: float, yaw_weight: float = 1.0) -> torch.Tensor:
+    """r7: on a failure step (a robot falls, the object tips or is lost), the goal-error cost the
+    rest of the episode would have charged at the current error: goal_error * time left, paid
+    at once (divided by the step length because rewards are multiplied by it). With a cost per
+    second, ending the episode early must not be cheaper than staying."""
+    tm = env.termination_manager
+    bad = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for nm in names:
+        if nm in tm.active_terms:
+            bad |= tm.get_term(nm)
+    left = (horizon_s - env.episode_length_buf.float() * env.step_dt).clamp(min=0.0)
+    return bad.float() * goal_error(env, yaw_weight) * left / env.step_dt
+
+
+def push_credit(env, robot: str, contact: float = 0.08, max_speed: float = 1.0, done_dist: float = 0.1) -> torch.Tensor:
+    """r7, per robot: the object's speed toward its goal (m/s, 0..max_speed), credited to this
+    robot only while its front is on the object (within `contact` of the surface) and it is
+    behind the object relative to the goal (weighted by the cosine between robot -> object and
+    object -> goal, 0 from the side or in front). Unlike push_along (the robot's own speed near
+    the object), it cannot be earned without moving the object toward the goal."""
+    g = _g(env)
+    obj = g.box_pos()[:, :2]
+    to_goal = g.goal_xy - obj
+    dist = torch.linalg.norm(to_goal, dim=-1)
+    u = to_goal / dist.unsqueeze(-1).clamp(min=1e-6)
+    to_obj = obj - env.scene[robot].data.root_link_pos_w[:, :2]
+    behind = ((to_obj * u).sum(-1) / torch.linalg.norm(to_obj, dim=-1).clamp(min=1e-6)).clamp(min=0.0)
+    speed = (g.box_vel()[:, :2] * u).sum(-1).clamp(0.0, max_speed)
+    on = (g.surface_distance(robot) < contact) & (dist > done_dist)
+    return torch.where(on, behind * speed, torch.zeros_like(speed))
+
+
+def _segment_distance(p1, q1, p2, q2):
+    """Closest distance between 2D segments p1-q1 and p2-q2 (batched, (n, 2) each)."""
+    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
+    a, e = (d1 * d1).sum(-1), (d2 * d2).sum(-1)
+    f, c, b = (d2 * r).sum(-1), (d1 * r).sum(-1), (d1 * d2).sum(-1)
+    den = (a * e - b * b).clamp(min=1e-9)
+    s = ((b * f - c * e) / den).clamp(0.0, 1.0)
+    t = ((b * s + f) / e.clamp(min=1e-9)).clamp(0.0, 1.0)
+    s = ((b * t - c) / a.clamp(min=1e-9)).clamp(0.0, 1.0)
+    return torch.linalg.norm(p1 + d1 * s.unsqueeze(-1) - (p2 + d2 * t.unsqueeze(-1)), dim=-1)
+
+
+def robots_body_gap(env) -> torch.Tensor:
+    """Clear space between the two robots' bodies (m), each body a capsule over its footprint
+    (FOOTPRINT_HALF: half-length along its heading, half-width as the radius). About 0 when they
+    stand shoulder to shoulder; negative when overlapping."""
+    segs, rad = [], []
+    for a in AGENTS:
+        r = env.scene[a]
+        c = r.data.root_link_pos_w[:, :2]
+        yaw = yaw_of(r.data.root_link_quat_w)
+        hl, hw = FOOTPRINT_HALF[a]
+        ax = torch.stack([torch.cos(yaw), torch.sin(yaw)], -1) * (hl - hw)
+        segs.append((c - ax, c + ax))
+        rad.append(hw)
+    return _segment_distance(*segs[0], *segs[1]) - sum(rad)
+
+
+def robots_gap_exp(env, threshold: float = 0.15, rate: float = 20.0, cap: float = 50.0) -> torch.Tensor:
+    """r7 (team): 0 while the robots' bodies are at least `threshold` apart; below it the penalty
+    grows exponentially, exp(rate * (threshold - gap)) - 1, capped: about 0.8 at a 0.12 m gap,
+    1.7 at 0.10 m, 6.4 at 0.05 m, 19 touching (per second, before the weight). Same rule as
+    robots_close_exp, but on the gap between the bodies: the centre distance is ~0.6 m with the
+    robots shoulder to shoulder, where the r4 penalty was already ~0."""
+    pen = torch.exp(rate * torch.clamp(threshold - robots_body_gap(env), min=0.0)) - 1.0
     return pen.clamp(max=cap)
 
 

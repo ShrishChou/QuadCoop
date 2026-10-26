@@ -4,6 +4,11 @@
     python scripts/eval_coop2.py --name solo-anymal --solo anymal            # ANYmal's Stage 2b policy alone (Spot parked far away)
     python scripts/eval_coop2.py --name solo-spot   --solo spot
     python scripts/eval_coop2.py --name mappo-s0 --checkpoint logs/marl2/mappo_s0/model_6000.pt
+    python scripts/eval_coop2.py --name pair-frozen-anymal --frozen-pair --pair anymal   # two ANYmal C
+
+The pair (which two robots, quadcoop/coop2/pairs.py) comes from the checkpoint; for the frozen
+pair and solo runs it is --pair (default mixed). --solo takes a slot name of that pair (anymal /
+spot for mixed, anymal1 / anymal2 for two ANYmal, ...).
 
 Tasks (same for every policy): every object (7 trained + 5 held out, nominal sizes) x mass
 (--masses, default 20,40,60,80 kg: one env build each) x scenario x --reps placements. The object
@@ -54,29 +59,36 @@ SCENARIOS = (  # name, distance (m), direction (deg, + = left, 0 = straight ahea
 def models_for(a) -> tuple[dict, str]:
     """Resolved models (walkers + Stage 2 policies) and a description of the policy."""
     import torch
-    import yaml
 
-    from methods import EVALS, load, resolve
-    from train_coop2 import ROBOT_OF, resolve_models
+    from methods import load, resolve
+    from train_coop2 import _pairs, resolve_models, robot_of
 
+    role_of = _pairs().ROLE
     if a.checkpoint:
         ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
-        sel = ck.get("cfg", {}).get("inputs") or {}
+        cfg = ck.get("cfg", {})
+        sel = cfg.get("inputs") or {}
         variant = ck.get("variant", "b")
+        pair = cfg.get("pair", "mixed")
+        what = f"checkpoint {a.checkpoint} (iteration {ck['iter']}, {ck['algo']}, pair {pair})"
         if not sel:
-            return resolve_models(variant), f"checkpoint {a.checkpoint} (iteration {ck['iter']}, {ck['algo']})"
+            return resolve_models(variant, pair), what
         reg = load()
-        out = {"selection": sel, "walker_ckpt": {}, "walker_env": {}, "policy": {}}
-        for ag, robot in ROBOT_OF.items():
-            w = resolve(sel[f"walker_{ag}"], reg)
+        out = {"selection": sel, "walker_ckpt": {}, "walker_env": {}, "policy": {}, "pair": pair}
+        for ag, robot in robot_of(pair).items():
+            role = role_of[robot]
+            w = resolve(sel[f"walker_{role}"], reg)
             out["walker_ckpt"][robot] = w["checkpoint_abs"]
             out["walker_env"][robot] = dict(w["env_all"])
-            out["policy"][ag] = resolve(sel[f"push2{variant}_{ag}"], reg)["checkpoint_abs"]
-        return out, f"checkpoint {a.checkpoint} (iteration {ck['iter']}, {ck['algo']})"
-    _ = yaml, EVALS
-    m = resolve_models(a.variant)
-    return m, (f"{a.solo} alone ({m['selection'][f'push2{a.variant}_{a.solo}']})" if a.solo else
-               "frozen pair: " + " + ".join(m["selection"][f"push2{a.variant}_{x}"] for x in ROBOT_OF))
+            out["policy"][ag] = resolve(sel[f"push2{variant}_{role}"], reg)["checkpoint_abs"]
+        return out, what
+    m = resolve_models(a.variant, a.pair)
+    slots = robot_of(a.pair)
+    if a.solo and a.solo not in slots:
+        raise SystemExit(f"--solo {a.solo}: the {a.pair} pair's robots are {list(slots)}")
+    pol = lambda x: m["selection"][f"push2{a.variant}_{role_of[slots[x]]}"]  # noqa: E731
+    return m, (f"{a.solo} alone ({pol(a.solo)})" if a.solo else
+               f"frozen pair ({a.pair}): " + " + ".join(pol(x) for x in slots))
 
 
 def main() -> int:
@@ -85,7 +97,9 @@ def main() -> int:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--checkpoint", help="a train_coop2.py model_<iter>.pt")
     src.add_argument("--frozen-pair", action="store_true", help="the two Stage 2 policies, untrained together")
-    src.add_argument("--solo", choices=("anymal", "spot"), help="one robot's Stage 2 policy, the other parked")
+    src.add_argument("--solo", help="one robot's Stage 2 policy, the other parked (a slot name: anymal / spot, ...)")
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot"), default="mixed",
+                    help="frozen pair / solo: which two robots (a checkpoint carries its own)")
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
     ap.add_argument("--partner-map", action="store_true",
                     help="frozen pair / solo: build the env with the partner map (no effect on those policies)")
@@ -251,8 +265,8 @@ def main() -> int:
                 t_succ = torch.where(succ, torch.full_like(t_succ, t), t_succ)
                 if a.solo is None:
                     touch_steps += (cm.robots_touching(base) > 0).float() * live.float()
-                    rd = torch.linalg.norm(base.scene["anymal"].data.root_link_pos_w[:, :2]
-                                           - base.scene["spot"].data.root_link_pos_w[:, :2], dim=-1)
+                    rd = torch.linalg.norm(base.scene[AGENTS[0]].data.root_link_pos_w[:, :2]
+                                           - base.scene[AGENTS[1]].data.root_link_pos_w[:, :2], dim=-1)
                     min_rd = torch.where(live, torch.minimum(min_rd, rd), min_rd)
                 live_steps += live.float()
                 for j in f_any.nonzero().flatten().tolist():
@@ -280,7 +294,7 @@ def main() -> int:
                    "turn": round(math.degrees(float(turn[j])), 1), "rep": r,
                    "success": int(how[j] == "success"), "precise": int(bool(precise[j])), "outcome": how[j],
                    "t_success": round(float(t_succ[j]), 2) if how[j] == "success" else "",
-                   "fell_anymal": int(bool(fell["anymal"][j])), "fell_spot": int(bool(fell["spot"][j])),
+                   **{f"fell_{ag}": int(bool(fell[ag][j])) for ag in AGENTS},
                    "final_pos_err": round(float(last_d[j]), 3), "final_yaw_err": round(math.degrees(float(last_e[j])), 1),
                    "min_pos_err": round(float(min_d[j]), 3),
                    "touch_frac": round(float(touch_steps[j] / live_steps[j].clamp(min=1)), 3) if a.solo is None else "",
@@ -308,8 +322,8 @@ def main() -> int:
                 print(f"videos skipped: {ex}")
         rows += mine
         sr = sum(r["success"] for r in mine) / len(mine)
-        print(f"[{mass:g} kg] success {sr:.2f}  falls anymal {sum(r['fell_anymal'] for r in mine) / len(mine):.2f} "
-              f"spot {sum(r['fell_spot'] for r in mine) / len(mine):.2f}  ({time.time() - t_start:.0f} s)", flush=True)
+        falls_txt = "  ".join(f"{ag} {sum(r[f'fell_{ag}'] for r in mine) / len(mine):.2f}" for ag in AGENTS)
+        print(f"[{mass:g} kg] success {sr:.2f}  falls {falls_txt}  ({time.time() - t_start:.0f} s)", flush=True)
         base.close()
         del base
 
@@ -325,7 +339,7 @@ def main() -> int:
             return None
         ok = [r for r in sel if r["success"]]
         return {"n": k, "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
-                "fell_anymal": sum(r["fell_anymal"] for r in sel) / k, "fell_spot": sum(r["fell_spot"] for r in sel) / k,
+                **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in AGENTS},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
                 "touch_frac": (sum(r["touch_frac"] for r in sel) / k) if a.solo is None else None}
 
@@ -335,7 +349,8 @@ def main() -> int:
         by[("obj_mass", r["object"], r["mass"])].append(r)
         by[("group_mass", "seen" if r["seen_shape"] else "unseen", r["mass"])].append(r)
         by[("scen_mass", r["scenario"], r["mass"])].append(r)
-    summary = {"policy": what, "name": a.name, "masses": masses, "reps": a.reps, "horizon_s": a.horizon,
+    summary = {"policy": what, "name": a.name, "agents": list(AGENTS), "masses": masses, "reps": a.reps,
+               "horizon_s": a.horizon,
                "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
@@ -347,11 +362,11 @@ def main() -> int:
     md = [f"# Pair evaluation: {a.name}", "", f"policy: {what}", "",
           f"success = 10 cm / 6 deg held 1 s within {a.horizon:g} s; precise = 10 cm / 3 deg with the object at rest "
           f"(the training rule); {a.reps} placements per object x scenario x mass; nominal object sizes", "",
-          "## by mass", "", "| mass | success | precise | ANYmal fell | Spot fell | time to success (s) | robots touching |",
+          "## by mass", "", f"| mass | success | precise | {AGENTS[0]} fell | {AGENTS[1]} fell | time to success (s) | robots touching |",
           "|---|---|---|---|---|---|---|"]
     for m in masses:
         s = summary["by_mass"][f"{m:g}"]
-        md.append(f"| {m:g} kg | {f2(s['success'])} | {f2(s['precise'])} | {f2(s['fell_anymal'])} | {f2(s['fell_spot'])} | "
+        md.append(f"| {m:g} kg | {f2(s['success'])} | {f2(s['precise'])} | {f2(s[f'fell_{AGENTS[0]}'])} | {f2(s[f'fell_{AGENTS[1]}'])} | "
                   f"{'' if s['t_success'] is None else f'{s['t_success']:.1f}'} | {f2(s['touch_frac'])} |")
     md += ["", "## success by object and mass", "", "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |",
            "|---|" + "---|" * len(masses)]

@@ -5,6 +5,7 @@
 #   NAME=pair-frozen MODE=frozen sbatch slurm/eval_coop2.sbatch
 #   NAME=solo-anymal MODE=solo-anymal sbatch slurm/eval_coop2.sbatch
 #   NAME=mappo-s0-it3000 CK=logs/marl2/mappo_s0/model_3000.pt sbatch slurm/eval_coop2.sbatch
+#   NAME=pair-frozen-anymal MODE=frozen ARGS="--pair anymal" sbatch slurm/eval_coop2.sbatch   # two ANYmal C
 # Optional: MASSES (20,40,60,80), REPS (3), ARGS (more eval_coop2.py args).
 #SBATCH -J qc-evalc2
 #SBATCH -p mit_normal_gpu
@@ -26,6 +27,7 @@ else
     frozen) SRC=(--frozen-pair) ;;
     solo-anymal) SRC=(--solo anymal) ;;
     solo-spot) SRC=(--solo spot) ;;
+    solo-*) SRC=(--solo "${MODE#solo-}") ;;
     *) echo "MODE must be frozen, solo-anymal or solo-spot"; exit 1 ;;
   esac
 fi
