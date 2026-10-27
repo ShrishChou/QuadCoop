@@ -1,0 +1,717 @@
+{
+ "policy": "checkpoint logs/marl2/mappo_aa_r7_s0/model_2000.pt (iteration 2000, mappo, pair anymal)",
+ "name": "mappo-aa_r7-s0-it2000",
+ "agents": [
+  "anymal1",
+  "anymal2"
+ ],
+ "masses": [
+  20.0,
+  40.0,
+  60.0,
+  80.0
+ ],
+ "reps": 3,
+ "horizon_s": 80.0,
+ "overall": {
+  "n": 576,
+  "success": 0.015625,
+  "precise": 0.012152777777777778,
+  "fell_anymal1": 0.041666666666666664,
+  "fell_anymal2": 0.03819444444444445,
+  "t_success": 33.666666666666664,
+  "touch_frac": 0.009470486111111112
+ },
+ "by_mass": {
+  "20": {
+   "n": 144,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.006944444444444444,
+   "t_success": null,
+   "touch_frac": 0.010270833333333333
+  },
+  "40": {
+   "n": 144,
+   "success": 0.027777777777777776,
+   "precise": 0.013888888888888888,
+   "fell_anymal1": 0.006944444444444444,
+   "fell_anymal2": 0.006944444444444444,
+   "t_success": 34.42,
+   "touch_frac": 0.014305555555555556
+  },
+  "60": {
+   "n": 144,
+   "success": 0.034722222222222224,
+   "precise": 0.034722222222222224,
+   "fell_anymal1": 0.041666666666666664,
+   "fell_anymal2": 0.0763888888888889,
+   "t_success": 33.064,
+   "touch_frac": 0.007256944444444444
+  },
+  "80": {
+   "n": 144,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.11805555555555555,
+   "fell_anymal2": 0.0625,
+   "t_success": null,
+   "touch_frac": 0.006048611111111111
+  }
+ },
+ "by_group_mass": {
+  "seen / 20 kg": {
+   "n": 84,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.011904761904761904,
+   "t_success": null,
+   "touch_frac": 0.01080952380952381
+  },
+  "seen / 40 kg": {
+   "n": 84,
+   "success": 0.011904761904761904,
+   "precise": 0.0,
+   "fell_anymal1": 0.011904761904761904,
+   "fell_anymal2": 0.011904761904761904,
+   "t_success": 18.12,
+   "touch_frac": 0.014357142857142857
+  },
+  "seen / 60 kg": {
+   "n": 84,
+   "success": 0.047619047619047616,
+   "precise": 0.047619047619047616,
+   "fell_anymal1": 0.047619047619047616,
+   "fell_anymal2": 0.05952380952380952,
+   "t_success": 28.66,
+   "touch_frac": 0.007559523809523809
+  },
+  "seen / 80 kg": {
+   "n": 84,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.05952380952380952,
+   "fell_anymal2": 0.047619047619047616,
+   "t_success": null,
+   "touch_frac": 0.004833333333333333
+  },
+  "unseen / 20 kg": {
+   "n": 60,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.009516666666666666
+  },
+  "unseen / 40 kg": {
+   "n": 60,
+   "success": 0.05,
+   "precise": 0.03333333333333333,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 39.85333333333333,
+   "touch_frac": 0.014233333333333332
+  },
+  "unseen / 60 kg": {
+   "n": 60,
+   "success": 0.016666666666666666,
+   "precise": 0.016666666666666666,
+   "fell_anymal1": 0.03333333333333333,
+   "fell_anymal2": 0.1,
+   "t_success": 50.68,
+   "touch_frac": 0.006833333333333333
+  },
+  "unseen / 80 kg": {
+   "n": 60,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.2,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.007749999999999999
+  }
+ },
+ "by_object_mass": {
+  "cube / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.022083333333333333
+  },
+  "cube / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.044000000000000004
+  },
+  "cube / 60 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.0,
+   "t_success": 41.6,
+   "touch_frac": 0.013416666666666667
+  },
+  "cube / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.005166666666666667
+  },
+  "long / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0016666666666666668
+  },
+  "long / 40 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 18.12,
+   "touch_frac": 0.0014166666666666668
+  },
+  "long / 60 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 49.82,
+   "touch_frac": 0.011499999999999998
+  },
+  "long / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0008333333333333332
+  },
+  "sphere / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.02716666666666667
+  },
+  "sphere / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.03675
+  },
+  "sphere / 60 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 11.61,
+   "touch_frac": 0.026833333333333334
+  },
+  "sphere / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.02008333333333333
+  },
+  "cylinder / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.007
+  },
+  "cylinder / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0033333333333333335
+  },
+  "cylinder / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.00025
+  },
+  "cylinder / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.0026666666666666666
+  },
+  "arch / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.013
+  },
+  "arch / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0028333333333333335
+  },
+  "arch / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0
+  },
+  "arch / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0035833333333333338
+  },
+  "dumbbell / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0003333333333333333
+  },
+  "dumbbell / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.00325
+  },
+  "dumbbell / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.00025
+  },
+  "dumbbell / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.00025
+  },
+  "t_shape / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.004416666666666667
+  },
+  "t_shape / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.008916666666666668
+  },
+  "t_shape / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.0006666666666666666
+  },
+  "t_shape / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.25,
+   "t_success": null,
+   "touch_frac": 0.00125
+  },
+  "beam / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0
+  },
+  "beam / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.00016666666666666666
+  },
+  "beam / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0030833333333333333
+  },
+  "beam / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0005833333333333334
+  },
+  "l_shape / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0005833333333333334
+  },
+  "l_shape / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0028333333333333335
+  },
+  "l_shape / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.0015000000000000002
+  },
+  "l_shape / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": null,
+   "touch_frac": 0.0062499999999999995
+  },
+  "asym / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0004166666666666667
+  },
+  "asym / 40 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 39.85333333333333,
+   "touch_frac": 0.009583333333333334
+  },
+  "asym / 60 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 50.68,
+   "touch_frac": 0.007083333333333334
+  },
+  "asym / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.4166666666666667,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0
+  },
+  "u_channel / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0006666666666666666
+  },
+  "u_channel / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0007500000000000001
+  },
+  "u_channel / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.25,
+   "t_success": null,
+   "touch_frac": 0.0015833333333333333
+  },
+  "u_channel / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": null,
+   "touch_frac": 0.005333333333333333
+  },
+  "plus / 20 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.04591666666666667
+  },
+  "plus / 40 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.05783333333333334
+  },
+  "plus / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.020916666666666667
+  },
+  "plus / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.4166666666666667,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": null,
+   "touch_frac": 0.026583333333333334
+  }
+ },
+ "by_scenario_mass": {
+  "A_straight / 20 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.009722222222222222
+  },
+  "A_straight / 40 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.006416666666666667
+  },
+  "A_straight / 60 kg": {
+   "n": 36,
+   "success": 0.027777777777777776,
+   "precise": 0.027777777777777776,
+   "fell_anymal1": 0.05555555555555555,
+   "fell_anymal2": 0.027777777777777776,
+   "t_success": 7.32,
+   "touch_frac": 0.005694444444444444
+  },
+  "A_straight / 80 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.1111111111111111,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.003
+  },
+  "B_left / 20 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.027777777777777776,
+   "t_success": null,
+   "touch_frac": 0.0038611111111111116
+  },
+  "B_left / 40 kg": {
+   "n": 36,
+   "success": 0.1111111111111111,
+   "precise": 0.05555555555555555,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.027777777777777776,
+   "t_success": 34.42,
+   "touch_frac": 0.005722222222222222
+  },
+  "B_left / 60 kg": {
+   "n": 36,
+   "success": 0.1111111111111111,
+   "precise": 0.1111111111111111,
+   "fell_anymal1": 0.027777777777777776,
+   "fell_anymal2": 0.2222222222222222,
+   "t_success": 39.5,
+   "touch_frac": 0.007833333333333335
+  },
+  "B_left / 80 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.1388888888888889,
+   "fell_anymal2": 0.25,
+   "t_success": null,
+   "touch_frac": 0.004333333333333333
+  },
+  "C_backright / 20 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.018166666666666668
+  },
+  "C_backright / 40 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.026750000000000003
+  },
+  "C_backright / 60 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0026666666666666666
+  },
+  "C_backright / 80 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.012222222222222223
+  },
+  "D_far_turn / 20 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.009333333333333334
+  },
+  "D_far_turn / 40 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.027777777777777776,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.018333333333333333
+  },
+  "D_far_turn / 60 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.05555555555555555,
+   "t_success": null,
+   "touch_frac": 0.012833333333333332
+  },
+  "D_far_turn / 80 kg": {
+   "n": 36,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.2222222222222222,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.0046388888888888894
+  }
+ }
+}

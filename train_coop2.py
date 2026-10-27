@@ -9,6 +9,8 @@
     python train_coop2.py --algo mappo --scratch --partner-map --reward r5 --mean-clip 1.1 \
         --bound-coef 0.01 --entropy-coef 0.003 --run-name mappo_scratch_s0   # from the walkers only
     python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 ...   # two ANYmal C
+    python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 --kl-ref 0.05 \
+        --critic-warmup 500 --max-actor-lr 1e-4 --run-name mappo_aa_kl_s0   # anchored to Stage 2b
 
 The models come from evals/models.yaml (the roles walker_anymal, walker_spot, push2b_anymal,
 push2b_spot; push2ctrl_* for --variant ctrl), resolved through evals/registry.yaml: each robot's
@@ -112,6 +114,9 @@ def main() -> int:
     ap.add_argument("--critic-warmup", type=int, default=None, help="default 100 (warm start), 0 (--scratch)")
     ap.add_argument("--scratch", action="store_true",
                     help="no Stage 2 warm start: random actors and critics on the frozen walkers")
+    ap.add_argument("--kl-ref", type=float, default=0.0,
+                    help="beta: penalty beta * KL(policy || its frozen Stage 2b policy) in the actor loss "
+                         "(KL-regularized fine-tuning; 0 = off; not with --scratch)")
     ap.add_argument("--actor-lr", type=float, default=None,
                     help="starting actor learning rate (adapted to the KL target); default 1e-4, 3e-4 with --scratch")
     ap.add_argument("--max-actor-lr", type=float, default=None,
@@ -140,6 +145,8 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="build, warm start, run 2 iterations, exit")
     a = ap.parse_args()
 
+    if a.kl_ref > 0 and a.scratch:
+        raise SystemExit("--kl-ref anchors to the Stage 2 policies: it does not apply with --scratch")
     if a.critic_warmup is None:
         a.critic_warmup = 0 if a.scratch else 100
     if a.actor_lr is None:
@@ -156,7 +163,7 @@ def main() -> int:
     log_dir = ROOT / "logs" / "marl2" / (run + ("_check" if a.check else ""))
     print(f"run {run}  algo {a.algo}  pair {a.pair}  variant {a.variant}  seed {a.seed}  device {device}  "
           f"partner map {a.partner_map}  rewards {a.reward}  entropy {a.entropy_coef:g}  mean clip {a.mean_clip:g}  "
-          f"bound {a.bound_coef:g}  {'FROM SCRATCH' if a.scratch else 'warm start from Stage 2b'}")
+          f"bound {a.bound_coef:g}  kl_ref {a.kl_ref:g}  {'FROM SCRATCH' if a.scratch else 'warm start from Stage 2b'}")
     for k, v in models["selection"].items():
         print(f"  {k:15s} {v}")
 
@@ -178,7 +185,7 @@ def main() -> int:
                   critic_warmup=1 if a.check else a.critic_warmup, init={} if a.scratch else dict(models["policy"]),
                   scratch=a.scratch, actor_learning_rate=a.actor_lr, max_actor_learning_rate=a.max_actor_lr,
                   entropy_coef=a.entropy_coef, max_std_factor=a.max_std_factor,
-                  mean_clip=a.mean_clip, bound_coef=a.bound_coef,
+                  mean_clip=a.mean_clip, bound_coef=a.bound_coef, kl_ref=a.kl_ref,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])
@@ -194,6 +201,8 @@ def main() -> int:
             trainer.init_scratch()
         else:
             trainer.warm_start(models["policy"])
+    if a.kl_ref > 0:
+        trainer.build_refs(models["policy"])
     (log_dir / "inputs.yaml").write_text(yaml.safe_dump({"run": run, "algo": a.algo, "variant": a.variant,
                                                          "partner_map": a.partner_map, "reward_set": a.reward,
                                                          "scratch": a.scratch,
