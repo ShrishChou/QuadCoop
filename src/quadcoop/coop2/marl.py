@@ -32,6 +32,14 @@ command again. The deterministic output (evaluation) is the raw mean, unchanged:
 still acts exactly like the Stage 2b policies. ``bound_coef`` adds a penalty on the raw mean
 past +-mean_clip so it comes back inside instead of sitting where the clamp hides it.
 
+Anchored to the Stage 2 policies (``kl_ref`` = beta > 0): each actor's loss adds
+beta * KL(pi || pi_2b), the KL divergence from that robot's frozen Stage 2b policy (the warm-start
+source, rebuilt from cfg.init on every start and resume), on the same observations. This is
+KL-regularized RL (the objective behind RLHF): maximize reward while staying close to a reference
+policy, so fine-tuning cannot drift away from the single-robot skill unless the reward clearly
+pays for it. Both means are clamped to +-1.1 first: outputs past the walker's clip do the same
+thing whatever their value, so only differences in what the robots actually do count.
+
 From scratch (``scratch``): no Stage 2 policies at all. Actors and critics start from random
 weights on top of the same frozen walkers, the actors' observation normalizers learn from the
 data (they are frozen only after a warm start), and the action noise is capped at
@@ -89,6 +97,8 @@ class MarlCfg:
     mean_clip: float = 0.0  # > 0: sample around the mean clamped to +-this (straight-through); r6: 1.1
     bound_coef: float = 0.0  # penalty on the raw mean past +-mean_clip (or +-1.1 if mean_clip is 0); r6: 0.01
     scratch: bool = False  # random initial actors and critics (no Stage 2 warm start); see the module docstring
+    kl_ref: float = 0.0  # beta of the KL penalty to the frozen Stage 2b policies (0 = off); see the module docstring
+    kl_ref_clip: float = 1.1  # means clamped to +-this before the KL (the walker clips at 1)
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
     max_actor_learning_rate: float = 3.0e-4
     reward_clip: float = 100.0  # per robot per step (a success is +50 at most, a fall -35)
@@ -241,6 +251,7 @@ class MarlTrainer:
                            for k, c in self.critics.items()}
         self.lr = {a: cfg.actor_learning_rate for a in AGENTS}
         self.std_cap = {a: None for a in AGENTS}  # set at warm start (or loaded)
+        self.refs = {}  # frozen Stage 2b actors for the KL anchor (build_refs)
         self.it = 0
         self.warm_from = {}
         # reward split: team terms + each robot's own (names ending in _<robot>)
@@ -305,6 +316,36 @@ class MarlTrainer:
                                        cnn if v == "b" else {}, None, f"{a} critic <- {path}")
                 print(f"[marl2] {a}: critic warm-started from {path} ({', '.join(rep)})")
             self.warm_from[a] = str(path)
+
+    def build_refs(self, paths: dict[str, str]) -> None:
+        """Frozen copies of the Stage 2b actors (the warm-start source) for the KL anchor: built
+        exactly as the warm start builds the actors (partner inputs at zero weight), never trained."""
+        v = self.cfg.variant
+        for a, path in paths.items():
+            ck = torch.load(path, map_location=self.device, weights_only=False)
+            ref = make_model(self.obs, actor_groups(a, v), 3, self.cfg.hidden_dims, v, True).to(self.device)
+            cnn = {"profile_top": f"top_{a}", "profile_front": "front"} if v == "b" else {}
+            warm_start_model(ref, ck["actor_state_dict"], [(slice(0, N_SINGLE), slice(0, N_SINGLE))],
+                             N_SINGLE + N_PARTNER, cnn, self.cfg.min_std, f"{a} reference <- {path}")
+            ref.eval()
+            for p in ref.parameters():
+                p.requires_grad_(False)
+            self.refs[a] = ref
+        print(f"[marl2] KL anchor: beta {self.cfg.kl_ref:g} to the frozen Stage 2b actors "
+              f"({', '.join(f'{a} <- {p}' for a, p in paths.items())})")
+
+    def kl_to_ref(self, a: str, o_mb: TensorDict) -> torch.Tensor:
+        """KL(pi || pi_ref) per sample for robot a, after the actor's forward pass on o_mb (uses its
+        raw mean and noise); both means clamped to +-kl_ref_clip, summed over (vx, vy, wz)."""
+        actor, c = self.actors[a], self.cfg.kl_ref_clip
+        mu = actor.distribution.raw_mean.clamp(-c, c)
+        sd = actor.distribution.std_param.clamp(min=1e-6).expand_as(mu)
+        with torch.no_grad():
+            ref = self.refs[a]
+            mu_r = ref(o_mb).clamp(-c, c)
+            sd_r = ref.distribution.std_param.clamp(min=1e-6).expand_as(mu_r)
+        kl = torch.log(sd_r / sd) + (sd.square() + (mu - mu_r).square()) / (2.0 * sd_r.square()) - 0.5
+        return kl.sum(-1)
 
     def init_scratch(self) -> None:
         """Random initial actors and critics (as built). Only the noise cap is set here."""
@@ -531,6 +572,10 @@ class MarlTrainer:
                             loss = surr - cfg.entropy_coef * ent.mean()
                             if cfg.bound_coef > 0:
                                 loss = loss + cfg.bound_coef * bound_loss
+                            kl_ref = None
+                            if cfg.kl_ref > 0 and a in self.refs:
+                                kl_ref = self.kl_to_ref(a, o_mb).mean()
+                                loss = loss + cfg.kl_ref * kl_ref
                             if not torch.isfinite(loss):
                                 skipped += 1
                                 continue
@@ -554,6 +599,8 @@ class MarlTrainer:
                             stats[f"Loss/entropy_{a}"] += ent.mean().item()
                             stats[f"Loss/kl_{a}"] += float(kl)
                             stats[f"Loss/bound_{a}"] += bound_loss.item()
+                            if kl_ref is not None:
+                                stats[f"Loss/kl_ref_{a}"] += kl_ref.item()
                             stats[f"Policy/out_of_range_{a}"] += float((excess > 0).float().mean())
                     if cfg.algo == "ippo":
                         for k, a in enumerate(AGENTS):

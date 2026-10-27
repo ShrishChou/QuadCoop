@@ -5,6 +5,8 @@
     python scripts/eval_coop2.py --name solo-spot   --solo spot
     python scripts/eval_coop2.py --name mappo-s0 --checkpoint logs/marl2/mappo_s0/model_6000.pt
     python scripts/eval_coop2.py --name pair-frozen-anymal --frozen-pair --pair anymal   # two ANYmal C
+    python scripts/eval_coop2.py --name mappo-aa-it3000-solo-anymal1 \
+        --checkpoint logs/marl2/mappo_aa_r7_s0/model_3000.pt --solo anymal1   # a trained actor alone
 
 The pair (which two robots, quadcoop/coop2/pairs.py) comes from the checkpoint; for the frozen
 pair and solo runs it is --pair (default mixed). --solo takes a slot name of that pair (anymal /
@@ -71,6 +73,10 @@ def models_for(a) -> tuple[dict, str]:
         variant = ck.get("variant", "b")
         pair = cfg.get("pair", "mixed")
         what = f"checkpoint {a.checkpoint} (iteration {ck['iter']}, {ck['algo']}, pair {pair})"
+        if a.solo:
+            if a.solo not in robot_of(pair):
+                raise SystemExit(f"--solo {a.solo}: this checkpoint's robots are {list(robot_of(pair))}")
+            what = f"{a.solo} alone, trained actor from {what}"
         if not sel:
             return resolve_models(variant, pair), what
         reg = load()
@@ -94,10 +100,12 @@ def models_for(a) -> tuple[dict, str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True, help="output id: logs/evals/<name>/pair, evals/<name>/eval/pair")
-    src = ap.add_mutually_exclusive_group(required=True)
+    src = ap.add_mutually_exclusive_group()
     src.add_argument("--checkpoint", help="a train_coop2.py model_<iter>.pt")
     src.add_argument("--frozen-pair", action="store_true", help="the two Stage 2 policies, untrained together")
-    src.add_argument("--solo", help="one robot's Stage 2 policy, the other parked (a slot name: anymal / spot, ...)")
+    ap.add_argument("--solo", help="only this robot acts, the other is parked far away (a slot name: anymal / "
+                                   "spot, anymal1 / anymal2, ...): its Stage 2 policy, or with --checkpoint "
+                                   "its trained actor")
     ap.add_argument("--pair", choices=("mixed", "anymal", "spot"), default="mixed",
                     help="frozen pair / solo: which two robots (a checkpoint carries its own)")
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
@@ -113,6 +121,10 @@ def main() -> int:
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
+    if not (a.checkpoint or a.frozen_pair or a.solo):
+        ap.error("give --checkpoint, --frozen-pair or --solo")
+    if a.frozen_pair and a.solo:
+        ap.error("--frozen-pair and --solo exclude each other")
 
     from train_coop2 import set_env
 

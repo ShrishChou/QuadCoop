@@ -1,0 +1,717 @@
+{
+ "policy": "checkpoint logs/marl2/ippo_aa_r7_s0/model_100.pt (iteration 100, ippo, pair anymal)",
+ "name": "ippo-aa_r7-s0-it100",
+ "agents": [
+  "anymal1",
+  "anymal2"
+ ],
+ "masses": [
+  20.0,
+  40.0,
+  60.0,
+  80.0
+ ],
+ "reps": 3,
+ "horizon_s": 80.0,
+ "overall": {
+  "n": 576,
+  "success": 0.4236111111111111,
+  "precise": 0.3940972222222222,
+  "fell_anymal1": 0.2065972222222222,
+  "fell_anymal2": 0.2170138888888889,
+  "t_success": 24.951065573770492,
+  "touch_frac": 0.49689062500000003
+ },
+ "by_mass": {
+  "20": {
+   "n": 144,
+   "success": 0.7013888888888888,
+   "precise": 0.6875,
+   "fell_anymal1": 0.09027777777777778,
+   "fell_anymal2": 0.125,
+   "t_success": 19.80178217821782,
+   "touch_frac": 0.4496736111111111
+  },
+  "40": {
+   "n": 144,
+   "success": 0.5,
+   "precise": 0.4375,
+   "fell_anymal1": 0.1736111111111111,
+   "fell_anymal2": 0.2708333333333333,
+   "t_success": 24.75472222222222,
+   "touch_frac": 0.49888194444444445
+  },
+  "60": {
+   "n": 144,
+   "success": 0.2916666666666667,
+   "precise": 0.2777777777777778,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.2777777777777778,
+   "t_success": 31.230476190476192,
+   "touch_frac": 0.5211111111111112
+  },
+  "80": {
+   "n": 144,
+   "success": 0.2013888888888889,
+   "precise": 0.1736111111111111,
+   "fell_anymal1": 0.3125,
+   "fell_anymal2": 0.19444444444444445,
+   "t_success": 34.277931034482755,
+   "touch_frac": 0.5178958333333333
+  }
+ },
+ "by_group_mass": {
+  "seen / 20 kg": {
+   "n": 84,
+   "success": 0.7023809523809523,
+   "precise": 0.7023809523809523,
+   "fell_anymal1": 0.023809523809523808,
+   "fell_anymal2": 0.15476190476190477,
+   "t_success": 19.743050847457624,
+   "touch_frac": 0.4735952380952381
+  },
+  "seen / 40 kg": {
+   "n": 84,
+   "success": 0.5357142857142857,
+   "precise": 0.47619047619047616,
+   "fell_anymal1": 0.11904761904761904,
+   "fell_anymal2": 0.27380952380952384,
+   "t_success": 24.408888888888892,
+   "touch_frac": 0.5156071428571428
+  },
+  "seen / 60 kg": {
+   "n": 84,
+   "success": 0.34523809523809523,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.15476190476190477,
+   "fell_anymal2": 0.32142857142857145,
+   "t_success": 28.941379310344825,
+   "touch_frac": 0.529595238095238
+  },
+  "seen / 80 kg": {
+   "n": 84,
+   "success": 0.27380952380952384,
+   "precise": 0.25,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.19047619047619047,
+   "t_success": 31.32869565217391,
+   "touch_frac": 0.5438809523809524
+  },
+  "unseen / 20 kg": {
+   "n": 60,
+   "success": 0.7,
+   "precise": 0.6666666666666666,
+   "fell_anymal1": 0.18333333333333332,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 19.884285714285713,
+   "touch_frac": 0.41618333333333335
+  },
+  "unseen / 40 kg": {
+   "n": 60,
+   "success": 0.45,
+   "precise": 0.38333333333333336,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.26666666666666666,
+   "t_success": 25.331111111111113,
+   "touch_frac": 0.47546666666666665
+  },
+  "unseen / 60 kg": {
+   "n": 60,
+   "success": 0.21666666666666667,
+   "precise": 0.2,
+   "fell_anymal1": 0.38333333333333336,
+   "fell_anymal2": 0.21666666666666667,
+   "t_success": 36.33692307692308,
+   "touch_frac": 0.5092333333333333
+  },
+  "unseen / 80 kg": {
+   "n": 60,
+   "success": 0.1,
+   "precise": 0.06666666666666667,
+   "fell_anymal1": 0.4,
+   "fell_anymal2": 0.2,
+   "t_success": 45.583333333333336,
+   "touch_frac": 0.4815166666666667
+  }
+ },
+ "by_object_mass": {
+  "cube / 20 kg": {
+   "n": 12,
+   "success": 0.8333333333333334,
+   "precise": 0.75,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 16.919999999999998,
+   "touch_frac": 0.6438333333333334
+  },
+  "cube / 40 kg": {
+   "n": 12,
+   "success": 0.5,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.4166666666666667,
+   "t_success": 27.996666666666666,
+   "touch_frac": 0.6450833333333333
+  },
+  "cube / 60 kg": {
+   "n": 12,
+   "success": 0.4166666666666667,
+   "precise": 0.4166666666666667,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 32.804,
+   "touch_frac": 0.636
+  },
+  "cube / 80 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 50.5,
+   "touch_frac": 0.6618333333333334
+  },
+  "long / 20 kg": {
+   "n": 12,
+   "success": 0.9166666666666666,
+   "precise": 0.9166666666666666,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 20.072727272727274,
+   "touch_frac": 0.5128333333333334
+  },
+  "long / 40 kg": {
+   "n": 12,
+   "success": 0.5833333333333334,
+   "precise": 0.5833333333333334,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 23.091428571428573,
+   "touch_frac": 0.5331666666666667
+  },
+  "long / 60 kg": {
+   "n": 12,
+   "success": 0.4166666666666667,
+   "precise": 0.4166666666666667,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.25,
+   "t_success": 40.815999999999995,
+   "touch_frac": 0.5745
+  },
+  "long / 80 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.25,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 50.25333333333333,
+   "touch_frac": 0.6204166666666667
+  },
+  "sphere / 20 kg": {
+   "n": 12,
+   "success": 0.8333333333333334,
+   "precise": 0.9166666666666666,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 14.162,
+   "touch_frac": 0.5608333333333334
+  },
+  "sphere / 40 kg": {
+   "n": 12,
+   "success": 0.8333333333333334,
+   "precise": 0.8333333333333334,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 11.666,
+   "touch_frac": 0.5424166666666667
+  },
+  "sphere / 60 kg": {
+   "n": 12,
+   "success": 0.75,
+   "precise": 0.75,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.25,
+   "t_success": 12.222222222222221,
+   "touch_frac": 0.49266666666666664
+  },
+  "sphere / 80 kg": {
+   "n": 12,
+   "success": 0.9166666666666666,
+   "precise": 0.9166666666666666,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 14.067272727272728,
+   "touch_frac": 0.5264166666666666
+  },
+  "cylinder / 20 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.5,
+   "t_success": 10.82,
+   "touch_frac": 0.47333333333333333
+  },
+  "cylinder / 40 kg": {
+   "n": 12,
+   "success": 0.3333333333333333,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.3333333333333333,
+   "t_success": 41.4,
+   "touch_frac": 0.4363333333333333
+  },
+  "cylinder / 60 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.5,
+   "t_success": 58.02,
+   "touch_frac": 0.49033333333333334
+  },
+  "cylinder / 80 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.3333333333333333,
+   "t_success": 30.253333333333334,
+   "touch_frac": 0.4344166666666667
+  },
+  "arch / 20 kg": {
+   "n": 12,
+   "success": 0.5,
+   "precise": 0.5,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 37.10333333333333,
+   "touch_frac": 0.41891666666666666
+  },
+  "arch / 40 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.25,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.4166666666666667,
+   "t_success": 40.093333333333334,
+   "touch_frac": 0.5191666666666667
+  },
+  "arch / 60 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.5,
+   "t_success": 32.11,
+   "touch_frac": 0.5461666666666667
+  },
+  "arch / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.5833333333333334,
+   "fell_anymal2": 0.25,
+   "t_success": null,
+   "touch_frac": 0.5375833333333333
+  },
+  "dumbbell / 20 kg": {
+   "n": 12,
+   "success": 0.8333333333333334,
+   "precise": 0.8333333333333334,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.0,
+   "t_success": 20.202,
+   "touch_frac": 0.306
+  },
+  "dumbbell / 40 kg": {
+   "n": 12,
+   "success": 0.5,
+   "precise": 0.4166666666666667,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.25,
+   "t_success": 15.753333333333332,
+   "touch_frac": 0.4215
+  },
+  "dumbbell / 60 kg": {
+   "n": 12,
+   "success": 0.3333333333333333,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.3333333333333333,
+   "t_success": 36.22,
+   "touch_frac": 0.47833333333333333
+  },
+  "dumbbell / 80 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.25,
+   "t_success": 53.66,
+   "touch_frac": 0.5499166666666667
+  },
+  "t_shape / 20 kg": {
+   "n": 12,
+   "success": 0.9166666666666666,
+   "precise": 0.8333333333333334,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 17.978181818181817,
+   "touch_frac": 0.3994166666666667
+  },
+  "t_shape / 40 kg": {
+   "n": 12,
+   "success": 0.75,
+   "precise": 0.75,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 30.191111111111113,
+   "touch_frac": 0.5115833333333334
+  },
+  "t_shape / 60 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.25,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.25,
+   "t_success": 31.36,
+   "touch_frac": 0.4891666666666667
+  },
+  "t_shape / 80 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 57.989999999999995,
+   "touch_frac": 0.47658333333333336
+  },
+  "beam / 20 kg": {
+   "n": 12,
+   "success": 0.6666666666666666,
+   "precise": 0.6666666666666666,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 22.82,
+   "touch_frac": 0.23008333333333333
+  },
+  "beam / 40 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.25,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.75,
+   "t_success": 27.939999999999998,
+   "touch_frac": 0.36233333333333334
+  },
+  "beam / 60 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.5,
+   "t_success": null,
+   "touch_frac": 0.3709166666666666
+  },
+  "beam / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.4166666666666667,
+   "fell_anymal2": 0.5,
+   "t_success": null,
+   "touch_frac": 0.29425
+  },
+  "l_shape / 20 kg": {
+   "n": 12,
+   "success": 0.75,
+   "precise": 0.5,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 15.555555555555555,
+   "touch_frac": 0.4828333333333334
+  },
+  "l_shape / 40 kg": {
+   "n": 12,
+   "success": 0.6666666666666666,
+   "precise": 0.5,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 22.16,
+   "touch_frac": 0.5761666666666667
+  },
+  "l_shape / 60 kg": {
+   "n": 12,
+   "success": 0.4166666666666667,
+   "precise": 0.4166666666666667,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 26.788,
+   "touch_frac": 0.6235833333333333
+  },
+  "l_shape / 80 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 69.03,
+   "touch_frac": 0.68925
+  },
+  "asym / 20 kg": {
+   "n": 12,
+   "success": 0.8333333333333334,
+   "precise": 0.8333333333333334,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 14.168000000000001,
+   "touch_frac": 0.45425
+  },
+  "asym / 40 kg": {
+   "n": 12,
+   "success": 0.75,
+   "precise": 0.75,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 28.064444444444447,
+   "touch_frac": 0.39175
+  },
+  "asym / 60 kg": {
+   "n": 12,
+   "success": 0.16666666666666666,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 63.8,
+   "touch_frac": 0.49866666666666665
+  },
+  "asym / 80 kg": {
+   "n": 12,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.6666666666666666,
+   "fell_anymal2": 0.0,
+   "t_success": null,
+   "touch_frac": 0.4150833333333333
+  },
+  "u_channel / 20 kg": {
+   "n": 12,
+   "success": 0.9166666666666666,
+   "precise": 0.9166666666666666,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.0,
+   "t_success": 27.00181818181818,
+   "touch_frac": 0.4731666666666667
+  },
+  "u_channel / 40 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.5833333333333334,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 24.86,
+   "touch_frac": 0.5503333333333333
+  },
+  "u_channel / 60 kg": {
+   "n": 12,
+   "success": 0.4166666666666667,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.5,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 39.444,
+   "touch_frac": 0.6099166666666667
+  },
+  "u_channel / 80 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.0,
+   "fell_anymal1": 0.4166666666666667,
+   "fell_anymal2": 0.08333333333333333,
+   "t_success": 67.2,
+   "touch_frac": 0.5828333333333333
+  },
+  "plus / 20 kg": {
+   "n": 12,
+   "success": 0.3333333333333333,
+   "precise": 0.4166666666666667,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 18.47,
+   "touch_frac": 0.4405833333333333
+  },
+  "plus / 40 kg": {
+   "n": 12,
+   "success": 0.3333333333333333,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.25,
+   "t_success": 23.919999999999998,
+   "touch_frac": 0.49675
+  },
+  "plus / 60 kg": {
+   "n": 12,
+   "success": 0.08333333333333333,
+   "precise": 0.08333333333333333,
+   "fell_anymal1": 0.5,
+   "fell_anymal2": 0.25,
+   "t_success": 13.62,
+   "touch_frac": 0.44308333333333333
+  },
+  "plus / 80 kg": {
+   "n": 12,
+   "success": 0.25,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.25,
+   "t_success": 22.746666666666666,
+   "touch_frac": 0.42616666666666664
+  }
+ },
+ "by_scenario_mass": {
+  "A_straight / 20 kg": {
+   "n": 36,
+   "success": 0.8333333333333334,
+   "precise": 0.8333333333333334,
+   "fell_anymal1": 0.027777777777777776,
+   "fell_anymal2": 0.1388888888888889,
+   "t_success": 15.65,
+   "touch_frac": 0.48491666666666666
+  },
+  "A_straight / 40 kg": {
+   "n": 36,
+   "success": 0.7222222222222222,
+   "precise": 0.6388888888888888,
+   "fell_anymal1": 0.1111111111111111,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 20.585384615384616,
+   "touch_frac": 0.5332777777777777
+  },
+  "A_straight / 60 kg": {
+   "n": 36,
+   "success": 0.4166666666666667,
+   "precise": 0.3888888888888889,
+   "fell_anymal1": 0.2777777777777778,
+   "fell_anymal2": 0.25,
+   "t_success": 29.4,
+   "touch_frac": 0.5449444444444445
+  },
+  "A_straight / 80 kg": {
+   "n": 36,
+   "success": 0.3055555555555556,
+   "precise": 0.25,
+   "fell_anymal1": 0.3611111111111111,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 28.34363636363636,
+   "touch_frac": 0.5879444444444445
+  },
+  "B_left / 20 kg": {
+   "n": 36,
+   "success": 0.7777777777777778,
+   "precise": 0.75,
+   "fell_anymal1": 0.027777777777777776,
+   "fell_anymal2": 0.16666666666666666,
+   "t_success": 20.579285714285714,
+   "touch_frac": 0.38719444444444445
+  },
+  "B_left / 40 kg": {
+   "n": 36,
+   "success": 0.3888888888888889,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.2222222222222222,
+   "fell_anymal2": 0.3333333333333333,
+   "t_success": 30.98428571428571,
+   "touch_frac": 0.49833333333333335
+  },
+  "B_left / 60 kg": {
+   "n": 36,
+   "success": 0.25,
+   "precise": 0.25,
+   "fell_anymal1": 0.1111111111111111,
+   "fell_anymal2": 0.4166666666666667,
+   "t_success": 46.89333333333334,
+   "touch_frac": 0.5111388888888889
+  },
+  "B_left / 80 kg": {
+   "n": 36,
+   "success": 0.1111111111111111,
+   "precise": 0.1111111111111111,
+   "fell_anymal1": 0.3611111111111111,
+   "fell_anymal2": 0.25,
+   "t_success": 27.815,
+   "touch_frac": 0.5228055555555556
+  },
+  "C_backright / 20 kg": {
+   "n": 36,
+   "success": 0.5,
+   "precise": 0.4444444444444444,
+   "fell_anymal1": 0.2222222222222222,
+   "fell_anymal2": 0.1388888888888889,
+   "t_success": 23.403333333333332,
+   "touch_frac": 0.45963888888888893
+  },
+  "C_backright / 40 kg": {
+   "n": 36,
+   "success": 0.5277777777777778,
+   "precise": 0.4444444444444444,
+   "fell_anymal1": 0.19444444444444445,
+   "fell_anymal2": 0.25,
+   "t_success": 23.527368421052632,
+   "touch_frac": 0.48305555555555557
+  },
+  "C_backright / 60 kg": {
+   "n": 36,
+   "success": 0.3611111111111111,
+   "precise": 0.3055555555555556,
+   "fell_anymal1": 0.3333333333333333,
+   "fell_anymal2": 0.1111111111111111,
+   "t_success": 26.015384615384615,
+   "touch_frac": 0.48894444444444446
+  },
+  "C_backright / 80 kg": {
+   "n": 36,
+   "success": 0.25,
+   "precise": 0.19444444444444445,
+   "fell_anymal1": 0.3611111111111111,
+   "fell_anymal2": 0.1111111111111111,
+   "t_success": 43.24666666666667,
+   "touch_frac": 0.5147499999999999
+  },
+  "D_far_turn / 20 kg": {
+   "n": 36,
+   "success": 0.6944444444444444,
+   "precise": 0.7222222222222222,
+   "fell_anymal1": 0.08333333333333333,
+   "fell_anymal2": 0.05555555555555555,
+   "t_success": 21.32,
+   "touch_frac": 0.4669444444444444
+  },
+  "D_far_turn / 40 kg": {
+   "n": 36,
+   "success": 0.3611111111111111,
+   "precise": 0.3333333333333333,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.3333333333333333,
+   "t_success": 28.178461538461537,
+   "touch_frac": 0.48086111111111113
+  },
+  "D_far_turn / 60 kg": {
+   "n": 36,
+   "success": 0.1388888888888889,
+   "precise": 0.16666666666666666,
+   "fell_anymal1": 0.2777777777777778,
+   "fell_anymal2": 0.3333333333333333,
+   "t_success": 22.088,
+   "touch_frac": 0.5394166666666667
+  },
+  "D_far_turn / 80 kg": {
+   "n": 36,
+   "success": 0.1388888888888889,
+   "precise": 0.1388888888888889,
+   "fell_anymal1": 0.16666666666666666,
+   "fell_anymal2": 0.25,
+   "t_success": 36.36,
+   "touch_frac": 0.4460833333333334
+  }
+ }
+}

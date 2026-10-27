@@ -20,6 +20,9 @@
 #       EXTRA="--pair anymal --partner-map --reward r7 --mean-clip 1.1 --bound-coef 0.01 --entropy-coef 0.003" \
 #       slurm/submit_coop2_first.sh       # two ANYmal C, both from the ANYmal Stage 2b policy, r7 rewards
 #   (their untrained baseline: NAME=pair-frozen-anymal MODE=frozen ARGS="--pair anymal" sbatch slurm/eval_coop2.sbatch)
+#   TAG=aa_kl SKIP_BASELINES=1 \
+#       EXTRA="--pair anymal --partner-map --reward r7 --kl-ref 0.05 --critic-warmup 500 --max-actor-lr 1e-4" \
+#       slurm/submit_coop2_first.sh       # two ANYmal C, r7, anchored to Stage 2b (KL), no r6 exploration changes
 #                                   # EXTRA: more train_coop2.py options for both runs
 #
 # Submits (job ids are saved in logs/slurm/coop2_<TAG>.txt):
