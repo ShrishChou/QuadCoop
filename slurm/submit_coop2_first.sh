@@ -23,6 +23,10 @@
 #   TAG=aa_kl SKIP_BASELINES=1 \
 #       EXTRA="--pair anymal --partner-map --reward r7 --kl-ref 0.05 --critic-warmup 500 --max-actor-lr 1e-4" \
 #       slurm/submit_coop2_first.sh       # two ANYmal C, r7, anchored to Stage 2b (KL), no r6 exploration changes
+#   TAG=aa_r8 SKIP_BASELINES=1 EXTRA="--pair anymal --partner-map --reward r8 --kl-ref 0.05 --kl-partner-scale 0.2 \
+#       --start-around --need-frac 0.4 --critic-warmup 500 --max-actor-lr 1e-4" slurm/submit_coop2_first.sh
+#                                         # r8: work credit + touch-only penalty, starts all around the object,
+#                                         # 40% need-two episodes, anchor relaxed near the partner
 #                                   # EXTRA: more train_coop2.py options for both runs
 #
 # Submits (job ids are saved in logs/slurm/coop2_<TAG>.txt):

@@ -117,16 +117,26 @@ def main() -> int:
     ap.add_argument("--kl-ref", type=float, default=0.0,
                     help="beta: penalty beta * KL(policy || its frozen Stage 2b policy) in the actor loss "
                          "(KL-regularized fine-tuning; 0 = off; not with --scratch)")
+    ap.add_argument("--kl-partner-scale", type=float, default=1.0,
+                    help="< 1: the KL anchor is multiplied by this while the partner is within 1.5 m, back to "
+                         "full beyond 3 m (partner-aware anchor: stay 2b alone, free to change together)")
+    ap.add_argument("--start-around", action="store_true",
+                    help="robots start anywhere around the object (>= 60 deg apart) instead of behind it")
+    ap.add_argument("--need-frac", type=float, default=0.0,
+                    help="share of training episodes with a wide object (long, arch, dumbbell, T) above "
+                         "--need-mass kg, i.e. one robot alone cannot do it (evaluations unchanged)")
+    ap.add_argument("--need-mass", type=float, default=45.0)
     ap.add_argument("--actor-lr", type=float, default=None,
                     help="starting actor learning rate (adapted to the KL target); default 1e-4, 3e-4 with --scratch")
     ap.add_argument("--max-actor-lr", type=float, default=None,
                     help="cap on the adapted actor learning rate; default 3e-4, 1e-3 with --scratch")
     ap.add_argument("--partner-map", action="store_true", help="partner footprint as a 2nd map channel")
-    ap.add_argument("--reward", choices=("r3", "r4", "r5", "r7"), default="r3",
+    ap.add_argument("--reward", choices=("r3", "r4", "r5", "r7", "r8"), default="r3",
                     help="r4: no per-robot behind-the-object term, exponential proximity penalty below 0.6 m; "
                          "r5: r4 + approach reward only for getting closer, team time cost, stronger "
                          "push_along and yaw_progress; r7: outcome-based: goal-error cost per second, "
-                         "failure pays the time left, push_credit, proximity on the body gap "
+                         "failure pays the time left, push_credit, proximity on the body gap; "
+                         "r8: r7 with work_credit (contact force x object speed) and touch-only penalty "
                          "(quadcoop/coop2/env_cfg.py)")
     ap.add_argument("--entropy-coef", type=float, default=0.0)
     ap.add_argument("--max-std-factor", type=float, default=1.0,
@@ -163,7 +173,9 @@ def main() -> int:
     log_dir = ROOT / "logs" / "marl2" / (run + ("_check" if a.check else ""))
     print(f"run {run}  algo {a.algo}  pair {a.pair}  variant {a.variant}  seed {a.seed}  device {device}  "
           f"partner map {a.partner_map}  rewards {a.reward}  entropy {a.entropy_coef:g}  mean clip {a.mean_clip:g}  "
-          f"bound {a.bound_coef:g}  kl_ref {a.kl_ref:g}  {'FROM SCRATCH' if a.scratch else 'warm start from Stage 2b'}")
+          f"bound {a.bound_coef:g}  kl_ref {a.kl_ref:g} (partner scale {a.kl_partner_scale:g})  "
+          f"start {'around' if a.start_around else 'behind'}  need_frac {a.need_frac:g}  "
+          f"{'FROM SCRATCH' if a.scratch else 'warm start from Stage 2b'}")
     for k, v in models["selection"].items():
         print(f"  {k:15s} {v}")
 
@@ -175,7 +187,9 @@ def main() -> int:
     from quadcoop.coop2.env_cfg import make_coop2_env_cfg
     from quadcoop.coop2.marl import MarlCfg, MarlTrainer
 
-    env_cfg = make_coop2_env_cfg(a.variant, partner_map=a.partner_map, reward_set=a.reward)
+    env_cfg = make_coop2_env_cfg(a.variant, partner_map=a.partner_map, reward_set=a.reward,
+                                 start_mode="around" if a.start_around else "behind",
+                                 need_frac=a.need_frac, need_mass=a.need_mass)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -186,6 +200,8 @@ def main() -> int:
                   scratch=a.scratch, actor_learning_rate=a.actor_lr, max_actor_learning_rate=a.max_actor_lr,
                   entropy_coef=a.entropy_coef, max_std_factor=a.max_std_factor,
                   mean_clip=a.mean_clip, bound_coef=a.bound_coef, kl_ref=a.kl_ref,
+                  kl_partner_scale=a.kl_partner_scale, start_mode="around" if a.start_around else "behind",
+                  need_frac=a.need_frac,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])
