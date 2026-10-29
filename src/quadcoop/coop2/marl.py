@@ -39,6 +39,10 @@ KL-regularized RL (the objective behind RLHF): maximize reward while staying clo
 policy, so fine-tuning cannot drift away from the single-robot skill unless the reward clearly
 pays for it. Both means are clamped to +-1.1 first: outputs past the walker's clip do the same
 thing whatever their value, so only differences in what the robots actually do count.
+With ``kl_partner_scale`` < 1 the anchor is partner-aware: per sample, beta is multiplied by
+kl_partner_scale while the partner is within kl_partner_near m, rising linearly to full beta at
+kl_partner_far m (partner distance from the noise-free state input). Alone, each robot stays its
+Stage 2b self; near its partner it is free to change (e.g. to take another contact point).
 
 From scratch (``scratch``): no Stage 2 policies at all. Actors and critics start from random
 weights on top of the same frozen walkers, the actors' observation normalizers learn from the
@@ -99,6 +103,11 @@ class MarlCfg:
     scratch: bool = False  # random initial actors and critics (no Stage 2 warm start); see the module docstring
     kl_ref: float = 0.0  # beta of the KL penalty to the frozen Stage 2b policies (0 = off); see the module docstring
     kl_ref_clip: float = 1.1  # means clamped to +-this before the KL (the walker clips at 1)
+    kl_partner_scale: float = 1.0  # < 1: beta x this near the partner (partner-aware anchor; 1 = off)
+    kl_partner_near: float = 1.5  # m: full relaxation within this partner distance
+    kl_partner_far: float = 3.0  # m: full beta beyond this partner distance
+    start_mode: str = "behind"  # env option (recorded): robots' start, "behind" or "around"
+    need_frac: float = 0.0  # env option (recorded): share of episodes that need both robots
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
     max_actor_learning_rate: float = 3.0e-4
     reward_clip: float = 100.0  # per robot per step (a success is +50 at most, a fall -35)
@@ -347,6 +356,16 @@ class MarlTrainer:
         kl = torch.log(sd_r / sd) + (sd.square() + (mu - mu_r).square()) / (2.0 * sd_r.square()) - 0.5
         return kl.sum(-1)
 
+    def kl_weight(self, a: str, o_mb: TensorDict) -> torch.Tensor:
+        """Per-sample anchor weight: 1 with the partner far, kl_partner_scale with it near."""
+        c = self.cfg
+        if c.kl_partner_scale >= 1.0:
+            return torch.ones(o_mb.batch_size[0], device=self.device)
+        rel = o_mb[f"state_{a}"][:, N_SINGLE:N_SINGLE + 2]  # partner position in this robot's frame
+        d = torch.linalg.norm(rel, dim=-1)
+        ramp = ((d - c.kl_partner_near) / max(c.kl_partner_far - c.kl_partner_near, 1e-6)).clamp(0.0, 1.0)
+        return c.kl_partner_scale + (1.0 - c.kl_partner_scale) * ramp
+
     def init_scratch(self) -> None:
         """Random initial actors and critics (as built). Only the noise cap is set here."""
         for a in AGENTS:
@@ -574,8 +593,9 @@ class MarlTrainer:
                                 loss = loss + cfg.bound_coef * bound_loss
                             kl_ref = None
                             if cfg.kl_ref > 0 and a in self.refs:
-                                kl_ref = self.kl_to_ref(a, o_mb).mean()
-                                loss = loss + cfg.kl_ref * kl_ref
+                                kl_s = self.kl_to_ref(a, o_mb)
+                                kl_ref = kl_s.mean()
+                                loss = loss + cfg.kl_ref * (self.kl_weight(a, o_mb) * kl_s).mean()
                             if not torch.isfinite(loss):
                                 skipped += 1
                                 continue

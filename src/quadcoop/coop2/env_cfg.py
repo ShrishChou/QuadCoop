@@ -129,12 +129,13 @@ def walker_history(robot_name: str) -> int:
     return int(float(os.environ.get(f"QUADCOOP_WALKER_HISTORY_{robot_name.upper()}", "0")))
 
 
-REWARD_SETS = ("r3", "r4", "r5", "r7")
+REWARD_SETS = ("r3", "r4", "r5", "r7", "r8")
 GOAL_ERROR_COST = 0.25  # r7: per second at the start error (distance fraction 1 + heading fraction)
 
 
 def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool = False,
-                       reward_set: str = "r3") -> ManagerBasedRlEnvCfg:
+                       reward_set: str = "r3", start_mode: str = "behind", need_frac: float = 0.0,
+                       need_mass: float = 45.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -160,7 +161,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
              centre distance (which was ~0.6 m shoulder to shoulder, where r4's penalty was ~0);
            - kept from r5: object / heading / precise progress (potential-based), the success
              bonus, settle / runaway, failure -25, robots touching, approach (potential-based),
-             action terms, own fall."""
+             action terms, own fall.
+      "r8" r7 for cooperation: work_credit (per robot, weight 3) replaces push_credit: each robot's
+           contact force on the object along the goal direction (contact sensors robot <-> object)
+           x the object's speed toward the goal, so a robot earns only for the work it does, and
+           two pushers share it by effort; no body-gap proximity cost (shoulder to shoulder is
+           free), only actual contact between the robots is penalized (robots_touch).
+    start_mode: "behind" (level table) or "around" (anywhere around the object; training only).
+    need_frac / need_mass: share of training episodes with a wide object above need_mass kg."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
     assert not (partner_map and variant != "b"), "the partner map needs variant b (maps)"
@@ -182,6 +190,13 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         secondary=ContactMatch(mode="subtree", pattern=SPECS[AGENTS[1]].base_body, entity=AGENTS[1]),
         fields=("found",), reduce="none", num_slots=1,
     ),)
+    if reward_set == "r8":  # contact force between each robot and the object (work_credit)
+        cfg.scene.sensors += tuple(ContactSensorCfg(
+            name=f"push_{a}",
+            primary=ContactMatch(mode="body", pattern=tuple(f"{o}/body" for o in OBJ_NAMES2)),
+            secondary=ContactMatch(mode="subtree", pattern=SPECS[a].base_body, entity=a),
+            fields=("found", "force"), reduce="netforce", num_slots=1,
+        ) for a in AGENTS)
     cfg.sim.njmax = 1500
     cfg.episode_length_s = EPISODE_S
     cfg.metrics = {}
@@ -204,7 +219,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     cfg.commands["goal"] = mdp.CoopPush2CommandCfg(
         variant=variant, reach=tuple(SPECS[a].half_length for a in AGENTS), robot_reach=SPECS[AGENTS[0]].half_length,
         map_hz=float(os.environ.get("QUADCOOP_MAP_HZ", "10")), start_level=0, success_mode="terminate",
-        partner_map=partner_map, track_approach=reward_set in ("r5", "r7"))
+        partner_map=partner_map, track_approach=reward_set in ("r5", "r7", "r8"),
+        start_mode=start_mode, need_frac=need_frac, need_mass=need_mass)
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
@@ -261,7 +277,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     rewards = {
         # team (Stage 2, terminate rule)
         "box_progress": R(func=hb.box_progress, weight=3.0),
-        "yaw_progress": R(func=hb.yaw_progress, weight=1.0 if reward_set in ("r5", "r7") else 0.5),
+        "yaw_progress": R(func=hb.yaw_progress, weight=1.0 if reward_set in ("r5", "r7", "r8") else 0.5),
         "precise_progress": R(func=m2.precise_progress, weight=4.0),
         "goal_bonus": R(func=m2.goal_bonus, weight=BONUS / step_dt, params={"horizon_s": EPISODE_S}),
         "box_settle": R(func=hb.box_settle, weight=-1.0),
@@ -276,12 +292,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     }
     if reward_set == "r5":
         rewards["time_cost"] = R(func=mdp.time_cost, weight=-0.2)
-    if reward_set == "r7":
+    if reward_set == "r8":
+        rewards.pop("robots_close")  # only actual contact counts (robots_touch)
+    if reward_set in ("r7", "r8"):
         rewards["goal_error"] = R(func=mdp.goal_error, weight=-GOAL_ERROR_COST)
         rewards["fail_remaining"] = R(func=mdp.failed_remaining, weight=-GOAL_ERROR_COST,
                                       params={"names": fails, "horizon_s": EPISODE_S})
     for k, a in enumerate(AGENTS):
-        if reward_set in ("r5", "r7"):
+        if reward_set in ("r5", "r7", "r8"):
             rewards[f"approach_{a}"] = R(func=mdp.approach, weight=2.0, params={"robot": a})
         else:
             rewards[f"near_surface_{a}"] = R(func=mdp.near_surface, weight=0.5, params={"robot": a})
@@ -289,7 +307,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             rewards[f"behind_box_{a}"] = R(func=mdp.behind_box, weight=0.3, params={"robot": a})
         rewards[f"action_rate_{a}"] = R(func=mdp.agent_action_rate, weight=-0.05, params={"agent": k})
         rewards[f"action_limit_{a}"] = R(func=mdp.agent_action_limit, weight=-0.02, params={"agent": k})
-        if reward_set == "r7":
+        if reward_set == "r8":
+            rewards[f"work_credit_{a}"] = R(func=mdp.work_credit, weight=3.0, params={"robot": a})
+        elif reward_set == "r7":
             rewards[f"push_credit_{a}"] = R(func=mdp.push_credit, weight=1.0, params={"robot": a})
         else:
             rewards[f"push_along_{a}"] = R(func=mdp.push_along, weight=1.0 if reward_set == "r5" else 0.3,

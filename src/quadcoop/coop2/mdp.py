@@ -101,6 +101,7 @@ class CoopPush2Command(Push2Command):
         self.prev_near = {a: torch.zeros(n, device=dev) for a in AGENTS}
         # start distance to the goal, per episode (r7's goal-error cost is measured against it)
         self.d0 = torch.ones(n, device=dev)
+        self.need_episode = torch.zeros(n, dtype=torch.bool, device=dev)  # need_frac pick (for logging)
         # evaluation switches (as in Stage 2)
         self.heading_zero = False
         self.heading_zero_map = False
@@ -210,6 +211,16 @@ class CoopPush2Command(Push2Command):
         score = torch.where(ok, torch.log(self.shape_weight).unsqueeze(0) + gumbel,
                             torch.where(fallback, -1e6 - gap_to_window, torch.full_like(masses, -1e9)))
         shape = score.argmax(-1)
+        if c.need_frac > 0 and c.only is None:
+            # training mix: a share of episodes gets a wide object heavy enough to need both robots
+            # (mass from need_mass up to the level's window + need_extra); evaluations are unchanged
+            need_names = torch.tensor([nm[len("obj_"):] in c.need_shapes for nm in OBJ_NAMES2], device=dev)
+            top = torch.maximum(hi, torch.full_like(hi, c.need_mass)) + c.need_extra
+            cand = need_names.unsqueeze(0) & self.train_mask.unsqueeze(0) & (masses >= c.need_mass) & (masses <= top)
+            pick = (torch.rand(m, device=dev) < c.need_frac) & cand.any(-1)
+            nscore = torch.where(cand, gumbel, torch.full_like(gumbel, -1e9))
+            shape = torch.where(pick, nscore.argmax(-1), shape)
+            self.need_episode[env_ids] = pick
         sc = self.scenario(env_ids) if self.scenario is not None else None
         if sc is not None and "shape" in sc:
             shape = sc["shape"]
@@ -240,6 +251,9 @@ class CoopPush2Command(Push2Command):
         # push them apart symmetrically to at least `sep`
         short = (sep - diff.abs()).clamp(min=0.0) * 0.5
         b0, b1 = b0 - side * short, b1 + side * short
+        if c.start_mode == "around":  # anywhere around the object, still at least `sep` apart
+            b0 = 2 * math.pi * torch.rand(m, device=dev)
+            b1 = b0 + U(torch.full((m,), sep, device=dev), torch.full((m,), 2 * math.pi - sep, device=dev))
         bearings = [b0, b1]
         gaps = [U(c.gap[0], c.gap[1]) for _ in AGENTS]
         yaw_noise = [sym_u(torch.full((m,), c.robot_yaw_noise_deg, device=dev)) for _ in AGENTS]
@@ -319,6 +333,12 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     park_distance: float = 40.0
     partner_map: bool = False  # second map channel: the partner's footprint
     track_approach: bool = False  # keep each robot's approach potential (r5's approach reward)
+    # training-only options (evaluations place robots and objects themselves):
+    start_mode: str = "behind"  # "behind": robots start behind the object (level table); "around": anywhere
+    need_frac: float = 0.0  # share of episodes with a wide object heavy enough to need both robots
+    need_mass: float = 45.0  # kg: about what one ANYmal can push alone
+    need_extra: float = 20.0  # kg above the level's mass window allowed for those episodes
+    need_shapes: tuple[str, ...] = ("long", "arch", "dumbbell", "t_shape")  # trainable wide shapes
     # d_lo, d_hi [m] | robot spread +- [deg] | "behind" offset +- [deg] | object start yaw +- |
     # goal yaw change +- | pos tol [m] | yaw tol [deg] | hold [s] (tolerances: "hold" mode only;
     # "terminate" uses success_pos_tol / success_yaw_tol_deg) | max mass [kg] | min mass [kg]
@@ -527,6 +547,33 @@ def push_credit(env, robot: str, contact: float = 0.08, max_speed: float = 1.0, 
     speed = (g.box_vel()[:, :2] * u).sum(-1).clamp(0.0, max_speed)
     on = (g.surface_distance(robot) < contact) & (dist > done_dist)
     return torch.where(on, behind * speed, torch.zeros_like(speed))
+
+
+def object_force_from(env, robot: str) -> torch.Tensor:
+    """(n, 2): horizontal contact force between this robot and the object (world frame, on the
+    object), from the push_<robot> contact sensor (r8): net force over all object copies, of
+    which only the active one can be touched."""
+    f = env.scene[f"push_{robot}"].data.force  # (n, P, 3), net force per object body, global frame
+    return -FORCE_SIGN * f.sum(1)[:, :2]
+
+
+FORCE_SIGN = 1.0  # sensor convention: force on the primary (object) is -FORCE_SIGN * reading (checked in tests)
+
+
+def work_credit(env, robot: str, f_ref: float = 200.0, max_ratio: float = 2.0, max_speed: float = 1.0,
+                done_dist: float = 0.1) -> torch.Tensor:
+    """r8, per robot: the work this robot does moving the object toward its goal, per second,
+    normalized: (its contact force on the object along the goal direction / f_ref, 0..max_ratio)
+    x (object speed toward the goal, 0..max_speed m/s). A robot that is not pushing earns 0; two
+    robots pushing share the credit by how hard each pushes (an approximation of each robot's
+    marginal contribution, as in difference rewards). f_ref = 200 N ~ what one ANYmal sustains."""
+    g = _g(env)
+    to_goal = g.goal_xy - g.box_pos()[:, :2]
+    dist = torch.linalg.norm(to_goal, dim=-1)
+    u = to_goal / dist.unsqueeze(-1).clamp(min=1e-6)
+    push = ((object_force_from(env, robot) * u).sum(-1) / f_ref).clamp(0.0, max_ratio)
+    speed = (g.box_vel()[:, :2] * u).sum(-1).clamp(0.0, max_speed)
+    return torch.where(dist > done_dist, push * speed, torch.zeros_like(speed))
 
 
 def _segment_distance(p1, q1, p2, q2):

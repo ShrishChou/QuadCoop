@@ -143,7 +143,7 @@ def main() -> int:
     from quadcoop.coop2.marl import PairPolicy
     from quadcoop.coop2.mdp import AGENTS
     from quadcoop.coop2.video import Camera, render_episode
-    from quadcoop.stage1.mdp import wrap
+    from quadcoop.stage1.mdp import wrap, yaw_of
     from quadcoop.stage1b import mdp as hb
     from quadcoop.stage1b.shapes import NOMINAL_MASS
     from quadcoop.stage2 import mdp as m2
@@ -240,6 +240,23 @@ def main() -> int:
         precise = torch.zeros(n, dtype=torch.bool, device=dev)
         hold = torch.zeros(n, device=dev)
         touch_steps = torch.zeros(n, device=dev)
+        # who pushes: front on the object (within 8 cm) and behind it relative to the goal
+        push_steps = {ag: torch.zeros(n, device=dev) for ag in AGENTS}
+        copush_steps = torch.zeros(n, device=dev)
+        spread_sum = torch.zeros(n, device=dev)
+
+        def pushing(ag):
+            r = base.scene[ag]
+            to_goal = g.goal_xy - g.box_pos()[:, :2]
+            u = to_goal / torch.linalg.norm(to_goal, dim=-1, keepdim=True).clamp(min=1e-6)
+            to_obj = g.box_pos()[:, :2] - r.data.root_link_pos_w[:, :2]
+            behind = (to_obj * u).sum(-1) / torch.linalg.norm(to_obj, dim=-1).clamp(min=1e-6) > 0.0
+            return (g.surface_distance(ag) < 0.08) & behind
+
+        def front_point(ag):
+            r = base.scene[ag]
+            yaw = yaw_of(r.data.root_link_quat_w)
+            return r.data.root_link_pos_w[:, :2] + SPECS[ag].half_length * torch.stack([torch.cos(yaw), torch.sin(yaw)], -1)
         live_steps = torch.zeros(n, device=dev)
         min_rd = torch.full((n,), 1e9, device=dev)
         d0, _ = g.errors()
@@ -277,6 +294,13 @@ def main() -> int:
                 t_succ = torch.where(succ, torch.full_like(t_succ, t), t_succ)
                 if a.solo is None:
                     touch_steps += (cm.robots_touching(base) > 0).float() * live.float()
+                    pu = {ag: pushing(ag) & live for ag in AGENTS}
+                    for ag in AGENTS:
+                        push_steps[ag] += pu[ag].float()
+                    both = pu[AGENTS[0]] & pu[AGENTS[1]]
+                    copush_steps += both.float()
+                    spread_sum += torch.where(both, torch.linalg.norm(front_point(AGENTS[0]) - front_point(AGENTS[1]), dim=-1),
+                                              torch.zeros(n, device=dev))
                     rd = torch.linalg.norm(base.scene[AGENTS[0]].data.root_link_pos_w[:, :2]
                                            - base.scene[AGENTS[1]].data.root_link_pos_w[:, :2], dim=-1)
                     min_rd = torch.where(live, torch.minimum(min_rd, rd), min_rd)
@@ -310,6 +334,11 @@ def main() -> int:
                    "final_pos_err": round(float(last_d[j]), 3), "final_yaw_err": round(math.degrees(float(last_e[j])), 1),
                    "min_pos_err": round(float(min_d[j]), 3),
                    "touch_frac": round(float(touch_steps[j] / live_steps[j].clamp(min=1)), 3) if a.solo is None else "",
+                   **{f"push_frac_{ag}": (round(float(push_steps[ag][j] / live_steps[j].clamp(min=1)), 3)
+                                          if a.solo is None else "") for ag in AGENTS},
+                   "copush_frac": round(float(copush_steps[j] / live_steps[j].clamp(min=1)), 3) if a.solo is None else "",
+                   "copush_spread": (round(float(spread_sum[j] / copush_steps[j]), 2)
+                                     if a.solo is None and float(copush_steps[j]) > 0 else ""),
                    "min_robot_dist": round(float(min_rd[j]), 2) if a.solo is None else "", "video": ""}
             mine.append(row)
         if film:
@@ -353,7 +382,16 @@ def main() -> int:
         return {"n": k, "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
                 **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in AGENTS},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
-                "touch_frac": (sum(r["touch_frac"] for r in sel) / k) if a.solo is None else None}
+                "touch_frac": (sum(r["touch_frac"] for r in sel) / k) if a.solo is None else None,
+                **{f"push_frac_{ag}": (sum(r[f"push_frac_{ag}"] for r in sel) / k) if a.solo is None else None
+                   for ag in AGENTS},
+                "copush_frac": (sum(r["copush_frac"] for r in sel) / k) if a.solo is None else None,
+                # share of the time either robot pushes during which both push (lazy partner -> ~0)
+                "copush_share": ((sum(r["copush_frac"] for r in sel)
+                                  / max(1e-9, sum(max(r[f"push_frac_{AGENTS[0]}"], r[f"push_frac_{AGENTS[1]}"]) for r in sel)))
+                                 if a.solo is None else None),
+                "copush_spread": ((lambda v: sum(v) / len(v) if v else None)(
+                    [r["copush_spread"] for r in sel if r["copush_spread"] != ""]) if a.solo is None else None)}
 
     by = defaultdict(list)
     for r in rows:
@@ -374,17 +412,26 @@ def main() -> int:
     md = [f"# Pair evaluation: {a.name}", "", f"policy: {what}", "",
           f"success = 10 cm / 6 deg held 1 s within {a.horizon:g} s; precise = 10 cm / 3 deg with the object at rest "
           f"(the training rule); {a.reps} placements per object x scenario x mass; nominal object sizes", "",
-          "## by mass", "", f"| mass | success | precise | {AGENTS[0]} fell | {AGENTS[1]} fell | time to success (s) | robots touching |",
-          "|---|---|---|---|---|---|---|"]
+          "## by mass", "", f"| mass | success | precise | {AGENTS[0]} fell | {AGENTS[1]} fell | time to success (s) | robots touching "
+          f"| {AGENTS[0]} pushing | {AGENTS[1]} pushing | both pushing | co-push share | contact spread (m) |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for m in masses:
         s = summary["by_mass"][f"{m:g}"]
         md.append(f"| {m:g} kg | {f2(s['success'])} | {f2(s['precise'])} | {f2(s[f'fell_{AGENTS[0]}'])} | {f2(s[f'fell_{AGENTS[1]}'])} | "
-                  f"{'' if s['t_success'] is None else f'{s['t_success']:.1f}'} | {f2(s['touch_frac'])} |")
+                  f"{'' if s['t_success'] is None else f'{s['t_success']:.1f}'} | {f2(s['touch_frac'])} | "
+                  f"{f2(s[f'push_frac_{AGENTS[0]}'])} | {f2(s[f'push_frac_{AGENTS[1]}'])} | {f2(s['copush_frac'])} | "
+                  f"{f2(s['copush_share'])} | {f2(s['copush_spread'])} |")
     md += ["", "## success by object and mass", "", "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |",
            "|---|" + "---|" * len(masses)]
     for o in objects:
         md.append(f"| {o}{'' if o in TRAIN_NAMES else ' (unseen)'} | "
                   + " | ".join(f2(summary["by_object_mass"][f"{o} / {m:g} kg"]["success"]) for m in masses) + " |")
+    if a.solo is None:
+        md += ["", "## both robots pushing (share of time) by object and mass", "",
+               "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
+        for o in objects:
+            md.append(f"| {o} | " + " | ".join(f2(summary["by_object_mass"][f"{o} / {m:g} kg"]["copush_frac"])
+                                               for m in masses) + " |")
     md += ["", "## success by scenario and mass", "", "| scenario | " + " | ".join(f"{m:g} kg" for m in masses) + " |",
            "|---|" + "---|" * len(masses)]
     for s in SCENARIOS:
