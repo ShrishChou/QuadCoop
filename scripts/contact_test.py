@@ -307,8 +307,15 @@ def main() -> int:
         all_done_at = None
         tail = int(2.0 / dt)
         idle = torch.tensor(IDLE_ACTION, device=dev)
+        t_loop, t_pol, t_env = time.time(), 0.0, 0.0
+        ctrl_push = [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]
+        sync = (lambda: torch.cuda.synchronize()) if str(dev).startswith("cuda") else (lambda: None)  # noqa: E731
         with torch.no_grad():
             for i in range(steps):
+                if i > 0 and i % 1000 == 0:
+                    print(f"  [{mass:g} kg] step {i}/{steps} ({i * dt:.0f} s sim): {i / (time.time() - t_loop):.1f} steps/s, "
+                          f"policy {t_pol:.0f} s, env step {t_env:.0f} s, live {int((~done).sum())}/{n}, "
+                          f"engaged {[int(x.sum()) for x in (handed if use_policy else ctrl_push)]}", flush=True)
                 if reassign_every and i > 0 and i % reassign_every == 0:
                     assign_all([j for j in range(n) if not bool(done[j])])
                 obj_pos, obj_yaw = g.box_pos()[:, :2], g.heading()
@@ -316,7 +323,12 @@ def main() -> int:
                 e = torch.where(g.symmetry() > 0, e, torch.zeros_like(e))
                 act = torch.zeros(n, 6, device=dev)
                 pushing, engaged, cdist = [], [], []
-                pol_act = policy(obs) if use_policy else None
+                if use_policy:
+                    sync(); t0 = time.time()  # noqa: E702
+                    pol_act = policy(obs)
+                    sync(); t_pol += time.time() - t0  # noqa: E702
+                else:
+                    pol_act = None
                 c_o, s_o = torch.cos(obj_yaw), torch.sin(obj_yaw)
                 for k, ag in enumerate(AGENTS):
                     r = robots[k]
@@ -343,7 +355,10 @@ def main() -> int:
                     act[:, 3 * k:3 * k + 3] = torch.where(active[k].unsqueeze(-1), a_k, idle.expand(n, 3))
                     pushing.append(ph & active[k])
                     cdist.append(dk)
+                sync(); t0 = time.time()  # noqa: E702
                 o_, _, _, _, _ = base.step(act)
+                sync(); t_env += time.time() - t0  # noqa: E702
+                ctrl_push = pushing
                 obs = TensorDict({kk: v for kk, v in o_.items() if not kk.startswith("walker_")}, batch_size=[n])
                 t = (i + 1) * dt
                 live = ~done
@@ -460,16 +475,42 @@ def main() -> int:
                   flush=True)
         base.close()
         del base
-
-    for rule in rules:
-        write(rows[rule], f"{prefix}-{rule}", rule, a, masses, objects, AGENTS, TRAIN_NAMES)
+        for rule in rules:  # saved after every mass (merged with other masses already saved for this name)
+            write(rows[rule], f"{prefix}-{rule}", rule, a, objects, AGENTS, TRAIN_NAMES, quiet=mass != masses[-1])
     return 0
 
 
-def write(rows, name, rule, a, masses, objects, agents, train_names) -> None:
+def _num(v):
+    if v == "":
+        return v
+    for f in (int, float):
+        try:
+            return f(v)
+        except ValueError:
+            pass
+    return v
+
+
+def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> None:
+    """Write the summary for this rule. Rows of other masses already saved under the same name with
+    the same settings (another job, or an earlier mass of this one) are kept, so masses can be run
+    as separate jobs into one result."""
     out = ROOT / "logs" / "evals" / name / "pair"
     stats = ROOT / "evals" / name / "eval" / "pair"
     out.mkdir(parents=True, exist_ok=True)
+    mine = {r["mass"] for r in rows}
+    try:
+        old_meta = json.loads((out / "summary.json").read_text())
+        same = all(old_meta.get(k) == v for k, v in (("executor", a.executor), ("return_dist", a.return_dist),
+                                                       ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents))))
+        old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
+    except (OSError, ValueError):
+        old = []
+    rows = [r for r in old if float(r["mass"]) not in mine] + list(rows)
+    rows.sort(key=lambda r: float(r["mass"]))
+    masses = sorted({float(r["mass"]) for r in rows})
+    objects = [o for o in objects if any(r["object"] == o for r in rows)] + \
+        [o for o in dict.fromkeys(r["object"] for r in rows) if o not in objects]
     with open(out / "episodes.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader()
@@ -566,8 +607,9 @@ def write(rows, name, rule, a, masses, objects, agents, train_names) -> None:
     stats.mkdir(parents=True, exist_ok=True)
     for f in ("summary.md", "summary.json", "episodes.csv"):
         shutil.copy2(out / f, stats / f)
-    print("\n".join(md[:14]))
-    print(f"stats in {stats}")
+    if not quiet:
+        print("\n".join(md[:14]))
+    print(f"{name}: masses {', '.join(f'{m:g}' for m in masses)} saved in {stats}", flush=True)
 
 
 if __name__ == "__main__":
