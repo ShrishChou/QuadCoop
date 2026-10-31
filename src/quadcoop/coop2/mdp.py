@@ -13,6 +13,17 @@ rewards. ``CoopPush2Command`` extends Stage 2's goal command to two robots:
   second channel with the partner's footprint (same frame, scale and rate);
 * the object mass window rises with the level past what one robot can push.
 
+Contact mode (``contact_mode``, Stage 4): each episode both robots are assigned a contact from the
+object's candidate contacts (quadcoop/contacts.py) - a pair picked for the goal direction by the
+"spread" or "adjacent" rule or at random (``contact_mix``) - and start at it (at its standing
+point, or with probability 1 - ``contact_start_at`` at its approach point). Each robot's input
+gains its contact (``contact_obs``: where it is, which way to push, its arm about the centre of
+mass, and the partner's contact). A robot that has reached its contact and then stays more than
+``drift_dist`` m from it for ``drift_s`` s, or never reaches it within ``engage_s`` s, ends the
+episode as a failure (``off_contact``). Success tolerances can follow their own curriculum
+(``tol_levels``: loose -> 10 cm / 3 deg, advancing on the success rate at the current tolerance;
+the task-level curriculum waits until the finest tolerance is reached).
+
 Per-robot observation and reward functions take the robot's entity name (``robot="spot"``).
 Entity names come from quadcoop.coop2.pairs (QUADCOOP_PAIR): "anymal" and "spot" by default,
 "anymal1"/"anymal2" or "spot1"/"spot2" for two robots of one type; agent order everywhere: AGENTS.
@@ -109,6 +120,140 @@ class CoopPush2Command(Push2Command):
         self.profile_roll = 1
         # eval hook: callable(env_ids) -> dict overriding the placement (see scripts/eval_coop2.py)
         self.scenario = None
+        # success-tolerance curriculum (per env: the tolerance its episode started with)
+        self.tol_table = torch.tensor(cfg.tol_levels, device=dev) if cfg.tol_levels else None
+        self.tol_level = (len(cfg.tol_levels) - 1 if cfg.tol_start_finest else 0) if cfg.tol_levels else 0
+        self.tol_ema, self.tol_last_change = 0.0, 0.0
+        self.env_tol_level = torch.zeros(n, dtype=torch.long, device=dev)
+        self.tol_pos = torch.full((n,), cfg.success_pos_tol, device=dev)
+        self.tol_yaw = torch.full((n,), math.radians(cfg.success_yaw_tol_deg), device=dev)
+        if cfg.contact_mode:
+            self._build_contact_tables(nom, nom_rest)
+
+    # -- contact mode ------------------------------------------------------------------------------
+    def _build_contact_tables(self, nom: torch.Tensor, nom_rest: torch.Tensor) -> None:
+        """Candidate contacts of every shape at nominal size (quadcoop/contacts.py), padded to K."""
+        import numpy as np
+
+        from quadcoop import contacts as C
+
+        n, dev, S = self.num_envs, self.device, len(SHAPES2)
+        kinds_np, nom_np, rest_np = self.kinds.cpu().numpy(), nom.cpu().numpy(), nom_rest.cpu().numpy()
+        lists = [C.candidates(nom_np[s], kinds_np[s], float(rest_np[s])) for s in range(S)]
+        K = max(len(x) for x in lists)
+        self.c_K = K
+        self.c_lists = lists
+        self.c_p = torch.zeros(S, K, 2, device=dev)
+        self.c_n = torch.zeros(S, K, 2, device=dev)
+        self.c_n[..., 0] = 1.0
+        self.c_pre = torch.zeros(S, K, 2, device=dev)
+        self.c_valid = torch.zeros(S, K, dtype=torch.bool, device=dev)
+        self.c_sep_ok = torch.zeros(S, K, K, dtype=torch.bool, device=dev)
+        self.c_com = torch.zeros(S, 2, device=dev)
+        for s, cl in enumerate(lists):
+            for c in cl:
+                self.c_p[s, c.index] = torch.tensor(c.p, dtype=torch.float)
+                self.c_n[s, c.index] = torch.tensor(c.n, dtype=torch.float)
+                self.c_pre[s, c.index] = torch.tensor(c.pre, dtype=torch.float)
+                self.c_valid[s, c.index] = True
+            st = np.stack([c.stand for c in cl]) if cl else np.zeros((0, 2))
+            d = np.linalg.norm(st[:, None] - st[None], axis=-1) if len(cl) else np.zeros((0, 0))
+            ok = (d >= self.cfg.contact_min_sep) & ~np.eye(len(cl), dtype=bool)
+            self.c_sep_ok[s, :len(cl), :len(cl)] = torch.tensor(ok, device=dev)
+            self.c_com[s] = torch.tensor(C.centre_of_mass(nom_np[s], kinds_np[s]), dtype=torch.float)
+        # a lone sphere spins freely as it rolls: its contacts live in the frame it started with
+        valid_parts = self.kinds >= 0
+        self.c_free_spin = ((self.kinds == 1) | ~valid_parts).all(-1)
+        self.c_bbox_nom = self.bbox_env[0, :, 2:4].clone()  # nominal half extents (before the startup event)
+        self.c_idx = torch.zeros(n, 2, dtype=torch.long, device=dev)
+        self.c_pobj = torch.zeros(n, 2, 2, device=dev)
+        self.c_nobj = torch.zeros(n, 2, 2, device=dev)
+        self.c_nobj[..., 0] = 1.0
+        self.c_comobj = torch.zeros(n, 2, device=dev)
+        self.c_yaw0 = torch.zeros(n, device=dev)
+        self.c_engaged = torch.zeros(n, 2, dtype=torch.bool, device=dev)
+        self.c_drift_t = torch.zeros(n, 2, device=dev)
+        self.c_free_t = torch.zeros(n, 2, device=dev)
+        self.c_rule = torch.zeros(n, dtype=torch.long, device=dev)  # 0 spread, 1 adjacent, 2 random
+        print(f"[coop2] contact mode: {', '.join(f'{SHAPES2[s].name} {len(cl)}' for s, cl in enumerate(lists))} "
+              f"candidate contacts; pairs >= {self.cfg.contact_min_sep:g} m apart; rule mix {self.cfg.contact_mix}")
+
+    def contact_frame_yaw(self) -> torch.Tensor:
+        return torch.where(self.c_free_spin[self.shape], self.c_yaw0, self.heading())
+
+    def contact_world(self, k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Robot k's assigned contact point and outward normal, world frame (n, 2) each."""
+        yaw = self.contact_frame_yaw()
+        cs, sn = torch.cos(yaw), torch.sin(yaw)
+
+        def rot(v):
+            return torch.stack([cs * v[:, 0] - sn * v[:, 1], sn * v[:, 0] + cs * v[:, 1]], -1)
+        return self.box_pos()[:, :2] + rot(self.c_pobj[:, k]), rot(self.c_nobj[:, k])
+
+    def contact_arm_world(self, k: int) -> torch.Tensor:
+        yaw = self.contact_frame_yaw()
+        cs, sn = torch.cos(yaw), torch.sin(yaw)
+        v = self.c_pobj[:, k] - self.c_comobj
+        return torch.stack([cs * v[:, 0] - sn * v[:, 1], sn * v[:, 0] + cs * v[:, 1]], -1)
+
+    def front_point(self, robot: str) -> torch.Tensor:
+        r = self.robots[robot]
+        yaw = yaw_of(r.data.root_link_quat_w)
+        return r.data.root_link_pos_w[:, :2] + self.reach[robot] * torch.stack([torch.cos(yaw), torch.sin(yaw)], -1)
+
+    def contact_dist(self, k: int) -> torch.Tensor:
+        """Distance from robot k's front to its assigned contact point (m)."""
+        return torch.linalg.norm(self.front_point(AGENTS[k]) - self.contact_world(k)[0], dim=-1)
+
+    def _pick_contacts(self, env_ids, shape, obj_heading, gdir, forced=None):
+        """Per env: the two robots' contacts for this goal direction (object frame, scaled to the
+        env's object size), their approach points and the centre of mass."""
+        c, dev, m = self.cfg, self.device, len(env_ids)
+        f = (self.bbox_env[env_ids, shape, 2:4] / self.c_bbox_nom[shape].clamp(min=1e-3)).clamp(0.5, 2.0)
+        p = self.c_p[shape] * f.unsqueeze(1)
+        nn = self.c_n[shape] / f.unsqueeze(1)
+        nn = nn / torch.linalg.norm(nn, dim=-1, keepdim=True).clamp(min=1e-6)
+        pre = self.c_pre[shape] * f.unsqueeze(1)
+        com = self.c_com[shape] * f
+        valid = self.c_valid[shape]
+        rel = gdir - obj_heading
+        u = torch.stack([torch.cos(rel), torch.sin(rel)], -1)  # goal direction, object frame
+        lat = torch.stack([-u[:, 1], u[:, 0]], -1)
+        align = -(nn * u.unsqueeze(1)).sum(-1)
+        sep = self.c_sep_ok[shape]
+        pair = lambda b: b.unsqueeze(2) & b.unsqueeze(1) & sep  # noqa: E731
+        p45 = pair(valid & (align >= math.cos(math.radians(46.0))))
+        p75 = pair(valid & (align >= math.cos(math.radians(75.0))))
+        pany = pair(valid)
+        use = torch.where(p45.any((1, 2), keepdim=True), p45, torch.where(p75.any((1, 2), keepdim=True), p75, pany))
+        pl = (p * lat.unsqueeze(1)).sum(-1)
+        rl = ((p - com.unsqueeze(1)) * lat.unsqueeze(1)).sum(-1).abs()
+        mix = torch.tensor(c.contact_mix, device=dev, dtype=torch.float)
+        rule = torch.multinomial((mix / mix.sum()).expand(m, 3), 1).squeeze(-1)
+        score = torch.where((rule == 0).view(m, 1, 1), (pl.unsqueeze(2) - pl.unsqueeze(1)).abs(),
+                            torch.where((rule == 1).view(m, 1, 1), -(rl.unsqueeze(2) + rl.unsqueeze(1)),
+                                        torch.rand(m, self.c_K, self.c_K, device=dev)))
+        score = score + 1e-4 * torch.rand_like(score)  # break ties at random
+        score = torch.where(use, score, torch.full_like(score, -1e9))
+        flat = score.view(m, -1).argmax(-1)
+        i, j = flat // self.c_K, flat % self.c_K
+        swap = torch.rand(m, device=dev) < 0.5
+        i, j = torch.where(swap, j, i), torch.where(swap, i, j)
+        if forced is not None:
+            i, j = forced[:, 0], forced[:, 1]
+        idx = torch.stack([i, j], -1)
+        ar = torch.arange(m, device=dev)
+        return idx, p[ar.unsqueeze(-1), idx], nn[ar.unsqueeze(-1), idx], pre[ar.unsqueeze(-1), idx], com, rule
+
+    def _update_metrics(self) -> None:
+        super()._update_metrics()
+        if self.tol_table is not None and self.cfg.success_mode == "terminate":
+            c = self.cfg
+            d, e = self.errors()
+            still = (torch.linalg.norm(self.box_vel()[:, :2], dim=-1) < c.success_max_speed) & \
+                    (self.box_ang_vel()[:, 2].abs() < c.success_max_yaw_rate)
+            self.success_flag[:] = (d < self.tol_pos) & (e.abs() < self.tol_yaw) & still
+            self.metrics["success"][:] = self.success_flag.float()
 
     # -- per-robot geometry -------------------------------------------------------------------
     def obs_rel_yaw(self, robot: str = AGENTS[0]) -> torch.Tensor:
@@ -181,6 +326,15 @@ class CoopPush2Command(Push2Command):
         if self.cfg.track_approach:  # after the rewards and resets of this step: next step's baseline
             for a in AGENTS:
                 self.prev_near[a][:] = self.near_value(a)
+        if self.cfg.contact_mode:
+            dt = self._env.step_dt
+            for k in range(len(AGENTS)):
+                dk = self.contact_dist(k)
+                near = dk < self.cfg.drift_dist
+                self.c_engaged[:, k] |= near
+                self.c_drift_t[:, k] = torch.where(self.c_engaged[:, k] & ~near, self.c_drift_t[:, k] + dt,
+                                                   torch.zeros_like(dk))
+                self.c_free_t[:, k] = torch.where(self.c_engaged[:, k], self.c_free_t[:, k], self.c_free_t[:, k] + dt)
 
     # -- placement --------------------------------------------------------------------------------
     def _resample_command(self, env_ids: torch.Tensor) -> None:
@@ -191,6 +345,10 @@ class CoopPush2Command(Push2Command):
         self.metrics["success"][env_ids] = 0.0
         self.in_goal_time[env_ids] = 0.0
         self.success_flag[env_ids] = False
+        if self.tol_table is not None:
+            self.env_tol_level[env_ids] = self.tol_level
+            self.tol_pos[env_ids] = self.tol_table[self.tol_level, 0]
+            self.tol_yaw[env_ids] = torch.deg2rad(self.tol_table[self.tol_level, 1])
         lvl = torch.full((m,), self.level, dtype=torch.long, device=dev)
         replay = torch.rand(m, device=dev) < c.replay_frac
         lvl = torch.where(replay, torch.randint(0, self.level + 1, (m,), device=dev), lvl)
@@ -267,6 +425,37 @@ class CoopPush2Command(Push2Command):
             gaps = sc.get("gaps", gaps)
             yaw_noise = sc.get("yaw_noise", yaw_noise)
             park = sc.get("park", park)  # eval "solo": the other robot stands far away
+        cpose = None
+        if c.contact_mode:
+            forced = sc.get("contact_idx") if sc is not None else None
+            gdir_now = torch.atan2((goal_xy - obj_xy)[:, 1], (goal_xy - obj_xy)[:, 0])
+            idx, cp, cn, cpre, ccom, rule = self._pick_contacts(env_ids, shape, obj_heading, gdir_now, forced)
+            self.c_idx[env_ids], self.c_pobj[env_ids], self.c_nobj[env_ids] = idx, cp, cn
+            self.c_comobj[env_ids], self.c_rule[env_ids] = ccom, rule
+            self.c_yaw0[env_ids] = obj_heading
+            self.c_drift_t[env_ids] = 0.0
+            self.c_free_t[env_ids] = 0.0
+            self.c_engaged[env_ids] = False
+            ch, sh = torch.cos(obj_heading), torch.sin(obj_heading)
+            to_w = lambda v: obj_xy + torch.stack([ch * v[:, 0] - sh * v[:, 1], sh * v[:, 0] + ch * v[:, 1]], -1)  # noqa: E731
+            stands, pres = [], []
+            for k, a in enumerate(AGENTS):
+                nk = cn[:, k]
+                lat_k = torch.stack([-nk[:, 1], nk[:, 0]], -1)
+                stands.append(cp[:, k] + nk * (self.reach[a] + U(0.02, 0.10)).unsqueeze(-1)
+                              + lat_k * U(-0.08, 0.08).unsqueeze(-1))
+                pres.append(cpre[:, k])
+            cpose = []
+            for k, a in enumerate(AGENTS):
+                # each robot starts at its approach point with probability 1 - contact_start_at, unless
+                # that point is within 1 m of where the partner could be
+                o = 1 - k
+                at_pre = (torch.rand(m, device=dev) >= c.contact_start_at) & \
+                    (torch.linalg.norm(pres[k] - stands[o], dim=-1) > 1.0) & (torch.linalg.norm(pres[k] - pres[o], dim=-1) > 1.0)
+                pos_obj = torch.where(at_pre.unsqueeze(-1), pres[k], stands[k])
+                nk = cn[:, k]
+                yaw = torch.atan2(-nk[:, 1], -nk[:, 0]) + obj_heading + sym_u(torch.full((m,), 10.0, device=dev))
+                cpose.append((to_w(pos_obj), yaw))
 
         self.goal_xy[env_ids] = goal_xy
         self.goal_yaw[env_ids] = goal_yaw
@@ -277,6 +466,8 @@ class CoopPush2Command(Push2Command):
             dist = self.radius_env[env_ids, shape] + self.reach[a] + gaps[k]
             pos = obj_xy + dist.unsqueeze(-1) * torch.stack([torch.cos(bearings[k]), torch.sin(bearings[k])], -1)
             yaw = bearings[k] + math.pi + yaw_noise[k]
+            if cpose is not None:
+                pos, yaw = cpose[k]
             far = origin + torch.tensor([0.0, c.park_distance * (1.0 if k == 0 else -1.0)], device=dev)
             pos = torch.where(park[k].unsqueeze(-1), far, pos)
             q_adr = robot.indexing.free_joint_q_adr
@@ -339,6 +530,18 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     need_mass: float = 45.0  # kg: about what one ANYmal can push alone
     need_extra: float = 20.0  # kg above the level's mass window allowed for those episodes
     need_shapes: tuple[str, ...] = ("long", "arch", "dumbbell", "t_shape")  # trainable wide shapes
+    # Stage 4 contact mode (see the module docstring)
+    contact_mode: bool = False
+    contact_mix: tuple[float, float, float] = (1.0, 1.0, 1.0)  # spread, adjacent, random pair
+    contact_start_at: float = 0.7  # share of robots starting at the contact (the rest at its approach point)
+    contact_min_sep: float = 0.85  # m between the two robots' standing points
+    drift_dist: float = 0.5  # m from the front to the contact point
+    drift_s: float = 1.0
+    engage_s: float = 8.0  # a robot must reach its contact within this
+    # success-tolerance curriculum: ((pos tol m, yaw tol deg), ...) loose -> fine; () = fixed
+    # success_pos_tol / success_yaw_tol_deg
+    tol_levels: tuple[tuple[float, float], ...] = ()
+    tol_start_finest: bool = False  # evaluation: start at the finest tolerance
     # d_lo, d_hi [m] | robot spread +- [deg] | "behind" offset +- [deg] | object start yaw +- |
     # goal yaw change +- | pos tol [m] | yaw tol [deg] | hold [s] (tolerances: "hold" mode only;
     # "terminate" uses success_pos_tol / success_yaw_tol_deg) | max mass [kg] | min mass [kg]
@@ -390,6 +593,66 @@ def goal_obs(env, robot: str) -> torch.Tensor:
     norm = torch.where(k > 0, e / (math.pi / k.clamp(min=1)), torch.zeros_like(e))
     return torch.cat([to_goal, box_to_goal, torch.sin(k * e).unsqueeze(-1),
                       torch.cos(k * e).unsqueeze(-1), norm.unsqueeze(-1)], dim=-1)
+
+
+def contact_obs(env, robot: str) -> torch.Tensor:
+    """Stage 4 (9), this robot's frame: its contact point rel. the robot (2), the push direction
+    (2), the contact's arm about the object's centre of mass (2), the z torque of a unit push there
+    (1), and the partner's contact point rel. this robot (2)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    base = env.scene[robot].data.root_link_pos_w[:, :2]
+    p_k, n_k = g.contact_world(k)
+    p_o, _ = g.contact_world(1 - k)
+    arm = g.contact_arm_world(k)
+    tau = arm[:, 0] * (-n_k[:, 1]) - arm[:, 1] * (-n_k[:, 0])
+    return torch.cat([_to_frame(env, robot, p_k - base), _to_frame(env, robot, -n_k), _to_frame(env, robot, arm),
+                      tau.unsqueeze(-1), _to_frame(env, robot, p_o - base)], dim=-1)
+
+
+def off_contact(env, robot: str) -> torch.Tensor:
+    """Stage 4 termination: the robot left its contact (more than drift_dist for drift_s after
+    reaching it) or never reached it (engage_s)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    return (g.c_drift_t[:, k] >= g.cfg.drift_s) | (g.c_free_t[:, k] >= g.cfg.engage_s)
+
+
+def own_off_contact(env, robot: str) -> torch.Tensor:
+    return off_contact(env, robot).float()
+
+
+def contact_curriculum(env, env_ids: torch.Tensor, advance: float = 0.5, dwell_iters: int = 100, ema: float = 0.02,
+                       steps_per_iter: int = 24):
+    """Success tolerance loose -> fine (cfg.tol_levels), advancing when the success rate at the
+    current tolerance passes `advance` (after dwell_iters at it); the task-level curriculum
+    (Stage 2's push2_curriculum) only moves once the finest tolerance is reached."""
+    from quadcoop.stage2.mdp import push2_curriculum
+
+    g = _g(env)
+    it = env.common_step_counter / steps_per_iter
+    n_tol = len(g.cfg.tol_levels)
+    finest = g.tol_level >= n_tol - 1
+    out = push2_curriculum(env, env_ids, steps_per_iter=steps_per_iter, allow_level=finest)
+    if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0 and not finest:
+        at = g.env_tol_level[env_ids] == g.tol_level
+        if at.any():
+            s = float(g.metrics["success"][env_ids][at].mean())
+            w = min(1.0, ema * int(at.sum()))
+            g.tol_ema = (1 - w) * g.tol_ema + w * s
+        if it - g.tol_last_change >= dwell_iters and g.tol_ema > advance:
+            g.tol_level += 1
+            g.tol_last_change = it
+            g.tol_ema = 0.5 * advance
+            g.last_change_iter = it  # the task level dwells from here
+    tl = g.cfg.tol_levels[g.tol_level]
+    out.update({"tol_level": torch.tensor(float(g.tol_level)), "tol_pos_m": torch.tensor(float(tl[0])),
+                "tol_yaw_deg": torch.tensor(float(tl[1])), "tol_success_ema": torch.tensor(g.tol_ema)})
+    if g.cfg.contact_mode:
+        for k, a in enumerate(AGENTS):
+            out[f"engaged_{a}"] = g.c_engaged[:, k].float().mean()
+            out[f"contact_dist_{a}"] = g.contact_dist(k).mean()
+    return out
 
 
 def walker_command_of(env, twist_name: str) -> torch.Tensor:

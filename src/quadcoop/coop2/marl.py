@@ -15,6 +15,11 @@ policy - CNN encoders, MLP, normalizer and action noise - with the partner input
 weight, so iteration 0 is exactly the two single-robot policies side by side (model_0.pt, the
 "frozen pair" baseline). Loading is strict: anything that does not map is an error.
 
+Stage 4 (``contacts``): each actor's input also has the robot's assigned contact and the
+partner's (9 numbers after the partner's 9), at zero weight after the warm start like the partner
+inputs; ``kl_ramp`` fades the Stage 2b anchor out, since Stage 2b would rather push from its own
+favourite spot than from an assigned contact.
+
 Rewards: each robot gets the env's team terms plus its own terms (reward terms whose names end
 in _anymal / _spot), read from the reward manager every step.
 
@@ -108,6 +113,11 @@ class MarlCfg:
     kl_partner_far: float = 3.0  # m: full beta beyond this partner distance
     start_mode: str = "behind"  # env option (recorded): robots' start, "behind" or "around"
     need_frac: float = 0.0  # env option (recorded): share of episodes that need both robots
+    contacts: bool = False  # env option (recorded): Stage 4 contact mode (assigned contacts as inputs)
+    contact_mix: tuple = (1.0, 1.0, 1.0)  # env option (recorded): spread / adjacent / random pairs
+    contact_start_at: float = 0.7  # env option (recorded)
+    tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
+    kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
     max_actor_learning_rate: float = 3.0e-4
     reward_clip: float = 100.0  # per robot per step (a success is +50 at most, a fall -35)
@@ -311,7 +321,7 @@ class MarlTrainer:
         for a, path in paths.items():
             ck = torch.load(path, map_location=self.device, weights_only=False)
             cnn = {"profile_top": f"top_{a}", "profile_front": "front"}
-            n_act = N_SINGLE + N_PARTNER
+            n_act = int(self.obs[f"actor_{a}"].shape[-1])  # 42 + partner 9 (+ contacts 9)
             rep = warm_start_model(self.actors[a], ck["actor_state_dict"], [(slice(0, N_SINGLE), slice(0, N_SINGLE))],
                                    n_act, cnn if v == "b" else {}, self.cfg.min_std, f"{a} actor <- {path}")
             sp = self.actors[a].distribution.std_param.detach()
@@ -319,9 +329,10 @@ class MarlTrainer:
             print(f"[marl2] {a}: actor warm-started from {path} ({', '.join(rep)}); action noise "
                   f"{[round(x, 2) for x in sp.tolist()]}, capped at {[round(x, 2) for x in self.std_cap[a].tolist()]}")
             if self.cfg.algo == "ippo":
+                n_state = int(self.obs[f"state_{a}"].shape[-1])
                 cols = [(slice(0, N_SINGLE), slice(0, N_SINGLE)),
-                        (slice(N_SINGLE, N_SINGLE + N_PHYS), slice(n_act, n_act + N_PHYS))]
-                rep = warm_start_model(self.critics[a], ck["critic_state_dict"], cols, n_act + N_PHYS,
+                        (slice(N_SINGLE, N_SINGLE + N_PHYS), slice(n_state, n_state + N_PHYS))]
+                rep = warm_start_model(self.critics[a], ck["critic_state_dict"], cols, n_state + N_PHYS,
                                        cnn if v == "b" else {}, None, f"{a} critic <- {path}")
                 print(f"[marl2] {a}: critic warm-started from {path} ({', '.join(rep)})")
             self.warm_from[a] = str(path)
@@ -335,12 +346,13 @@ class MarlTrainer:
             ref = make_model(self.obs, actor_groups(a, v), 3, self.cfg.hidden_dims, v, True).to(self.device)
             cnn = {"profile_top": f"top_{a}", "profile_front": "front"} if v == "b" else {}
             warm_start_model(ref, ck["actor_state_dict"], [(slice(0, N_SINGLE), slice(0, N_SINGLE))],
-                             N_SINGLE + N_PARTNER, cnn, self.cfg.min_std, f"{a} reference <- {path}")
+                             int(self.obs[f"actor_{a}"].shape[-1]), cnn, self.cfg.min_std, f"{a} reference <- {path}")
             ref.eval()
             for p in ref.parameters():
                 p.requires_grad_(False)
             self.refs[a] = ref
-        print(f"[marl2] KL anchor: beta {self.cfg.kl_ref:g} to the frozen Stage 2b actors "
+        print(f"[marl2] KL anchor: beta {self.cfg.kl_ref:g}"
+              f"{f' falling to 0 by iteration {self.cfg.kl_ramp}' if self.cfg.kl_ramp > 0 else ''} to the frozen Stage 2b actors "
               f"({', '.join(f'{a} <- {p}' for a, p in paths.items())})")
 
     def kl_to_ref(self, a: str, o_mb: TensorDict) -> torch.Tensor:
@@ -355,6 +367,13 @@ class MarlTrainer:
             sd_r = ref.distribution.std_param.clamp(min=1e-6).expand_as(mu_r)
         kl = torch.log(sd_r / sd) + (sd.square() + (mu - mu_r).square()) / (2.0 * sd_r.square()) - 0.5
         return kl.sum(-1)
+
+    def kl_beta(self) -> float:
+        """The anchor's beta this iteration: kl_ref, falling linearly to 0 over kl_ramp iterations."""
+        c = self.cfg
+        if c.kl_ref <= 0:
+            return 0.0
+        return c.kl_ref if c.kl_ramp <= 0 else c.kl_ref * max(0.0, 1.0 - self.it / c.kl_ramp)
 
     def kl_weight(self, a: str, o_mb: TensorDict) -> torch.Tensor:
         """Per-sample anchor weight: 1 with the partner far, kl_partner_scale with it near."""
@@ -391,7 +410,8 @@ class MarlTrainer:
             "lr": dict(self.lr), "warm_from": self.warm_from,
             "std_cap": {a: (None if c is None else c.tolist()) for a, c in self.std_cap.items()},
             "env_state": {"common_step_counter": int(self.env.common_step_counter), "level": int(g.level),
-                          "ema_success": float(g.ema_success), "shape_success": g.shape_success.tolist()},
+                          "ema_success": float(g.ema_success), "shape_success": g.shape_success.tolist(),
+                          "tol_level": int(getattr(g, "tol_level", 0)), "tol_ema": float(getattr(g, "tol_ema", 0.0))},
         }
         path = self.log_dir / f"model_{self.it}.pt"
         torch.save(ck, path)
@@ -423,7 +443,12 @@ class MarlTrainer:
         if "shape_success" in es:
             g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
         g.last_change_iter = self.env.common_step_counter / self.cfg.num_steps_per_env
-        print(f"[marl2] resumed {path} at iteration {self.it}, curriculum level {g.level}")
+        if getattr(g, "tol_table", None) is not None:
+            g.tol_level = int(es.get("tol_level", g.tol_level))
+            g.tol_ema = float(es.get("tol_ema", g.tol_ema))
+            g.tol_last_change = g.last_change_iter
+        print(f"[marl2] resumed {path} at iteration {self.it}, curriculum level {g.level}"
+              f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}")
 
     @staticmethod
     def newest(log_dir: Path) -> Path | None:
@@ -557,6 +582,7 @@ class MarlTrainer:
             f_val, f_ret, f_adv = val.reshape(B, A), ret.reshape(B, A), adv_n.reshape(B, A)
             mb = B // cfg.num_mini_batches
             stats = defaultdict(float)
+            beta = self.kl_beta()
             n_upd = 0
             for _ in range(cfg.num_learning_epochs):
                 perm = torch.randperm(B, device=dev)
@@ -592,10 +618,10 @@ class MarlTrainer:
                             if cfg.bound_coef > 0:
                                 loss = loss + cfg.bound_coef * bound_loss
                             kl_ref = None
-                            if cfg.kl_ref > 0 and a in self.refs:
+                            if beta > 0 and a in self.refs:
                                 kl_s = self.kl_to_ref(a, o_mb)
                                 kl_ref = kl_s.mean()
-                                loss = loss + cfg.kl_ref * (self.kl_weight(a, o_mb) * kl_s).mean()
+                                loss = loss + beta * (self.kl_weight(a, o_mb) * kl_s).mean()
                             if not torch.isfinite(loss):
                                 skipped += 1
                                 continue
@@ -656,6 +682,7 @@ class MarlTrainer:
             out["Perf/collect_s"] = collect_s
             out["Perf/iteration_s"] = dt_s
             out["Train/critic_warmup"] = float(warm)
+            out["Loss/kl_beta"] = beta
             out["Train/skipped_updates"] = float(skipped)
             # how the episodes that ended this iteration ended (fractions; they sum to 1)
             for nm, cnt in outcome.items():
@@ -664,6 +691,14 @@ class MarlTrainer:
             if self.it % 10 == 0 or self.it == 1:
                 succ = out.get("Outcome/goal_reached", float("nan"))
                 lvl = out.get("Curriculum/push/level", float("nan"))
+                tol = out.get("Curriculum/push/tol_level")
+                if tol is not None:
+                    lvl = f"{lvl:g} tol {out.get('Curriculum/push/tol_pos_m', 0):.2f}m/{out.get('Curriculum/push/tol_yaw_deg', 0):.0f}deg"
+                    eng = [out.get(f"Curriculum/push/contact_dist_{x}") for x in AGENTS]
+                    if eng[0] is not None:
+                        lvl += f" contact dist {eng[0]:.2f}/{eng[1]:.2f}m"
+                    oc = [out.get(f"Outcome/{x}_off_contact", 0.0) for x in AGENTS]
+                    lvl += f" off-contact {oc[0]:.2f}/{oc[1]:.2f}"
                 fa = out.get(f"Outcome/{AGENTS[0]}_fell", float("nan"))
                 fs = out.get(f"Outcome/{AGENTS[1]}_fell", float("nan"))
                 print(f"[marl2 {cfg.algo}] it {self.it}/{cfg.max_iterations}  return "
@@ -712,7 +747,7 @@ class PairPolicy:
             for a, path in (singles or {}).items():
                 ck = torch.load(path, map_location=device, weights_only=False)
                 warm_start_model(self.actors[a], ck["actor_state_dict"], [(slice(0, N_SINGLE), slice(0, N_SINGLE))],
-                                 N_SINGLE + N_PARTNER, cnn(a), None, f"{a} actor <- {path}")
+                                 int(env_obs[f"actor_{a}"].shape[-1]), cnn(a), None, f"{a} actor <- {path}")
             self.iteration = 0
         for a in AGENTS:
             self.actors[a].eval()

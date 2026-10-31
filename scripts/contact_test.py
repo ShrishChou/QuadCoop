@@ -16,8 +16,14 @@ Executors (--executor):
              share of time under the policy, mean distance from its front to the assigned contact
              while under the policy, share of that time within 0.25 m, and the number of returns.
 
+    stage4   the Stage 4 contact-conditioned policy (train_coop2.py --contacts, --checkpoint): the
+             robots start at their assigned contacts and the policy (told the contacts) does the
+             rest. Rules spread / adjacent / random (a seeded random valid pair, as in training).
+
     python scripts/contact_test.py --executor policy                       # prefix handoff-aa
     python scripts/contact_test.py --executor policy --return-dist 0 --prefix handoff-aa-free
+    python scripts/contact_test.py --executor stage4 --checkpoint logs/marl2/s4_aa_s0/model_3000.pt \
+        --prefix s4-aa-s0-it3000                                  # rules spread,adjacent,random
 
 In script mode each robot runs the scripted contact controller
 (quadcoop/contact_control.py) on a contact from the object's candidate set
@@ -77,14 +83,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pair", choices=("mixed", "anymal", "spot"), default="anymal")
     ap.add_argument("--prefix", default=None, help="output names <prefix>-<rule> (default contact-<pair>)")
-    ap.add_argument("--rules", default=",".join(RULES))
+    ap.add_argument("--rules", default=None, help="default centre,adjacent,spread (stage4: spread,adjacent,random)")
     ap.add_argument("--objects", default="all")
     ap.add_argument("--masses", default="20,40,60,80")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--horizon", type=float, default=80.0)
     ap.add_argument("--reassign-s", type=float, default=0.0, help="re-choose contacts every so many seconds (0 = once)")
-    ap.add_argument("--executor", choices=("script", "policy"), default="script",
+    ap.add_argument("--executor", choices=("script", "policy", "stage4"), default="script",
                     help="who pushes once a robot is at its contact: the scripted controller or the frozen Stage 2b policy")
+    ap.add_argument("--checkpoint", default=None, help="stage4 executor: a train_coop2.py --contacts model_<iter>.pt")
     ap.add_argument("--return-dist", type=float, default=0.5,
                     help="policy executor: hand back to the script when the front is this far from the contact (0 = never)")
     ap.add_argument("--video-objects", default="cube,sphere,beam,dumbbell,arch,t_shape",
@@ -123,10 +130,20 @@ def main() -> int:
 
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     tag = {'anymal': 'aa', 'spot': 'ss', 'mixed': 'mx'}[a.pair]
-    prefix = a.prefix or (f"contact-{tag}" if a.executor == "script" else f"handoff-{tag}")
+    prefix = a.prefix or {"script": f"contact-{tag}", "policy": f"handoff-{tag}", "stage4": f"s4-{tag}"}[a.executor]
     use_policy = a.executor == "policy"
+    stage4 = a.executor == "stage4"
+    ck_cfg = {}
+    if stage4:
+        if not a.checkpoint:
+            raise SystemExit("--executor stage4 needs --checkpoint")
+        ck_cfg = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {})
+        if not ck_cfg.get("contacts"):
+            raise SystemExit(f"{a.checkpoint} was not trained with --contacts")
     video_objects = None if a.video_objects == "all" else {o.strip() for o in a.video_objects.split(",")}
-    rules = [r.strip() for r in a.rules.split(",")]
+    rules = [r.strip() for r in (a.rules or ("spread,adjacent,random" if stage4 else ",".join(RULES))).split(",")]
+    if stage4 and "centre" in rules:
+        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random")
     objects = list(SHAPE_NAMES2) if a.objects == "all" else [o.strip() for o in a.objects.split(",")]
     masses = [float(x) for x in a.masses.split(",")]
     vw, vh = (int(x) for x in a.video_size.lower().split("x"))
@@ -153,7 +170,9 @@ def main() -> int:
     t_start = time.time()
 
     for mass in masses:
-        cfg = make_coop2_env_cfg("b", play=True)
+        cfg = make_coop2_env_cfg("b", play=True) if not stage4 else make_coop2_env_cfg(
+            "b", play=True, partner_map=bool(ck_cfg.get("partner_map", False)), reward_set=ck_cfg.get("reward_set", "r7"),
+            contacts=True, tol_levels=tuple(tuple(x) for x in ck_cfg.get("tol_levels", ())))
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -182,6 +201,8 @@ def main() -> int:
         # two pushers toward the goal (no pair of contacts whose standing points are 0.75 m apart, e.g.
         # straight behind the cube): the object starts unrotated, so the start assignment is known here
         def one_only(rule, o, s):
+            if stage4:
+                return False
             if rule == "centre":
                 return True
             gd = math.radians(SCENARIOS[s][2])
@@ -193,12 +214,23 @@ def main() -> int:
               "goal_xy_rel": dist.unsqueeze(-1) * torch.stack([torch.cos(gdir), torch.sin(gdir)], -1),
               "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
               "park": park}
+        if stage4:  # the env places each robot at its contact (object unrotated at the start: u = goal direction)
+            def pick(rule, o, s, r):
+                gd = math.radians(SCENARIOS[s][2])
+                u = np.array([math.cos(gd), math.sin(gd)])
+                if rule == "random":
+                    return C.random_pair(cands[o], u, random.Random(f"{a.seed}-{o}-{s}-{r}-pair"), min_sep=0.85)
+                pr = C.assign(cands[o], u, rule, min_sep=0.85)
+                return pr if pr[1] is not None else C.random_pair(cands[o], u, random.Random(0), min_sep=0.85)
+            s4_idx = [pick(rule, o, s, r) for rule, o, s, r, _ in cases]
+            sc["contact_idx"] = torch.tensor(s4_idx, dtype=torch.long, device=dev)
         g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids])
                                       for k, v in sc.items()}
         obs, _ = base.reset()
         g.scenario = None
         obs = TensorDict({k: v for k, v in obs.items() if not k.startswith("walker_")}, batch_size=[n])
-        policy = PairPolicy(obs, device, "b", singles=models["policy"]) if use_policy else None
+        policy = PairPolicy(obs, device, "b", singles=models["policy"]) if use_policy else \
+            PairPolicy(obs, device, "b", checkpoint=a.checkpoint) if stage4 else None
         robots = [base.scene[ag] for ag in AGENTS]
         handed = [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]  # under the push policy
         present = [torch.ones(n, dtype=torch.bool, device=dev), ~solo]  # robot 2 not parked
@@ -238,7 +270,11 @@ def main() -> int:
                     p_obj[k][j] = torch.tensor(cc.p, dtype=torch.float)
                     n_obj[k][j] = torch.tensor(cc.n, dtype=torch.float)
                     pre_obj[k][j] = torch.tensor(cc.pre, dtype=torch.float)
-        assign_all(range(n))
+        if stage4:
+            for j, (i1, i2) in enumerate(s4_idx):
+                chosen[0][j], chosen[1][j] = i1, i2
+        else:
+            assign_all(range(n))
         first_choice = [list(chosen[0]), list(chosen[1])]
 
         dt = base.step_dt
@@ -315,15 +351,15 @@ def main() -> int:
                 if i > 0 and i % 1000 == 0:
                     print(f"  [{mass:g} kg] step {i}/{steps} ({i * dt:.0f} s sim): {i / (time.time() - t_loop):.1f} steps/s, "
                           f"policy {t_pol:.0f} s, env step {t_env:.0f} s, live {int((~done).sum())}/{n}, "
-                          f"engaged {[int(x.sum()) for x in (handed if use_policy else ctrl_push)]}", flush=True)
-                if reassign_every and i > 0 and i % reassign_every == 0:
+                          f"engaged {[int(x.sum()) for x in (handed if use_policy else present if stage4 else ctrl_push)]}", flush=True)
+                if reassign_every and i > 0 and i % reassign_every == 0 and not stage4:
                     assign_all([j for j in range(n) if not bool(done[j])])
                 obj_pos, obj_yaw = g.box_pos()[:, :2], g.heading()
                 _, e = g.errors()
                 e = torch.where(g.symmetry() > 0, e, torch.zeros_like(e))
                 act = torch.zeros(n, 6, device=dev)
                 pushing, engaged, cdist = [], [], []
-                if use_policy:
+                if use_policy or stage4:
                     sync(); t0 = time.time()  # noqa: E702
                     pol_act = policy(obs)
                     sync(); t_pol += time.time() - t0  # noqa: E702
@@ -339,7 +375,11 @@ def main() -> int:
                     p_w = obj_pos + torch.stack([c_o * p_obj[k][:, 0] - s_o * p_obj[k][:, 1],
                                                  s_o * p_obj[k][:, 0] + c_o * p_obj[k][:, 1]], -1)
                     dk = torch.linalg.norm(front_point(k) - p_w, dim=-1)
-                    if use_policy:
+                    if stage4:  # the contact policy drives both robots from the start
+                        a_k = pol_act[:, 3 * k:3 * k + 3]
+                        dk = g.contact_dist(k)
+                        engaged.append(present[k].clone())
+                    elif use_policy:
                         if a.return_dist > 0:  # drifted off the contact: back to the script
                             back = handed[k] & (dk > a.return_dist)
                             returns[k] += back.float() * (~done).float()
@@ -546,7 +586,8 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         by[("obj_mass", r["object"], r["mass"])].append(r)
         by[("group_mass", "seen" if r["seen_shape"] else "unseen", r["mass"])].append(r)
         by[("scen_mass", r["scenario"], r["mass"])].append(r)
-    what = (f"{'scripted contacts' if a.executor == 'script' else 'hand-off (script to the contact, then the frozen Stage 2b policy'}"
+    what = (f"Stage 4 contact policy {a.checkpoint} (robots start at their contacts)" if a.executor == "stage4" else
+            f"{'scripted contacts' if a.executor == 'script' else 'hand-off (script to the contact, then the frozen Stage 2b policy'}"
             + ("" if a.executor == "script" else (f", back to the script beyond {a.return_dist:g} m)" if a.return_dist > 0 else ", never back)"))
             + f", rule '{rule}' ({'one robot' if solo else 'two robots'}), pair {a.pair}") + \
            (f", re-chosen every {a.reassign_s:g} s" if a.reassign_s > 0 else "")
@@ -582,7 +623,7 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         cdesc = "" if ex is None else (ex["contact_1"] + ("" if not ex["contact_2"] else f" + {ex['contact_2']}"))
         md.append(f"| {o}{'' if o in train_names else ' (unseen)'} | {cdesc} | "
                   + " | ".join(f2(summary["by_object_mass"][f"{o} / {m:g} kg"]["success"]) for m in masses) + " |")
-    eng = "under the push policy" if a.executor == "policy" else "in push mode"
+    eng = {"policy": "under the push policy", "stage4": "all the time"}.get(a.executor, "in push mode")
     md += ["", f"## holding the assigned contact (while {eng})", "",
            "| mass | " + " | ".join(f"{ag} engaged | {ag} front-contact dist (m) | {ag} within 0.25 m | {ag} returns"
                                    for ag in (agents if not solo else agents[:1])) + " |",
