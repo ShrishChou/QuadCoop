@@ -463,7 +463,7 @@ def near_surface(env, std: float = 0.4) -> torch.Tensor:
 
 def push2_curriculum(env, env_ids: torch.Tensor, advance: float = 0.55, retreat: float = 0.15,
                      dwell_iters: int = 75, ema: float = 0.02, steps_per_iter: int = 24,
-                     min_weight: float = 0.15):
+                     min_weight: float = 0.15, allow_level: bool = True):
     g = _g(env)
     it = env.common_step_counter / steps_per_iter
     if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
@@ -478,7 +478,7 @@ def push2_curriculum(env, env_ids: torch.Tensor, advance: float = 0.55, retreat:
             s = float(succ[at_level].mean())
             w = min(1.0, ema * int(at_level.sum()))
             g.ema_success = (1 - w) * g.ema_success + w * s
-            if it - g.last_change_iter >= dwell_iters:
+            if allow_level and it - g.last_change_iter >= dwell_iters:
                 if g.ema_success > advance and g.level < len(g.cfg.levels) - 1:
                     g.level += 1
                     g.last_change_iter = it

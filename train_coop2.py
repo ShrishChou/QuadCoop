@@ -11,6 +11,14 @@
     python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 ...   # two ANYmal C
     python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 --kl-ref 0.05 \
         --critic-warmup 500 --max-actor-lr 1e-4 --run-name mappo_aa_kl_s0   # anchored to Stage 2b
+    python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 --contacts \
+        --kl-ref 0.05 --kl-ramp 1000 --need-frac 0.5 --critic-warmup 500 --max-actor-lr 1e-4 \
+        --run-name s4_aa_s0                                       # Stage 4: push from assigned contacts
+
+Stage 4 (--contacts): each episode both robots get a contact pair (quadcoop/contacts.py candidates;
+spread / adjacent / random pair, --contact-mix) and start at it; the contacts are part of their
+input; leaving a contact (> 0.5 m for 1 s) ends the episode as a failure. The success tolerance
+follows its own curriculum (--tol-levels, loose -> 10 cm / 3 deg; the task levels wait for it).
 
 The models come from evals/models.yaml (the roles walker_anymal, walker_spot, push2b_anymal,
 push2b_spot; push2ctrl_* for --variant ctrl), resolved through evals/registry.yaml: each robot's
@@ -126,6 +134,16 @@ def main() -> int:
                     help="share of training episodes with a wide object (long, arch, dumbbell, T) above "
                          "--need-mass kg, i.e. one robot alone cannot do it (evaluations unchanged)")
     ap.add_argument("--need-mass", type=float, default=45.0)
+    ap.add_argument("--contacts", action="store_true",
+                    help="Stage 4: assigned contact pairs as inputs, robots start at them, leaving one fails")
+    ap.add_argument("--contact-mix", default="1,1,1", help="weights of spread / adjacent / random contact pairs")
+    ap.add_argument("--contact-start-at", type=float, default=0.7,
+                    help="share of robots starting at their contact (the rest at its approach point)")
+    ap.add_argument("--tol-levels", default=None,
+                    help="success-tolerance curriculum 'pos_m:yaw_deg,...' loose -> fine; 'none' = fixed "
+                         "10 cm / 3 deg; default with --contacts: 0.30:15,0.20:10,0.15:6,0.12:4,0.10:3")
+    ap.add_argument("--kl-ramp", type=int, default=0,
+                    help="> 0: the KL anchor's beta falls linearly to 0 over this many iterations")
     ap.add_argument("--actor-lr", type=float, default=None,
                     help="starting actor learning rate (adapted to the KL target); default 1e-4, 3e-4 with --scratch")
     ap.add_argument("--max-actor-lr", type=float, default=None,
@@ -157,6 +175,12 @@ def main() -> int:
 
     if a.kl_ref > 0 and a.scratch:
         raise SystemExit("--kl-ref anchors to the Stage 2 policies: it does not apply with --scratch")
+    if a.tol_levels is None:
+        a.tol_levels = "0.30:15,0.20:10,0.15:6,0.12:4,0.10:3" if a.contacts else "none"
+    tol_levels = () if a.tol_levels == "none" else tuple(tuple(float(v) for v in x.split(":"))
+                                                        for x in a.tol_levels.split(","))
+    contact_mix = tuple(float(x) for x in a.contact_mix.split(","))
+    assert len(contact_mix) == 3, "--contact-mix needs three weights (spread, adjacent, random)"
     if a.critic_warmup is None:
         a.critic_warmup = 0 if a.scratch else 100
     if a.actor_lr is None:
@@ -175,6 +199,8 @@ def main() -> int:
           f"partner map {a.partner_map}  rewards {a.reward}  entropy {a.entropy_coef:g}  mean clip {a.mean_clip:g}  "
           f"bound {a.bound_coef:g}  kl_ref {a.kl_ref:g} (partner scale {a.kl_partner_scale:g})  "
           f"start {'around' if a.start_around else 'behind'}  need_frac {a.need_frac:g}  "
+          f"{f'CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g})  ' if a.contacts else ''}"
+          f"{f'tolerance curriculum {tol_levels}  ' if tol_levels else ''}{f'kl ramp {a.kl_ramp}  ' if a.kl_ramp else ''}"
           f"{'FROM SCRATCH' if a.scratch else 'warm start from Stage 2b'}")
     for k, v in models["selection"].items():
         print(f"  {k:15s} {v}")
@@ -189,7 +215,8 @@ def main() -> int:
 
     env_cfg = make_coop2_env_cfg(a.variant, partner_map=a.partner_map, reward_set=a.reward,
                                  start_mode="around" if a.start_around else "behind",
-                                 need_frac=a.need_frac, need_mass=a.need_mass)
+                                 need_frac=a.need_frac, need_mass=a.need_mass, contacts=a.contacts,
+                                 tol_levels=tol_levels, contact_mix=contact_mix, contact_start_at=a.contact_start_at)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -201,7 +228,8 @@ def main() -> int:
                   entropy_coef=a.entropy_coef, max_std_factor=a.max_std_factor,
                   mean_clip=a.mean_clip, bound_coef=a.bound_coef, kl_ref=a.kl_ref,
                   kl_partner_scale=a.kl_partner_scale, start_mode="around" if a.start_around else "behind",
-                  need_frac=a.need_frac,
+                  need_frac=a.need_frac, contacts=a.contacts, contact_mix=contact_mix,
+                  contact_start_at=a.contact_start_at, tol_levels=tol_levels, kl_ramp=a.kl_ramp,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])
@@ -221,7 +249,8 @@ def main() -> int:
         trainer.build_refs(models["policy"])
     (log_dir / "inputs.yaml").write_text(yaml.safe_dump({"run": run, "algo": a.algo, "variant": a.variant,
                                                          "partner_map": a.partner_map, "reward_set": a.reward,
-                                                         "scratch": a.scratch,
+                                                         "scratch": a.scratch, "contacts": a.contacts,
+                                                         "tol_levels": [list(x) for x in tol_levels],
                                                          "seed": a.seed, **models}, sort_keys=False, width=120))
     print(f"[marl2] reward terms: team {[trainer.term_names[i] for i in trainer.team_idx]}")
     for ag, ix in trainer.own_idx.items():

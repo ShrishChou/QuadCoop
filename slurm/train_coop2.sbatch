@@ -6,6 +6,10 @@
 #   ALGO=mappo SEED=0 sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 #   ALGO=ippo  SEED=0 sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 #   slurm/submit_coop2_first.sh       # both, plus the baseline evaluations and the final evaluations
+#   Stage 4 (push from assigned contacts, two ANYmal C, success tolerance curriculum):
+#   ALGO=mappo SEED=0 RUN_NAME=s4_aa_s0 EXTRA="--pair anymal --partner-map --reward r7 --contacts --kl-ref 0.05 \
+#     --kl-ramp 1000 --need-frac 0.5 --critic-warmup 500 --max-actor-lr 1e-4" \
+#     sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2

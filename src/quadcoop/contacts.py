@@ -16,6 +16,9 @@ How candidates are found (``candidates``):
   (the inner side of a T junction is not a surface);
 * exposed stretches narrower than ``min_width`` are dropped (the dumbbell's bar), longer ones are
   cut into segments of about ``seg_len`` m (two robots can share a long face);
+* with ``corners``, every exposed convex corner of a box adds a contact pushed along the diagonal
+  (normal = the bisector of its two faces): two robots can push a small box together from its two
+  back corners, where its back face only has room for one;
 * a candidate is kept only if a robot fits in front of it, facing it, with its front a few cm
   from the surface (its whole footprint clear of the object): the arch's inner pillar faces count
   if the doorway is wide enough, the inside corner of an L counts, a slot too narrow does not;
@@ -151,7 +154,7 @@ def approach_point(c: Contact, sdf, reach: float, half_w: float, min_clearance: 
 
 def candidates(parts: np.ndarray, kinds: np.ndarray, rest: float, seg_len: float = 0.5, min_width: float = 0.2,
                sphere_sectors: int = 8, reach: float = 0.55, standoff: float = 0.06, half_w: float = 0.30,
-               min_clearance: float = 0.02, keep_unreachable: bool = False) -> list[Contact]:
+               min_clearance: float = 0.02, keep_unreachable: bool = False, corners: bool = True) -> list[Contact]:
     """Candidate contacts of one object (nominal or randomized parts; see the module docstring).
 
     parts (P, 6) = (cx, cy, cz, hx, hy, hz) object frame; kinds (P,); rest = height of the object
@@ -197,6 +200,17 @@ def candidates(parts: np.ndarray, kinds: np.ndarray, rest: float, seg_len: float
                     p[along] += lo + (s + 0.5) * w
                     lab = f"part {i} {name}" + (f" seg {s + 1}/{nseg}" if nseg > 1 else "")
                     out.append(Contact(0, p, n.copy(), float(w), p - com, i, lab))
+        if corners:
+            for sx in (1, -1):
+                for sy in (1, -1):
+                    cpt = np.array([cx + sx * hx, cy + sy * hy])
+                    n = np.array([sx, sy], float) / math.sqrt(2.0)
+                    faces_ok = (sdf(cpt + np.array([0.0, -sy * 0.03]) + np.array([sx * 0.03, 0.0]))[0] > 0.0 and
+                                sdf(cpt + np.array([-sx * 0.03, 0.0]) + np.array([0.0, sy * 0.03]))[0] > 0.0)
+                    if not faces_ok or sdf(cpt + 0.05 * n)[0] <= 0.0:
+                        continue
+                    lab = f"part {i} corner {'+' if sx > 0 else '-'}x{'+' if sy > 0 else '-'}y"
+                    out.append(Contact(0, cpt, n, 0.1, cpt - com, i, lab))
     keep = []
     for c in out:
         c.stand = c.p + c.n * (reach + standoff)
@@ -273,3 +287,17 @@ def assign(cands: list[Contact], u: np.ndarray, rule: str, wide_angle_deg: float
     if float(a.p @ lat) < float(b.p @ lat):  # robot 1 on the left of the motion
         a, b = b, a
     return a.index, b.index
+
+
+def random_pair(cands: list[Contact], u: np.ndarray, rng, min_sep: float = 0.85) -> tuple[int | None, int | None]:
+    """A random usable pair (standing points min_sep apart) of contacts pushing within 46 deg of u,
+    else within 75 deg, else any; as the Stage 4 training draws its random pairs."""
+    u = u / max(np.linalg.norm(u), 1e-9)
+    for ang in (46.0, 75.0, 180.0):
+        cos = math.cos(math.radians(ang))
+        back = [c for c in cands if float(-c.n @ u) >= cos - 1e-9]
+        pairs = [(a, b) for i, a in enumerate(back) for b in back[i + 1:] if np.linalg.norm(a.stand - b.stand) >= min_sep]
+        if pairs:
+            a, b = pairs[rng.randrange(len(pairs))]
+            return (a.index, b.index) if rng.random() < 0.5 else (b.index, a.index)
+    return (cands[0].index if cands else None), None

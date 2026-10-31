@@ -18,6 +18,10 @@ Observation groups (the trainer picks what each network sees):
     privileged      object mass, friction, level (critics only; Stage 2's box_physics)
     walker_<robot>  the frozen walkers' inputs (not for the trainer)
 
+With ``contacts`` (Stage 4) actor_ / state_<robot> end with 9 more numbers: the robot's assigned
+contact and its partner's (quadcoop/coop2/mdp.py contact_obs), and each robot has an
+off-contact termination (a failure, like a fall) with its own penalty.
+
 Reward = Stage 2's terminate-rule reward split into
   team terms (both robots get them): object progress, yaw progress, precise progress, the
     time-decaying success bonus, settle / runaway penalties, -25 for a failure (either robot
@@ -104,8 +108,9 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
     return grp
 
 
-def _agent_terms(name: str, other: str, noisy: bool) -> dict:
-    """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner."""
+def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False) -> dict:
+    """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
+    (+ the assigned contacts in contact mode)."""
     def nz(lim):
         return Unoise(n_min=-lim, n_max=lim) if noisy else None
 
@@ -122,6 +127,7 @@ def _agent_terms(name: str, other: str, noisy: bool) -> dict:
         "hold_progress": T(func=hb.hold_progress),
         "partner": T(func=mdp.partner_obs, params={"robot": name, "other": other, "other_action": f"walker_{other}"},
                      noise=nz(0.05)),
+        **({"contact": T(func=mdp.contact_obs, params={"robot": name}, noise=nz(0.02))} if contacts else {}),
     }
 
 
@@ -135,7 +141,8 @@ GOAL_ERROR_COST = 0.25  # r7: per second at the start error (distance fraction 1
 
 def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool = False,
                        reward_set: str = "r3", start_mode: str = "behind", need_frac: float = 0.0,
-                       need_mass: float = 45.0) -> ManagerBasedRlEnvCfg:
+                       need_mass: float = 45.0, contacts: bool = False, tol_levels: tuple = (),
+                       contact_mix: tuple = (1.0, 1.0, 1.0), contact_start_at: float = 0.7) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -168,7 +175,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
            two pushers share it by effort; no body-gap proximity cost (shoulder to shoulder is
            free), only actual contact between the robots is penalized (robots_touch).
     start_mode: "behind" (level table) or "around" (anywhere around the object; training only).
-    need_frac / need_mass: share of training episodes with a wide object above need_mass kg."""
+    need_frac / need_mass: share of training episodes with a wide object above need_mass kg.
+    contacts: Stage 4 contact mode (assigned contacts, contact inputs, off-contact failure);
+    contact_mix (spread, adjacent, random) and contact_start_at: see CoopPush2CommandCfg.
+    tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
     assert not (partner_map and variant != "b"), "the partner map needs variant b (maps)"
@@ -220,16 +230,18 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         variant=variant, reach=tuple(SPECS[a].half_length for a in AGENTS), robot_reach=SPECS[AGENTS[0]].half_length,
         map_hz=float(os.environ.get("QUADCOOP_MAP_HZ", "10")), start_level=0, success_mode="terminate",
         partner_map=partner_map, track_approach=reward_set in ("r5", "r7", "r8"),
-        start_mode=start_mode, need_frac=need_frac, need_mass=need_mass)
+        start_mode=start_mode, need_frac=need_frac, need_mass=need_mass,
+        contact_mode=contacts, contact_mix=tuple(contact_mix), contact_start_at=contact_start_at,
+        tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
     obs = {}
     for a, o in PARTNER.items():
-        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True), concatenate_terms=True,
-                                                enable_corruption=not play)
-        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False), concatenate_terms=True,
-                                                enable_corruption=False)
+        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts),
+                                                concatenate_terms=True, enable_corruption=not play)
+        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts),
+                                                concatenate_terms=True, enable_corruption=False)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
                                                   concatenate_terms=True, enable_corruption=False)
@@ -273,7 +285,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     # -- rewards ------------------------------------------------------------------------------------
     R = RewardTermCfg
     step_dt = cfg.sim.mujoco.timestep * cfg.decimation
-    fails = tuple(f"{a}_fell" for a in AGENTS) + ("box_tipped", "box_lost")
+    fails = tuple(f"{a}_fell" for a in AGENTS) + ("box_tipped", "box_lost") + \
+        (tuple(f"{a}_off_contact" for a in AGENTS) if contacts else ())
     rewards = {
         # team (Stage 2, terminate rule)
         "box_progress": R(func=hb.box_progress, weight=3.0),
@@ -316,6 +329,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                                            params={"robot": a})
         rewards[f"own_fall_{a}"] = R(func=mdp.own_fall, weight=-0.2 * BONUS / step_dt,
                                      params={"robot": a, "nominal_height": SPECS[a].nominal_height})
+        if contacts:  # leaving its contact costs the robot that left as much as its own fall
+            rewards[f"own_off_contact_{a}"] = R(func=mdp.own_off_contact, weight=-0.2 * BONUS / step_dt,
+                                                params={"robot": a})
     cfg.rewards = rewards
 
     # -- terminations ----------------------------------------------------------------------------------
@@ -327,7 +343,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     cfg.terminations["box_lost"] = TerminationTermCfg(func=mdp.box_lost)
     cfg.terminations["goal_reached"] = TerminationTermCfg(func=m2.goal_reached)
     cfg.terminations["unstable"] = TerminationTermCfg(func=mdp.unstable)  # sim glitch: ends, no penalty
-    cfg.curriculum = {"push": CurriculumTermCfg(func=m2.push2_curriculum)}
+    if contacts:
+        for a in AGENTS:
+            cfg.terminations[f"{a}_off_contact"] = TerminationTermCfg(func=mdp.off_contact, params={"robot": a})
+    cfg.curriculum = {"push": CurriculumTermCfg(func=mdp.contact_curriculum if tol_levels else m2.push2_curriculum)}
 
     cfg.viewer.body_name = None
     cfg.viewer.distance = 8.0
@@ -336,4 +355,6 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         cfg.curriculum = {}
         cfg.commands["goal"].start_level = int(os.environ.get("QUADCOOP_PUSH_LEVEL", "4"))
         cfg.commands["goal"].replay_frac = 0.0
+        cfg.commands["goal"].tol_start_finest = True
+        cfg.commands["goal"].contact_start_at = 1.0
     return cfg
