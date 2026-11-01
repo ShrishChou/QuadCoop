@@ -1,0 +1,21 @@
+[marl2] resumed /orcd/home/002/shrishc/quadcoop/logs/marl2/s4b_aa_s0/model_5800.pt at iteration 5800, curriculum level 0, tolerance level 4
+[marl2 mappo] it 5810/6000  return 8.84/8.44  success 0.55  level 0 tol 0.10m/3deg contact dist 0.32/0.34m off-contact 0.19/0.23  fell 0.02/0.00  17045 steps/s
+[marl2 mappo] it 5820/6000  return -9.23/-10.81  success 0.38  level 0 tol 0.10m/3deg contact dist 0.33/0.36m off-contact 0.23/0.35  fell 0.01/0.04  17073 steps/s
+[marl2 mappo] it 5830/6000  return -12.10/-13.00  success 0.34  level 0 tol 0.10m/3deg contact dist 0.33/0.34m off-contact 0.27/0.37  fell 0.01/0.00  17168 steps/s
+[marl2 mappo] it 5840/6000  return -12.94/-13.00  success 0.33  level 0 tol 0.10m/3deg contact dist 0.34/0.33m off-contact 0.32/0.32  fell 0.01/0.01  17126 steps/s
+[marl2 mappo] it 5850/6000  return -16.32/-16.36  success 0.28  level 0 tol 0.10m/3deg contact dist 0.34/0.34m off-contact 0.35/0.34  fell 0.01/0.01  17082 steps/s
+[marl2 mappo] it 5860/6000  return -20.79/-20.71  success 0.24  level 0 tol 0.10m/3deg contact dist 0.34/0.34m off-contact 0.38/0.36  fell 0.00/0.00  17062 steps/s
+[marl2 mappo] it 5870/6000  return -19.64/-19.47  success 0.27  level 0 tol 0.10m/3deg contact dist 0.33/0.34m off-contact 0.36/0.35  fell 0.00/0.00  17105 steps/s
+[marl2 mappo] it 5880/6000  return -16.57/-17.57  success 0.28  level 0 tol 0.10m/3deg contact dist 0.32/0.33m off-contact 0.31/0.41  fell 0.00/0.00  17082 steps/s
+[marl2 mappo] it 5890/6000  return -7.84/-8.53  success 0.36  level 0 tol 0.10m/3deg contact dist 0.33/0.33m off-contact 0.29/0.34  fell 0.01/0.00  17189 steps/s
+[marl2 mappo] it 5900/6000  return -17.51/-17.31  success 0.27  level 0 tol 0.10m/3deg contact dist 0.32/0.33m off-contact 0.36/0.33  fell 0.00/0.02  17185 steps/s
+[marl2 mappo] it 5910/6000  return -12.85/-13.55  success 0.32  level 0 tol 0.10m/3deg contact dist 0.33/0.34m off-contact 0.27/0.39  fell 0.02/0.00  17183 steps/s
+[marl2 mappo] it 5920/6000  return -12.70/-12.89  success 0.33  level 0 tol 0.10m/3deg contact dist 0.32/0.33m off-contact 0.32/0.34  fell 0.00/0.00  17153 steps/s
+[marl2 mappo] it 5930/6000  return -15.17/-16.14  success 0.28  level 0 tol 0.10m/3deg contact dist 0.33/0.34m off-contact 0.30/0.40  fell 0.00/0.01  17188 steps/s
+[marl2 mappo] it 5940/6000  return -20.31/-21.50  success 0.24  level 0 tol 0.10m/3deg contact dist 0.33/0.34m off-contact 0.33/0.42  fell 0.01/0.01  17238 steps/s
+[marl2 mappo] it 5950/6000  return -16.93/-16.10  success 0.29  level 0 tol 0.10m/3deg contact dist 0.32/0.33m off-contact 0.37/0.30  fell 0.01/0.01  17275 steps/s
+[marl2 mappo] it 5960/6000  return -14.42/-16.10  success 0.30  level 0 tol 0.10m/3deg contact dist 0.32/0.34m off-contact 0.25/0.42  fell 0.00/0.01  17108 steps/s
+[marl2 mappo] it 5970/6000  return -10.98/-11.35  success 0.36  level 0 tol 0.10m/3deg contact dist 0.34/0.34m off-contact 0.30/0.33  fell 0.00/0.01  17146 steps/s
+[marl2 mappo] it 5980/6000  return -19.91/-20.00  success 0.26  level 0 tol 0.10m/3deg contact dist 0.32/0.34m off-contact 0.34/0.36  fell 0.01/0.01  17204 steps/s
+[marl2 mappo] it 5990/6000  return -18.55/-18.73  success 0.26  level 0 tol 0.10m/3deg contact dist 0.33/0.34m off-contact 0.35/0.37  fell 0.00/0.00  17174 steps/s
+[marl2 mappo] it 6000/6000  return -18.69/-18.34  success 0.27  level 0 tol 0.10m/3deg contact dist 0.34/0.33m off-contact 0.37/0.36  fell 0.00/0.01  17143 steps/s
