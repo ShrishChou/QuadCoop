@@ -10,6 +10,11 @@
 #   ALGO=mappo SEED=0 RUN_NAME=s4_aa_s0 EXTRA="--pair anymal --partner-map --reward r7 --contacts --kl-ref 0.05 \
 #     --kl-ramp 1000 --need-frac 0.5 --critic-warmup 500 --max-actor-lr 1e-4" \
 #     sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
+#   Stage 4b (contacts re-chosen every 3-6 s, 30% random starts), continuing a Stage 4 run: copy its last
+#   checkpoint into logs/marl2/s4b_aa_s0/ first, then
+#   ALGO=mappo SEED=0 RUN_NAME=s4b_aa_s0 ITERS=6000 EXTRA="--pair anymal --partner-map --reward r7 --contacts \
+#     --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4" \
+#     sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2
