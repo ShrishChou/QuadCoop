@@ -116,6 +116,10 @@ class MarlCfg:
     contacts: bool = False  # env option (recorded): Stage 4 contact mode (assigned contacts as inputs)
     contact_mix: tuple = (1.0, 1.0, 1.0)  # env option (recorded): spread / adjacent / random pairs
     contact_start_at: float = 0.7  # env option (recorded)
+    drift_dist: float = 0.35  # env option (recorded): on contact = front within this of the contact point
+    drift_heading_deg: float = 45.0  # env option (recorded): ... and facing its push direction within this
+    reselect_s: tuple = (0.0, 0.0)  # env option (recorded): contact rule re-applied every U(lo, hi) s
+    random_start: float = 0.0  # env option (recorded): share of robots starting anywhere around the object
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
@@ -411,7 +415,8 @@ class MarlTrainer:
             "std_cap": {a: (None if c is None else c.tolist()) for a, c in self.std_cap.items()},
             "env_state": {"common_step_counter": int(self.env.common_step_counter), "level": int(g.level),
                           "ema_success": float(g.ema_success), "shape_success": g.shape_success.tolist(),
-                          "tol_level": int(getattr(g, "tol_level", 0)), "tol_ema": float(getattr(g, "tol_ema", 0.0))},
+                          "tol_level": int(getattr(g, "tol_level", 0)), "tol_ema": float(getattr(g, "tol_ema", 0.0)),
+                          "lvl_ema": float(getattr(g, "lvl_ema", 0.0))},
         }
         path = self.log_dir / f"model_{self.it}.pt"
         torch.save(ck, path)
@@ -446,6 +451,7 @@ class MarlTrainer:
         if getattr(g, "tol_table", None) is not None:
             g.tol_level = int(es.get("tol_level", g.tol_level))
             g.tol_ema = float(es.get("tol_ema", g.tol_ema))
+            g.lvl_ema = float(es.get("lvl_ema", 0.0))
             g.tol_last_change = g.last_change_iter
         print(f"[marl2] resumed {path} at iteration {self.it}, curriculum level {g.level}"
               f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}")

@@ -254,7 +254,9 @@ def assign(cands: list[Contact], u: np.ndarray, rule: str, wide_angle_deg: float
 
     centre   robot 1 at the back contact pushing closest to the centre of mass; robot 2 none (solo)
     adjacent both robots on back contacts as close to the centre line as they fit side by side
-    spread   the two back contacts farthest apart across the motion (one per end / pillar / half)
+             (straight pushes preferred over corners)
+    spread   the two back contacts farthest apart across the motion (one per end / pillar / half),
+             separation weighted by the weaker push's alignment with the motion
 
     Two contacts form a usable pair only if the robots' standing points are min_sep apart (robots are
     ~0.6 m wide). If no pair faces the goal within 45 deg, the two-robot rules look within
@@ -280,10 +282,12 @@ def assign(cands: list[Contact], u: np.ndarray, rule: str, wide_angle_deg: float
     ok = pairs(back) or pairs(back_contacts(cands, u, wide_angle_deg))
     if not ok:
         return by_centre[0].index, None
-    if rule == "adjacent":
-        a, b = min(ok, key=lambda ab: abs(float(ab[0].r @ lat)) + abs(float(ab[1].r @ lat)))
+    al = lambda c: float(-c.n @ u)  # noqa: E731  (alignment of the push with u; a corner ~0.7)
+    if rule == "adjacent":  # as quadcoop/coop2/mdp.py _pair_scores
+        a, b = min(ok, key=lambda ab: abs(float(ab[0].r @ lat)) + abs(float(ab[1].r @ lat))
+                   + 0.5 * ((1 - al(ab[0])) + (1 - al(ab[1]))))
     else:
-        a, b = max(ok, key=lambda ab: abs(float((ab[0].p - ab[1].p) @ lat)))
+        a, b = max(ok, key=lambda ab: abs(float((ab[0].p - ab[1].p) @ lat)) * max(0.2, min(al(ab[0]), al(ab[1]))))
     if float(a.p @ lat) < float(b.p @ lat):  # robot 1 on the left of the motion
         a, b = b, a
     return a.index, b.index

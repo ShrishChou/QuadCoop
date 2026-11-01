@@ -142,7 +142,9 @@ GOAL_ERROR_COST = 0.25  # r7: per second at the start error (distance fraction 1
 def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool = False,
                        reward_set: str = "r3", start_mode: str = "behind", need_frac: float = 0.0,
                        need_mass: float = 45.0, contacts: bool = False, tol_levels: tuple = (),
-                       contact_mix: tuple = (1.0, 1.0, 1.0), contact_start_at: float = 0.7) -> ManagerBasedRlEnvCfg:
+                       contact_mix: tuple = (1.0, 1.0, 1.0), contact_start_at: float = 0.7,
+                       drift_dist: float = 0.35, drift_heading_deg: float = 45.0,
+                       reselect_s: tuple = (0.0, 0.0), random_start: float = 0.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -177,7 +179,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     start_mode: "behind" (level table) or "around" (anywhere around the object; training only).
     need_frac / need_mass: share of training episodes with a wide object above need_mass kg.
     contacts: Stage 4 contact mode (assigned contacts, contact inputs, off-contact failure);
-    contact_mix (spread, adjacent, random) and contact_start_at: see CoopPush2CommandCfg.
+    contact_mix (spread, adjacent, random), contact_start_at, drift_dist, drift_heading_deg,
+    reselect_s (re-apply the contact rule every U(lo, hi) s; (0, 0) = fixed), random_start: see
+    CoopPush2CommandCfg.
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
@@ -232,6 +236,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         partner_map=partner_map, track_approach=reward_set in ("r5", "r7", "r8"),
         start_mode=start_mode, need_frac=need_frac, need_mass=need_mass,
         contact_mode=contacts, contact_mix=tuple(contact_mix), contact_start_at=contact_start_at,
+        drift_dist=drift_dist, drift_heading_deg=drift_heading_deg,
+        reselect_s=tuple(float(x) for x in reselect_s), random_start=random_start,
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
@@ -357,4 +363,5 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         cfg.commands["goal"].replay_frac = 0.0
         cfg.commands["goal"].tol_start_finest = True
         cfg.commands["goal"].contact_start_at = 1.0
+        cfg.commands["goal"].random_start = 0.0
     return cfg

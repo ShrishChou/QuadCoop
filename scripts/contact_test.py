@@ -92,6 +92,9 @@ def main() -> int:
     ap.add_argument("--executor", choices=("script", "policy", "stage4"), default="script",
                     help="who pushes once a robot is at its contact: the scripted controller or the frozen Stage 2b policy")
     ap.add_argument("--checkpoint", default=None, help="stage4 executor: a train_coop2.py --contacts model_<iter>.pt")
+    ap.add_argument("--reselect-s", default="auto",
+                    help="stage4 executor: re-apply the contact rule every so many seconds ('lo,hi' or one value; "
+                         "0 = contacts fixed for the episode; auto = as the checkpoint was trained)")
     ap.add_argument("--return-dist", type=float, default=0.5,
                     help="policy executor: hand back to the script when the front is this far from the contact (0 = never)")
     ap.add_argument("--video-objects", default="cube,sphere,beam,dumbbell,arch,t_shape",
@@ -140,6 +143,11 @@ def main() -> int:
         ck_cfg = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {})
         if not ck_cfg.get("contacts"):
             raise SystemExit(f"{a.checkpoint} was not trained with --contacts")
+    if a.reselect_s == "auto":
+        reselect_s = tuple(float(x) for x in ck_cfg.get("reselect_s", (0.0, 0.0)))
+    else:
+        rs_ = [float(x) for x in a.reselect_s.split(",")]
+        reselect_s = (rs_[0], rs_[-1])
     video_objects = None if a.video_objects == "all" else {o.strip() for o in a.video_objects.split(",")}
     rules = [r.strip() for r in (a.rules or ("spread,adjacent,random" if stage4 else ",".join(RULES))).split(",")]
     if stage4 and "centre" in rules:
@@ -165,6 +173,7 @@ def main() -> int:
     print(f"pair {a.pair}: rules {rules}; {len(objects)} objects x {len(SCENARIOS)} scenarios x {a.reps} reps = "
           f"{len(base_cases)} tasks per rule, {n} envs per mass; masses {masses}; reassign every "
           f"{a.reassign_s or 'never'} s; executor {a.executor}"
+          + (f" (contact rule re-applied every {reselect_s[0]:g}-{reselect_s[1]:g} s)" if stage4 and reselect_s[1] > 0 else "")
           + (f" (back to the script beyond {a.return_dist:g} m)" if use_policy and a.return_dist > 0 else ""), flush=True)
     rows = {rule: [] for rule in rules}
     t_start = time.time()
@@ -172,7 +181,9 @@ def main() -> int:
     for mass in masses:
         cfg = make_coop2_env_cfg("b", play=True) if not stage4 else make_coop2_env_cfg(
             "b", play=True, partner_map=bool(ck_cfg.get("partner_map", False)), reward_set=ck_cfg.get("reward_set", "r7"),
-            contacts=True, tol_levels=tuple(tuple(x) for x in ck_cfg.get("tol_levels", ())))
+            contacts=True, tol_levels=tuple(tuple(x) for x in ck_cfg.get("tol_levels", ())),
+            drift_dist=float(ck_cfg.get("drift_dist", 0.35)), drift_heading_deg=float(ck_cfg.get("drift_heading_deg", 45.0)),
+            reselect_s=reselect_s)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -214,16 +225,9 @@ def main() -> int:
               "goal_xy_rel": dist.unsqueeze(-1) * torch.stack([torch.cos(gdir), torch.sin(gdir)], -1),
               "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
               "park": park}
-        if stage4:  # the env places each robot at its contact (object unrotated at the start: u = goal direction)
-            def pick(rule, o, s, r):
-                gd = math.radians(SCENARIOS[s][2])
-                u = np.array([math.cos(gd), math.sin(gd)])
-                if rule == "random":
-                    return C.random_pair(cands[o], u, random.Random(f"{a.seed}-{o}-{s}-{r}-pair"), min_sep=0.85)
-                pr = C.assign(cands[o], u, rule, min_sep=0.85)
-                return pr if pr[1] is not None else C.random_pair(cands[o], u, random.Random(0), min_sep=0.85)
-            s4_idx = [pick(rule, o, s, r) for rule, o, s, r, _ in cases]
-            sc["contact_idx"] = torch.tensor(s4_idx, dtype=torch.long, device=dev)
+        if stage4:  # the env picks each env's pair with its own (training) rule code and places the robots there
+            rule_id = {"spread": 0, "adjacent": 1, "random": 2}
+            sc["contact_rule"] = torch.tensor([rule_id[rule] for rule, *_ in cases], dtype=torch.long, device=dev)
         g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids])
                                       for k, v in sc.items()}
         obs, _ = base.reset()
@@ -271,6 +275,7 @@ def main() -> int:
                     n_obj[k][j] = torch.tensor(cc.n, dtype=torch.float)
                     pre_obj[k][j] = torch.tensor(cc.pre, dtype=torch.float)
         if stage4:
+            s4_idx = g.c_idx.tolist()  # the env's candidate lists are contacts.candidates' (same order as cands)
             for j, (i1, i2) in enumerate(s4_idx):
                 chosen[0][j], chosen[1][j] = i1, i2
         else:
@@ -323,6 +328,7 @@ def main() -> int:
         eng_steps = [torch.zeros(n, device=dev) for _ in AGENTS]
         cdist_sum = [torch.zeros(n, device=dev) for _ in AGENTS]
         on_steps = [torch.zeros(n, device=dev) for _ in AGENTS]
+        face_steps = [torch.zeros(n, device=dev) for _ in AGENTS]  # facing the contact's push direction (45 deg)
         returns = [torch.zeros(n, device=dev) for _ in AGENTS]
 
         def geo_pushing(k):
@@ -358,7 +364,7 @@ def main() -> int:
                 _, e = g.errors()
                 e = torch.where(g.symmetry() > 0, e, torch.zeros_like(e))
                 act = torch.zeros(n, 6, device=dev)
-                pushing, engaged, cdist = [], [], []
+                pushing, engaged, cdist, herr = [], [], [], []
                 if use_policy or stage4:
                     sync(); t0 = time.time()  # noqa: E702
                     pol_act = policy(obs)
@@ -375,9 +381,12 @@ def main() -> int:
                     p_w = obj_pos + torch.stack([c_o * p_obj[k][:, 0] - s_o * p_obj[k][:, 1],
                                                  s_o * p_obj[k][:, 0] + c_o * p_obj[k][:, 1]], -1)
                     dk = torch.linalg.norm(front_point(k) - p_w, dim=-1)
+                    n_w = torch.stack([c_o * n_obj[k][:, 0] - s_o * n_obj[k][:, 1], s_o * n_obj[k][:, 0] + c_o * n_obj[k][:, 1]], -1)
+                    hk = wrap(yaw_of(r.data.root_link_quat_w) - torch.atan2(-n_w[:, 1], -n_w[:, 0])).abs()
                     if stage4:  # the contact policy drives both robots from the start
                         a_k = pol_act[:, 3 * k:3 * k + 3]
                         dk = g.contact_dist(k)
+                        hk = g.contact_heading_err(k)
                         engaged.append(present[k].clone())
                     elif use_policy:
                         if a.return_dist > 0:  # drifted off the contact: back to the script
@@ -395,6 +404,7 @@ def main() -> int:
                     act[:, 3 * k:3 * k + 3] = torch.where(active[k].unsqueeze(-1), a_k, idle.expand(n, 3))
                     pushing.append(ph & active[k])
                     cdist.append(dk)
+                    herr.append(hk)
                 sync(); t0 = time.time()  # noqa: E702
                 o_, _, _, _, _ = base.step(act)
                 sync(); t_env += time.time() - t0  # noqa: E702
@@ -430,6 +440,7 @@ def main() -> int:
                     eng_steps[k] += el
                     cdist_sum[k] += el * cdist[k]
                     on_steps[k] += el * (cdist[k] < 0.25).float()
+                    face_steps[k] += el * (herr[k] < math.radians(45.0)).float()
                 both = pu[0] & pu[1]
                 copush += both.float()
                 spread_sum += torch.where(both, torch.linalg.norm(front_point(0) - front_point(1), dim=-1), torch.zeros(n, device=dev))
@@ -478,11 +489,15 @@ def main() -> int:
                 **{f"push_mode_frac_{ag}": round(float(mode_steps[k][j]) / ls, 3) if duo or k == 0 else ""
                    for k, ag in enumerate(AGENTS)},
                 "robots_used": 1 if bool(solo[j]) else 2,
+                "switches": int(g.c_switches[j]) if stage4 else "",
+                "overshoot": int(how[j] != "success" and float(min_d[j]) < 0.20 and float(last_d[j]) >= 0.30),
                 **{f"engaged_frac_{ag}": round(float(eng_steps[k][j]) / ls, 3) if (duo and not bool(solo[j])) or k == 0 else ""
                    for k, ag in enumerate(AGENTS)},
                 **{f"contact_dist_{ag}": (round(float(cdist_sum[k][j] / eng_steps[k][j]), 3) if float(eng_steps[k][j]) > 0 else "")
                    for k, ag in enumerate(AGENTS)},
                 **{f"on_contact_{ag}": (round(float(on_steps[k][j] / eng_steps[k][j]), 3) if float(eng_steps[k][j]) > 0 else "")
+                   for k, ag in enumerate(AGENTS)},
+                **{f"facing_{ag}": (round(float(face_steps[k][j] / eng_steps[k][j]), 3) if float(eng_steps[k][j]) > 0 else "")
                    for k, ag in enumerate(AGENTS)},
                 **{f"returns_{ag}": int(returns[k][j]) for k, ag in enumerate(AGENTS)},
                 "contact_1": "" if c1 is None else cl[c1].label, "contact_2": "" if c2 is None else cl[c2].label,
@@ -542,6 +557,7 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
     try:
         old_meta = json.loads((out / "summary.json").read_text())
         same = all(old_meta.get(k) == v for k, v in (("executor", a.executor), ("return_dist", a.return_dist),
+                                                       ("checkpoint", a.checkpoint), ("reselect", a.reselect_s),
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents))))
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
@@ -552,13 +568,13 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
     objects = [o for o in objects if any(r["object"] == o for r in rows)] + \
         [o for o in dict.fromkeys(r["object"] for r in rows) if o not in objects]
     with open(out / "episodes.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(fh, fieldnames=list(dict.fromkeys(k for r in rows for k in r)), restval="")
         w.writeheader()
         w.writerows(rows)
     solo = rule == "centre"
 
     def mean(sel, key):
-        v = [r[key] for r in sel if r[key] != ""]
+        v = [r.get(key, "") for r in sel if r.get(key, "") != ""]
         return sum(v) / len(v) if v else None
 
     def agg(sel):
@@ -567,7 +583,14 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
             return None
         ok = [r for r in sel if r["success"]]
         anyp = sum(max(r[f"push_frac_{agents[0]}"], r[f"push_frac_{agents[1]}"]) for r in sel) if not solo else 0
+        outs = {}
+        for r in sel:
+            key = "fell" if str(r["outcome"]).startswith("fell") else str(r["outcome"])
+            outs[key] = outs.get(key, 0) + 1
         return {"n": k, "two_robot_share": sum(r["robots_used"] == 2 for r in sel) / k,
+                "outcome": {kk: v / k for kk, v in sorted(outs.items())},
+                "overshoot": sum(int(r.get("overshoot") or 0) for r in sel) / k,
+                "switches": mean(sel, "switches"),
                 "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
                 **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in agents},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
@@ -577,7 +600,7 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
                 "copush_share": None if solo else sum(r["copush_frac"] for r in sel) / max(1e-9, anyp),
                 "copush_spread": mean(sel, "copush_spread"),
                 **{f"push_mode_frac_{ag}": mean(sel, f"push_mode_frac_{ag}") for ag in agents},
-                **{f"{key}_{ag}": mean(sel, f"{key}_{ag}") for key in ("engaged_frac", "contact_dist", "on_contact", "returns")
+                **{f"{key}_{ag}": mean(sel, f"{key}_{ag}") for key in ("engaged_frac", "contact_dist", "on_contact", "facing", "returns")
                    for ag in agents}}
 
     by = defaultdict(list)
@@ -586,14 +609,15 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         by[("obj_mass", r["object"], r["mass"])].append(r)
         by[("group_mass", "seen" if r["seen_shape"] else "unseen", r["mass"])].append(r)
         by[("scen_mass", r["scenario"], r["mass"])].append(r)
-    what = (f"Stage 4 contact policy {a.checkpoint} (robots start at their contacts)" if a.executor == "stage4" else
+    what = (f"Stage 4 contact policy {a.checkpoint} (robots start at their contacts; contact rule re-applied: "
+            f"{a.reselect_s if a.reselect_s != '0' else 'never'})" if a.executor == "stage4" else
             f"{'scripted contacts' if a.executor == 'script' else 'hand-off (script to the contact, then the frozen Stage 2b policy'}"
             + ("" if a.executor == "script" else (f", back to the script beyond {a.return_dist:g} m)" if a.return_dist > 0 else ", never back)"))
             + f", rule '{rule}' ({'one robot' if solo else 'two robots'}), pair {a.pair}") + \
            (f", re-chosen every {a.reassign_s:g} s" if a.reassign_s > 0 else "")
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
-               "return_dist": a.return_dist, "overall": agg(rows),
+               "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
                                  for gname in ("seen", "unseen") for m in masses},
@@ -623,15 +647,24 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         cdesc = "" if ex is None else (ex["contact_1"] + ("" if not ex["contact_2"] else f" + {ex['contact_2']}"))
         md.append(f"| {o}{'' if o in train_names else ' (unseen)'} | {cdesc} | "
                   + " | ".join(f2(summary["by_object_mass"][f"{o} / {m:g} kg"]["success"]) for m in masses) + " |")
+    md += ["", "## how episodes ended (share) by mass", "",
+           "| mass | success | ran out of time | a robot fell | object tipped | object lost | overshoot (within 20 cm, ended 30+ cm away) | contact changes per episode |",
+           "|---|---|---|---|---|---|---|---|"]
+    for m in masses:
+        s = summary["by_mass"][f"{m:g}"]
+        oc = s["outcome"]
+        md.append(f"| {m:g} kg | {f2(oc.get('success', 0.0))} | {f2(oc.get('horizon', 0.0))} | {f2(oc.get('fell', 0.0))} | "
+                  f"{f2(oc.get('tipped', 0.0))} | {f2(oc.get('lost', 0.0))} | {f2(s['overshoot'])} | {f2(s['switches'])} |")
     eng = {"policy": "under the push policy", "stage4": "all the time"}.get(a.executor, "in push mode")
     md += ["", f"## holding the assigned contact (while {eng})", "",
-           "| mass | " + " | ".join(f"{ag} engaged | {ag} front-contact dist (m) | {ag} within 0.25 m | {ag} returns"
+           "| mass | " + " | ".join(f"{ag} engaged | {ag} front-contact dist (m) | {ag} within 0.25 m | {ag} facing it (45 deg) | {ag} returns"
                                    for ag in (agents if not solo else agents[:1])) + " |",
-           "|---|" + "---|---|---|---|" * (2 if not solo else 1)]
+           "|---|" + "---|---|---|---|---|" * (2 if not solo else 1)]
     for m in masses:
         s = summary["by_mass"][f"{m:g}"]
         md.append(f"| {m:g} kg | " + " | ".join(
-            f"{f2(s[f'engaged_frac_{ag}'])} | {f2(s[f'contact_dist_{ag}'])} | {f2(s[f'on_contact_{ag}'])} | {f2(s[f'returns_{ag}'])}"
+            f"{f2(s[f'engaged_frac_{ag}'])} | {f2(s[f'contact_dist_{ag}'])} | {f2(s[f'on_contact_{ag}'])} | "
+            f"{f2(s.get(f'facing_{ag}'))} | {f2(s[f'returns_{ag}'])}"
             for ag in (agents if not solo else agents[:1])) + " |")
     if not solo:
         md += ["", "## both robots pushing (share of time) by object and mass", "",

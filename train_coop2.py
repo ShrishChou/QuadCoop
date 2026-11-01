@@ -14,6 +14,9 @@
     python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 --contacts \
         --kl-ref 0.05 --kl-ramp 1000 --need-frac 0.5 --critic-warmup 500 --max-actor-lr 1e-4 \
         --run-name s4_aa_s0                                       # Stage 4: push from assigned contacts
+    python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 --contacts \
+        --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --resume --run-name s4b_aa_s0 ...
+                                                                  # Stage 4b: contacts re-chosen as it goes
 
 Stage 4 (--contacts): each episode both robots get a contact pair (quadcoop/contacts.py candidates;
 spread / adjacent / random pair, --contact-mix) and start at it; the contacts are part of their
@@ -139,6 +142,15 @@ def main() -> int:
     ap.add_argument("--contact-mix", default="1,1,1", help="weights of spread / adjacent / random contact pairs")
     ap.add_argument("--contact-start-at", type=float, default=0.7,
                     help="share of robots starting at their contact (the rest at its approach point)")
+    ap.add_argument("--drift-dist", type=float, default=0.35,
+                    help="on contact = the front within this many m of the contact point ...")
+    ap.add_argument("--drift-heading", type=float, default=45.0,
+                    help="... and facing the contact's push direction within this many deg (another face is off contact)")
+    ap.add_argument("--reselect-s", default="0",
+                    help="Stage 4b: re-apply the contact rule every so many seconds, 'lo,hi' (uniform) or one value; "
+                         "0 = contacts fixed for the episode")
+    ap.add_argument("--random-start", type=float, default=0.0,
+                    help="share of robots starting anywhere around the object (they walk to their contact)")
     ap.add_argument("--tol-levels", default=None,
                     help="success-tolerance curriculum 'pos_m:yaw_deg,...' loose -> fine; 'none' = fixed "
                          "10 cm / 3 deg; default with --contacts: 0.30:15,0.20:10,0.15:6,0.12:4,0.10:3")
@@ -180,6 +192,8 @@ def main() -> int:
     tol_levels = () if a.tol_levels == "none" else tuple(tuple(float(v) for v in x.split(":"))
                                                         for x in a.tol_levels.split(","))
     contact_mix = tuple(float(x) for x in a.contact_mix.split(","))
+    rs = [float(x) for x in a.reselect_s.split(",")]
+    reselect_s = (rs[0], rs[-1])
     assert len(contact_mix) == 3, "--contact-mix needs three weights (spread, adjacent, random)"
     if a.critic_warmup is None:
         a.critic_warmup = 0 if a.scratch else 100
@@ -193,13 +207,18 @@ def main() -> int:
     import yaml
 
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    contact_txt = ""
+    if a.contacts:
+        resel = f"{reselect_s[0]:g}-{reselect_s[1]:g} s" if reselect_s[1] > 0 else "never"
+        contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
+                       f"{a.drift_heading:g} deg, re-select {resel}, random start {a.random_start:g})  ")
     run = a.run_name or f"{a.algo}{'_ctrl' if a.variant == 'ctrl' else ''}_s{a.seed}"
     log_dir = ROOT / "logs" / "marl2" / (run + ("_check" if a.check else ""))
     print(f"run {run}  algo {a.algo}  pair {a.pair}  variant {a.variant}  seed {a.seed}  device {device}  "
           f"partner map {a.partner_map}  rewards {a.reward}  entropy {a.entropy_coef:g}  mean clip {a.mean_clip:g}  "
           f"bound {a.bound_coef:g}  kl_ref {a.kl_ref:g} (partner scale {a.kl_partner_scale:g})  "
           f"start {'around' if a.start_around else 'behind'}  need_frac {a.need_frac:g}  "
-          f"{f'CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g})  ' if a.contacts else ''}"
+          f"{contact_txt}"
           f"{f'tolerance curriculum {tol_levels}  ' if tol_levels else ''}{f'kl ramp {a.kl_ramp}  ' if a.kl_ramp else ''}"
           f"{'FROM SCRATCH' if a.scratch else 'warm start from Stage 2b'}")
     for k, v in models["selection"].items():
@@ -216,7 +235,9 @@ def main() -> int:
     env_cfg = make_coop2_env_cfg(a.variant, partner_map=a.partner_map, reward_set=a.reward,
                                  start_mode="around" if a.start_around else "behind",
                                  need_frac=a.need_frac, need_mass=a.need_mass, contacts=a.contacts,
-                                 tol_levels=tol_levels, contact_mix=contact_mix, contact_start_at=a.contact_start_at)
+                                 tol_levels=tol_levels, contact_mix=contact_mix, contact_start_at=a.contact_start_at,
+                                 drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
+                                 reselect_s=reselect_s, random_start=a.random_start)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -230,6 +251,8 @@ def main() -> int:
                   kl_partner_scale=a.kl_partner_scale, start_mode="around" if a.start_around else "behind",
                   need_frac=a.need_frac, contacts=a.contacts, contact_mix=contact_mix,
                   contact_start_at=a.contact_start_at, tol_levels=tol_levels, kl_ramp=a.kl_ramp,
+                  drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
+                  reselect_s=reselect_s, random_start=a.random_start,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])
