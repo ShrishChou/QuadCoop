@@ -18,12 +18,17 @@ Executors (--executor):
 
     stage4   the Stage 4 contact-conditioned policy (train_coop2.py --contacts, --checkpoint): the
              robots start at their assigned contacts and the policy (told the contacts) does the
-             rest. Rules spread / adjacent / random (a seeded random valid pair, as in training).
+             rest. Rules spread / adjacent / random (a seeded random valid pair, as in training), and
+             allpairs: every usable ordered contact pair of every task (both contacts pushing within
+             75 deg of the goal direction, standing points 0.85 m apart), contacts fixed - the payoff
+             sweep for the contact game (scripts/contact_game.py reads it).
 
     python scripts/contact_test.py --executor policy                       # prefix handoff-aa
     python scripts/contact_test.py --executor policy --return-dist 0 --prefix handoff-aa-free
     python scripts/contact_test.py --executor stage4 --checkpoint logs/marl2/s4_aa_s0/model_3000.pt \
         --prefix s4-aa-s0-it3000                                  # rules spread,adjacent,random
+    python scripts/contact_test.py --executor stage4 --checkpoint logs/marl2/s4b_aa_s0/model_6000.pt \
+        --rules allpairs --masses 40,70 --prefix game-s4b         # payoff sweep -> evals/game-s4b-allpairs
 
 In script mode each robot runs the scripted contact controller
 (quadcoop/contact_control.py) on a contact from the object's candidate set
@@ -151,7 +156,16 @@ def main() -> int:
     video_objects = None if a.video_objects == "all" else {o.strip() for o in a.video_objects.split(",")}
     rules = [r.strip() for r in (a.rules or ("spread,adjacent,random" if stage4 else ",".join(RULES))).split(",")]
     if stage4 and "centre" in rules:
-        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random")
+        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random, allpairs")
+    if "allpairs" in rules:
+        if not stage4:
+            raise SystemExit("rule allpairs needs --executor stage4")
+        if reselect_s[1] > 0:
+            if a.reselect_s != "auto":
+                raise SystemExit("allpairs is the one-shot contact game: contacts stay fixed (--reselect-s 0)")
+            print("allpairs: contacts fixed for the episode (re-selection off)")
+            reselect_s = (0.0, 0.0)
+            a.reselect_s = "0"
     objects = list(SHAPE_NAMES2) if a.objects == "all" else [o.strip() for o in a.objects.split(",")]
     masses = [float(x) for x in a.masses.split(",")]
     vw, vh = (int(x) for x in a.video_size.lower().split("x"))
@@ -168,7 +182,22 @@ def main() -> int:
     rng = random.Random(f"{a.seed}-coop2")  # the same placements as scripts/eval_coop2.py
     jit_b = [[rng.uniform(-10, 10) for _ in AGENTS] for _ in base_cases]
     gap_b = [[rng.uniform(0.3, 0.6) for _ in AGENTS] for _ in base_cases]
-    cases = [(rule, o, s, r, k) for rule in rules for k, (o, s, r) in enumerate(base_cases)]
+    def usable_pairs(o, s):
+        """Ordered contact pairs for robot 1 / robot 2 that the policy can be given for this task:
+        both pushing within 75 deg of the goal direction, standing points >= 0.85 m apart."""
+        gd = math.radians(SCENARIOS[s][2])
+        u = np.array([math.cos(gd), math.sin(gd)])
+        use = [c for c in cands[o] if float(-c.n @ u) >= math.cos(math.radians(75.0)) - 1e-9]
+        return [(x.index, y.index) for x in use for y in use
+                if x.index != y.index and np.linalg.norm(x.stand - y.stand) >= 0.85]
+
+    cases, pair_of = [], []
+    for rule in rules:
+        for k, (o, s, r) in enumerate(base_cases):
+            for pr in (usable_pairs(o, s) if rule == "allpairs" else [None]):
+                cases.append((rule, o, s, r, k))
+                pair_of.append(pr)
+    n_of = {rule: sum(1 for c in cases if c[0] == rule) for rule in rules}  # envs (= rows) per rule and mass
     n = len(cases)
     print(f"pair {a.pair}: rules {rules}; {len(objects)} objects x {len(SCENARIOS)} scenarios x {a.reps} reps = "
           f"{len(base_cases)} tasks per rule, {n} envs per mass; masses {masses}; reassign every "
@@ -226,8 +255,9 @@ def main() -> int:
               "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
               "park": park}
         if stage4:  # the env picks each env's pair with its own (training) rule code and places the robots there
-            rule_id = {"spread": 0, "adjacent": 1, "random": 2}
+            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0}
             sc["contact_rule"] = torch.tensor([rule_id[rule] for rule, *_ in cases], dtype=torch.long, device=dev)
+            sc["contact_idx"] = torch.tensor([pr if pr is not None else (-1, -1) for pr in pair_of], dtype=torch.long, device=dev)
         g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids])
                                       for k, v in sc.items()}
         obs, _ = base.reset()
@@ -285,7 +315,7 @@ def main() -> int:
         dt = base.step_dt
         steps = int(a.horizon / dt)
         reassign_every = int(round(a.reassign_s / dt)) if a.reassign_s > 0 else 0
-        film_ids = [j for j, (rule, o, s, r, _) in enumerate(cases)
+        film_ids = [j for j, (rule, o, s, r, _) in enumerate(cases) if rule != "allpairs"
                     if a.videos > 0 and mass == a.video_mass and r == 0 and SCENARIOS[s][0] in ("A_straight", "D_far_turn")
                     and (video_objects is None or o in video_objects)]
         stride = 2
@@ -501,7 +531,8 @@ def main() -> int:
                    for k, ag in enumerate(AGENTS)},
                 **{f"returns_{ag}": int(returns[k][j]) for k, ag in enumerate(AGENTS)},
                 "contact_1": "" if c1 is None else cl[c1].label, "contact_2": "" if c2 is None else cl[c2].label,
-                "contact_sep": sep, "video": ""})
+                "contact_sep": sep, "contact_idx_1": "" if c1 is None else int(c1),
+                "contact_idx_2": "" if c2 is None else int(c2), "video": ""})
         if fid is not None:
             try:
                 cam = Camera(base, vw, vh)
@@ -513,7 +544,7 @@ def main() -> int:
                     F = min(Q.shape[1], int(float(t_end[j]) / (stride * dt)) + int(1.0 / (stride * dt)) + 1)
                     vdir = ROOT / "logs" / "evals" / f"{prefix}-{rule}" / "pair" / "videos"
                     name = f"{o}_{mass:g}kg_{SCENARIOS[s][0]}__{how[j]}.mp4"
-                    row = rows[rule][-len(base_cases):][[(oo, ss, rr) for oo, ss, rr in base_cases].index((o, s, r))]
+                    row = rows[rule][-n_of[rule]:][[(oo, ss, rr) for oo, ss, rr in base_cases].index((o, s, r))]
                     cap_txt = f"{rule}: {o} {mass:g}kg {SCENARIOS[s][0].split('_')[0]} -> {how[j]}"
                     render_episode(cam, j, Q[fi, :F], None if MP is None else MP[fi, :F], None if MQ is None else MQ[fi, :F],
                                    P[fi, :F], vdir / name, 1.0 / (stride * dt),
@@ -522,7 +553,7 @@ def main() -> int:
             except Exception as ex:  # noqa: BLE001
                 print(f"videos skipped: {ex}")
         for rule in rules:
-            mine = rows[rule][-len(base_cases):]
+            mine = rows[rule][-n_of[rule]:]
             print(f"[{mass:g} kg] {rule:8s} success {sum(x['success'] for x in mine) / len(mine):.2f}  falls "
                   + " ".join(f"{ag} {sum(x[f'fell_{ag}'] for x in mine) / len(mine):.2f}" for ag in AGENTS)
                   + (f"  both pushing {sum(x['copush_frac'] for x in mine) / len(mine):.2f}" if rule != "centre" else "")
