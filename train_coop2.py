@@ -17,6 +17,8 @@
     python train_coop2.py --algo mappo --pair anymal --partner-map --reward r7 --contacts \
         --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --resume --run-name s4b_aa_s0 ...
                                                                   # Stage 4b: contacts re-chosen as it goes
+    (Stage 4c = the same with --off-contact soft, now the default: no deadlines, no ending for being off
+    contact; a pull to the assigned contact and a cost per second off it; --off-contact terminate = 4/4b)
 
 Stage 4 (--contacts): each episode both robots get a contact pair (quadcoop/contacts.py candidates;
 spread / adjacent / random pair, --contact-mix) and start at it; the contacts are part of their
@@ -151,6 +153,13 @@ def main() -> int:
                          "0 = contacts fixed for the episode")
     ap.add_argument("--random-start", type=float, default=0.0,
                     help="share of robots starting anywhere around the object (they walk to their contact)")
+    ap.add_argument("--off-contact", choices=("soft", "terminate"), default="soft",
+                    help="soft: no deadlines and no ending for being off contact; pulled to the contact (potential) "
+                         "and a cost per second off a reached contact; terminate: Stage 4 / 4b rules")
+    ap.add_argument("--off-contact-cost", type=float, default=1.0, help="soft: per second off a reached contact")
+    ap.add_argument("--contact-approach", type=float, default=1.0, help="soft: weight of the pull to the assigned contact")
+    ap.add_argument("--critic-warmup-resume", type=int, default=0,
+                    help="critic-only iterations after --resume (use when the rewards changed, e.g. 100)")
     ap.add_argument("--tol-levels", default=None,
                     help="success-tolerance curriculum 'pos_m:yaw_deg,...' loose -> fine; 'none' = fixed "
                          "10 cm / 3 deg; default with --contacts: 0.30:15,0.20:10,0.15:6,0.12:4,0.10:3")
@@ -210,8 +219,10 @@ def main() -> int:
     contact_txt = ""
     if a.contacts:
         resel = f"{reselect_s[0]:g}-{reselect_s[1]:g} s" if reselect_s[1] > 0 else "never"
+        soft_txt = f" (cost {a.off_contact_cost:g}/s, pull {a.contact_approach:g})" if a.off_contact == "soft" else ""
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
-                       f"{a.drift_heading:g} deg, re-select {resel}, random start {a.random_start:g})  ")
+                       f"{a.drift_heading:g} deg, re-select {resel}, random start {a.random_start:g}, off contact "
+                       f"{a.off_contact}{soft_txt})  ")
     run = a.run_name or f"{a.algo}{'_ctrl' if a.variant == 'ctrl' else ''}_s{a.seed}"
     log_dir = ROOT / "logs" / "marl2" / (run + ("_check" if a.check else ""))
     print(f"run {run}  algo {a.algo}  pair {a.pair}  variant {a.variant}  seed {a.seed}  device {device}  "
@@ -237,7 +248,8 @@ def main() -> int:
                                  need_frac=a.need_frac, need_mass=a.need_mass, contacts=a.contacts,
                                  tol_levels=tol_levels, contact_mix=contact_mix, contact_start_at=a.contact_start_at,
                                  drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
-                                 reselect_s=reselect_s, random_start=a.random_start)
+                                 reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
+                                 off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -252,7 +264,9 @@ def main() -> int:
                   need_frac=a.need_frac, contacts=a.contacts, contact_mix=contact_mix,
                   contact_start_at=a.contact_start_at, tol_levels=tol_levels, kl_ramp=a.kl_ramp,
                   drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
-                  reselect_s=reselect_s, random_start=a.random_start,
+                  reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
+                  off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
+                  critic_warmup_resume=a.critic_warmup_resume,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])
