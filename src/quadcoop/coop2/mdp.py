@@ -24,7 +24,13 @@ mass, and the partner's contact). A robot is on its contact when its front is wi
 is leaving the contact, even on a small object where the faces' centres are close). A robot that
 has reached its contact and then is off it for ``drift_s`` s, or never reaches it within
 its reach limit (time for the distance), ends the episode as a failure (``off_contact``).
-With ``reselect_s`` the rule is re-applied every few seconds from the object's current pose and
+With ``off_contact_mode = "soft"`` (the default for new runs) nothing about contacts ends an
+episode and there are no deadlines: a robot is pulled toward its assigned contact by a
+potential-based reward (``contact_approach``: pays for getting closer - distance plus heading -
+and takes it back for moving away), and once it has reached its contact it pays a cost per
+second while off it (``off_contact_cost``); a robot still on its way to a new contact pays
+nothing. The time a robot takes to reach a contact is logged, not enforced: r7's goal-error cost
+per second already makes slow transitions expensive. With ``reselect_s`` the rule is re-applied every few seconds from the object's current pose and
 goal (Stage 4b): the pair changes when a contact no longer pushes toward the goal, or (spread /
 adjacent) when a pair scores clearly better; at most one robot moves when possible, and it gets
 a reach limit for the walk to its new contact. ``random_start`` robots start anywhere around the
@@ -187,6 +193,8 @@ class CoopPush2Command(Push2Command):
         self.c_reach_lim = torch.full((n, 2), self.cfg.engage_s, device=dev)  # s to reach the assigned contact
         self.c_reselect_t = torch.full((n,), 1e9, device=dev)  # s until the next re-selection
         self.c_switches = torch.zeros(n, device=dev)  # contact changes this episode
+        self.c_prev_phi = torch.zeros(n, 2, device=dev)  # contact-approach potential, last step
+        self.c_reach_sum, self.c_reach_cnt = 0.0, 0  # walk-to-contact times (s) since the last log
         print(f"[coop2] contact mode: {', '.join(f'{SHAPES2[s].name} {len(cl)}' for s, cl in enumerate(lists))} "
               f"candidate contacts; pairs >= {self.cfg.contact_min_sep:g} m apart; rule mix {self.cfg.contact_mix}")
 
@@ -218,6 +226,11 @@ class CoopPush2Command(Push2Command):
         _, nw = self.contact_world(k)
         want = torch.atan2(-nw[:, 1], -nw[:, 0])
         return wrap(yaw_of(self.robots[AGENTS[k]].data.root_link_quat_w) - want).abs()
+
+    def contact_phi(self, k: int) -> torch.Tensor:
+        """How far robot k is from being on its contact: front-to-contact distance (m) plus
+        phi_heading_weight x heading error (rad)."""
+        return self.contact_dist(k) + self.cfg.phi_heading_weight * self.contact_heading_err(k)
 
     def on_contact(self, k: int) -> torch.Tensor:
         return (self.contact_dist(k) < self.cfg.drift_dist) & \
@@ -474,6 +487,10 @@ class CoopPush2Command(Push2Command):
             dt = self._env.step_dt
             for k in range(len(AGENTS)):
                 near = self.on_contact(k)
+                arrived = near & ~self.c_engaged[:, k] & (self.c_free_t[:, k] > 0.5)  # walked to it (not started on it)
+                if bool(arrived.any()):
+                    self.c_reach_sum += float(self.c_free_t[arrived, k].sum())
+                    self.c_reach_cnt += int(arrived.sum())
                 self.c_engaged[:, k] |= near
                 self.c_drift_t[:, k] = torch.where(self.c_engaged[:, k] & ~near, self.c_drift_t[:, k] + dt,
                                                    torch.zeros_like(self.c_drift_t[:, k]))
@@ -490,6 +507,10 @@ class CoopPush2Command(Push2Command):
                     # close to the goal the direction to it is noise: keep the contacts there
                     far = torch.linalg.norm(self.goal_xy[ids] - self.box_pos()[ids, :2], dim=-1) > self.cfg.reselect_min_dist
                     self._reselect(ids[settled & far])
+            # the approach potential's baseline for the next step (after resets and re-selections, so
+            # a new contact or a new episode never pays for the jump)
+            for k in range(len(AGENTS)):
+                self.c_prev_phi[:, k] = self.contact_phi(k)
 
     # -- placement --------------------------------------------------------------------------------
     def _resample_command(self, env_ids: torch.Tensor) -> None:
@@ -718,6 +739,8 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     reselect_s: tuple[float, float] = (0.0, 0.0)  # re-apply the contact rule every U(lo, hi) s; (0, 0) = fixed contacts
     reselect_margin: float = 0.3  # m of rule score a new pair needs over the current one (hysteresis)
     reselect_min_dist: float = 0.15  # m: no re-selection with the object this close to its goal
+    off_contact_mode: str = "terminate"  # "terminate" (Stage 4 / 4b) or "soft" (cost, no ending, no deadlines)
+    phi_heading_weight: float = 0.25  # m per rad of heading error in the contact-approach potential
     # success-tolerance curriculum: ((pos tol m, yaw tol deg), ...) loose -> fine; () = fixed
     # success_pos_tol / success_yaw_tol_deg
     tol_levels: tuple[tuple[float, float], ...] = ()
@@ -798,13 +821,30 @@ def off_contact(env, robot: str) -> torch.Tensor:
     return (g.c_drift_t[:, k] >= g.cfg.drift_s) | (g.c_free_t[:, k] >= g.c_reach_lim[:, k])
 
 
+def contact_approach(env, robot: str, max_rate: float = 5.0) -> torch.Tensor:
+    """Soft contact mode, per robot: decrease of its contact-approach potential per second
+    (potential-based: walking to the contact pays the distance once, leaving takes it back)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    return torch.clamp((g.c_prev_phi[:, k] - g.contact_phi(k)) / env.step_dt, -max_rate, max_rate)
+
+
+def off_contact_cost(env, robot: str) -> torch.Tensor:
+    """Soft contact mode, per robot: 1 per second while it is off the contact it had reached (a
+    robot on its way to a newly assigned contact pays nothing)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    return (g.c_engaged[:, k] & ~g.on_contact(k)).float()
+
+
 def own_off_contact(env, robot: str) -> torch.Tensor:
     return off_contact(env, robot).float()
 
 
-def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, level_advance: float = 0.40,
-                       level_retreat: float = 0.10, level_unlock: int = 2, tol_dwell_iters: int = 100,
-                       level_dwell_iters: int = 100, ema_per_episode: float = 0.003, steps_per_iter: int = 24):
+def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, level_advance: float = 0.30,
+                       level_retreat: float = 0.05, level_unlock: int = 2, tol_dwell_iters: int = 100,
+                       level_dwell_iters: int = 100, level_fallback_iters: int = 500, ema_per_episode: float = 0.003,
+                       steps_per_iter: int = 24):
     """Stage 4 curriculum: the success tolerance (cfg.tol_levels) goes loose -> fine, and the task
     level (distance, turn, mass) rises, each on its own success rate.
 
@@ -816,7 +856,9 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
       tol_advance, at least tol_dwell_iters after the last change. It never goes back.
     * The task level starts moving once the tolerance has reached level_unlock (0-based; default
       15 cm / 6 deg): up when its rate (episodes at the current level and tolerance) passes
-      level_advance, down below level_retreat, at most every level_dwell_iters.
+      level_advance, down below level_retreat, at most every level_dwell_iters; and up anyway once
+      the finest tolerance is reached and the level has not moved for level_fallback_iters, so
+      training always gets to the evaluation's distances and turns.
     Stage 2's push2_curriculum still keeps the per-shape weights (its own level logic is off)."""
     from quadcoop.stage2.mdp import push2_curriculum
 
@@ -854,6 +896,11 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
                 g.level -= 1
                 g.last_change_iter = it
                 g.lvl_ema = 0.5 * (level_advance + level_retreat)
+            elif (g.tol_level >= n_tol - 1 and it - g.last_change_iter >= level_fallback_iters
+                  and g.level < len(g.cfg.levels) - 1):
+                g.level += 1
+                g.last_change_iter = it
+                g.lvl_ema = 0.5 * (level_advance + level_retreat)
     tl = g.cfg.tol_levels[g.tol_level]
     out.update({"level": torch.tensor(float(g.level)), "level_success_ema": torch.tensor(g.lvl_ema),
                 "tol_level": torch.tensor(float(g.tol_level)), "tol_pos_m": torch.tensor(float(tl[0])),
@@ -863,8 +910,18 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
             out[f"engaged_{a}"] = g.c_engaged[:, k].float().mean()
             out[f"contact_dist_{a}"] = g.contact_dist(k).mean()
             out[f"on_contact_{a}"] = g.on_contact(k).float().mean()
+            out[f"walking_{a}"] = (~g.c_engaged[:, k]).float().mean()  # on the way to its contact
+            off = g.c_engaged[:, k] & ~g.on_contact(k)
+            n_off = int(off.sum())
+            out[f"off_far_{a}"] = torch.tensor((g.contact_dist(k)[off] >= g.cfg.drift_dist).float().mean().item() if n_off else 0.0)
+            out[f"off_turned_{a}"] = torch.tensor(
+                (g.contact_heading_err(k)[off] >= math.radians(g.cfg.drift_heading_deg)).float().mean().item() if n_off else 0.0)
+            out[f"off_share_{a}"] = off.float().mean()
         if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
             out["switches_per_episode"] = g.c_switches[env_ids].mean()
+        if g.c_reach_cnt > 0:
+            out["reach_time_s"] = torch.tensor(g.c_reach_sum / g.c_reach_cnt)
+            g.c_reach_sum, g.c_reach_cnt = 0.0, 0
     return out
 
 

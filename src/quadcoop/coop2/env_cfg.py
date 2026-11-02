@@ -144,7 +144,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        need_mass: float = 45.0, contacts: bool = False, tol_levels: tuple = (),
                        contact_mix: tuple = (1.0, 1.0, 1.0), contact_start_at: float = 0.7,
                        drift_dist: float = 0.35, drift_heading_deg: float = 45.0,
-                       reselect_s: tuple = (0.0, 0.0), random_start: float = 0.0) -> ManagerBasedRlEnvCfg:
+                       reselect_s: tuple = (0.0, 0.0), random_start: float = 0.0, off_contact: str = "soft",
+                       off_contact_cost: float = 1.0, contact_approach: float = 1.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -182,6 +183,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     contact_mix (spread, adjacent, random), contact_start_at, drift_dist, drift_heading_deg,
     reselect_s (re-apply the contact rule every U(lo, hi) s; (0, 0) = fixed), random_start: see
     CoopPush2CommandCfg.
+    off_contact: "soft" - no contact rule ends an episode and there are no deadlines; each robot is
+    pulled to its contact (contact_approach: weight of the potential-based reward, replacing r7's
+    approach-the-surface term) and pays off_contact_cost per second while off a contact it had
+    reached; "terminate" - Stage 4 / 4b (off-contact ends the episode as a failure, reach limits).
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
@@ -238,6 +243,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         contact_mode=contacts, contact_mix=tuple(contact_mix), contact_start_at=contact_start_at,
         drift_dist=drift_dist, drift_heading_deg=drift_heading_deg,
         reselect_s=tuple(float(x) for x in reselect_s), random_start=random_start,
+        off_contact_mode=off_contact if contacts else "terminate",
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
@@ -291,8 +297,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     # -- rewards ------------------------------------------------------------------------------------
     R = RewardTermCfg
     step_dt = cfg.sim.mujoco.timestep * cfg.decimation
+    assert off_contact in ("soft", "terminate"), off_contact
+    soft = contacts and off_contact == "soft"
     fails = tuple(f"{a}_fell" for a in AGENTS) + ("box_tipped", "box_lost") + \
-        (tuple(f"{a}_off_contact" for a in AGENTS) if contacts else ())
+        (tuple(f"{a}_off_contact" for a in AGENTS) if contacts and not soft else ())
     rewards = {
         # team (Stage 2, terminate rule)
         "box_progress": R(func=hb.box_progress, weight=3.0),
@@ -318,7 +326,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         rewards["fail_remaining"] = R(func=mdp.failed_remaining, weight=-GOAL_ERROR_COST,
                                       params={"names": fails, "horizon_s": EPISODE_S})
     for k, a in enumerate(AGENTS):
-        if reward_set in ("r5", "r7", "r8"):
+        if soft:  # pulled to its assigned contact instead of to the nearest surface
+            rewards[f"contact_approach_{a}"] = R(func=mdp.contact_approach, weight=contact_approach, params={"robot": a})
+            rewards[f"off_contact_cost_{a}"] = R(func=mdp.off_contact_cost, weight=-off_contact_cost, params={"robot": a})
+        elif reward_set in ("r5", "r7", "r8"):
             rewards[f"approach_{a}"] = R(func=mdp.approach, weight=2.0, params={"robot": a})
         else:
             rewards[f"near_surface_{a}"] = R(func=mdp.near_surface, weight=0.5, params={"robot": a})
@@ -335,7 +346,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                                            params={"robot": a})
         rewards[f"own_fall_{a}"] = R(func=mdp.own_fall, weight=-0.2 * BONUS / step_dt,
                                      params={"robot": a, "nominal_height": SPECS[a].nominal_height})
-        if contacts:  # leaving its contact costs the robot that left as much as its own fall
+        if contacts and not soft:  # leaving its contact costs the robot that left as much as its own fall
             rewards[f"own_off_contact_{a}"] = R(func=mdp.own_off_contact, weight=-0.2 * BONUS / step_dt,
                                                 params={"robot": a})
     cfg.rewards = rewards
@@ -349,7 +360,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     cfg.terminations["box_lost"] = TerminationTermCfg(func=mdp.box_lost)
     cfg.terminations["goal_reached"] = TerminationTermCfg(func=m2.goal_reached)
     cfg.terminations["unstable"] = TerminationTermCfg(func=mdp.unstable)  # sim glitch: ends, no penalty
-    if contacts:
+    if contacts and not soft:
         for a in AGENTS:
             cfg.terminations[f"{a}_off_contact"] = TerminationTermCfg(func=mdp.off_contact, params={"robot": a})
     cfg.curriculum = {"push": CurriculumTermCfg(func=mdp.contact_curriculum if tol_levels else m2.push2_curriculum)}

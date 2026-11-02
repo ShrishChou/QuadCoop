@@ -120,6 +120,10 @@ class MarlCfg:
     drift_heading_deg: float = 45.0  # env option (recorded): ... and facing its push direction within this
     reselect_s: tuple = (0.0, 0.0)  # env option (recorded): contact rule re-applied every U(lo, hi) s
     random_start: float = 0.0  # env option (recorded): share of robots starting anywhere around the object
+    off_contact: str = "terminate"  # env option (recorded): "soft" (cost, no ending, no deadlines) or "terminate"
+    off_contact_cost: float = 1.0  # env option (recorded): per second off a reached contact (soft)
+    contact_approach: float = 1.0  # env option (recorded): weight of the pull to the assigned contact (soft)
+    critic_warmup_resume: int = 0  # critic-only iterations after a resume (e.g. when the rewards changed)
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
@@ -277,6 +281,7 @@ class MarlTrainer:
         self.refs = {}  # frozen Stage 2b actors for the KL anchor (build_refs)
         self.it = 0
         self.warm_from = {}
+        self.resume_it = None  # iteration a resumed run started from (critic_warmup_resume)
         # reward split: team terms + each robot's own (names ending in _<robot>)
         rm = env.reward_manager
         names = list(rm.active_terms)
@@ -439,6 +444,7 @@ class MarlTrainer:
             for pg in self.actor_opt[a].param_groups:
                 pg["lr"] = self.lr[a]
         self.it = int(ck["iter"])
+        self.resume_it = self.it
         self.warm_from = ck.get("warm_from", {})
         es = ck.get("env_state", {})
         self.env.common_step_counter = es.get("common_step_counter", 0)
@@ -506,7 +512,7 @@ class MarlTrainer:
 
         while self.it < cfg.max_iterations:
             t0 = time.time()
-            warm = self.it < cfg.critic_warmup
+            warm = self.it < cfg.critic_warmup or (self.resume_it is not None and self.it < self.resume_it + cfg.critic_warmup_resume)
             buf = {g_: torch.zeros(T, *obs[g_].shape, device=dev) for g_ in groups}
             act = torch.zeros(T, n, 3 * A, device=dev)
             logp = torch.zeros(T, n, A, device=dev)
@@ -705,6 +711,12 @@ class MarlTrainer:
                         lvl += f" contact dist {eng[0]:.2f}/{eng[1]:.2f}m"
                     oc = [out.get(f"Outcome/{x}_off_contact", 0.0) for x in AGENTS]
                     lvl += f" off-contact {oc[0]:.2f}/{oc[1]:.2f}"
+                    wk = [out.get(f"Curriculum/push/walking_{x}") for x in AGENTS]
+                    if wk[0] is not None:
+                        lvl += f" walking {wk[0]:.2f}/{wk[1]:.2f}"
+                    rt = out.get("Curriculum/push/reach_time_s")
+                    if rt is not None:
+                        lvl += f" reach {rt:.1f}s"
                 fa = out.get(f"Outcome/{AGENTS[0]}_fell", float("nan"))
                 fs = out.get(f"Outcome/{AGENTS[1]}_fell", float("nan"))
                 print(f"[marl2 {cfg.algo}] it {self.it}/{cfg.max_iterations}  return "

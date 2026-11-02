@@ -15,6 +15,12 @@
 #   ALGO=mappo SEED=0 RUN_NAME=s4b_aa_s0 ITERS=6000 EXTRA="--pair anymal --partner-map --reward r7 --contacts \
 #     --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4" \
 #     sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
+#   Stage 4c (no deadlines, no ending for being off contact: pulled to the contact, cost per second off it;
+#   train_coop2.py's default --off-contact soft), continuing Stage 4b: copy its model_6000.pt into
+#   logs/marl2/s4c_aa_s0/ first, then
+#   ALGO=mappo SEED=0 RUN_NAME=s4c_aa_s0 ITERS=9000 EXTRA="--pair anymal --partner-map --reward r7 --contacts \
+#     --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 100" \
+#     sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2
