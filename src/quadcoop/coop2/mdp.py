@@ -292,8 +292,9 @@ class CoopPush2Command(Push2Command):
         i, j = flat // self.c_K, flat % self.c_K
         swap = torch.rand(m, device=dev) < 0.5
         i, j = torch.where(swap, j, i), torch.where(swap, i, j)
-        if forced is not None:
-            i, j = forced[:, 0], forced[:, 1]
+        if forced is not None:  # evaluation: these contacts (a -1 keeps the rule's pick for that env)
+            keep = forced[:, 0] >= 0
+            i, j = torch.where(keep, forced[:, 0].to(dev), i), torch.where(keep, forced[:, 1].to(dev), j)
         idx = torch.stack([i, j], -1)
         ar = torch.arange(m, device=dev)
         return idx, p[ar.unsqueeze(-1), idx], nn[ar.unsqueeze(-1), idx], pre[ar.unsqueeze(-1), idx], com, rule
