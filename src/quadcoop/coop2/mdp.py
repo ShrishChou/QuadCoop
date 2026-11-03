@@ -30,7 +30,17 @@ potential-based reward (``contact_approach``: pays for getting closer - distance
 and takes it back for moving away), and once it has reached its contact it pays a cost per
 second while off it (``off_contact_cost``); a robot still on its way to a new contact pays
 nothing. The time a robot takes to reach a contact is logged, not enforced: r7's goal-error cost
-per second already makes slow transitions expensive. With ``reselect_s`` the rule is re-applied every few seconds from the object's current pose and
+per second already makes slow transitions expensive. With ``guide`` (Stage 4d) each robot is also given a route to its contact: a geometric planner,
+recomputed every step in the object's frame (so it moves and turns with the object), leads
+around the object's bounding box inflated by ``guide_margin`` (in the shorter direction, via its
+corners), backs a robot out first if it is inside that margin away from its contact, and ends
+with the straight lane from the contact's approach point to its standing point. The robot gets
+the next waypoint, the route length left, the contact's velocity and an on-contact flag
+(``guide_obs``); the pull to the contact pays for shortening the route (not the straight line),
+and touching the object anywhere while not on its contact costs ``bump_cost`` per second (contact
+sensors). With ``disturb_frac`` a share of training episodes move and turn the object by script
+for a few seconds (as a partner or a turn would), so keeping up with a moving contact is
+practised. With ``reselect_s`` the rule is re-applied every few seconds from the object's current pose and
 goal (Stage 4b): the pair changes when a contact no longer pushes toward the goal, or (spread /
 adjacent) when a pair scores clearly better; at most one robot moves when possible, and it gets
 a reach limit for the walk to its new contact. ``random_start`` robots start anywhere around the
@@ -194,6 +204,11 @@ class CoopPush2Command(Push2Command):
         self.c_reselect_t = torch.full((n,), 1e9, device=dev)  # s until the next re-selection
         self.c_switches = torch.zeros(n, device=dev)  # contact changes this episode
         self.c_prev_phi = torch.zeros(n, 2, device=dev)  # contact-approach potential, last step
+        self.c_preobj = torch.zeros(n, 2, 2, device=dev)  # approach points (object frame, scaled)
+        self.c_time = torch.zeros(n, device=dev)  # s since the episode started
+        self.d_t0 = torch.full((n,), 1e9, device=dev)  # scripted object motion: start, end (s), velocity
+        self.d_t1 = torch.full((n,), -1.0, device=dev)
+        self.d_vel = torch.zeros(n, 3, device=dev)  # vx, vy, wz (world)
         self.c_reach_sum, self.c_reach_cnt = 0.0, 0  # walk-to-contact times (s) since the last log
         print(f"[coop2] contact mode: {', '.join(f'{SHAPES2[s].name} {len(cl)}' for s, cl in enumerate(lists))} "
               f"candidate contacts; pairs >= {self.cfg.contact_min_sep:g} m apart; rule mix {self.cfg.contact_mix}")
@@ -228,9 +243,116 @@ class CoopPush2Command(Push2Command):
         return wrap(yaw_of(self.robots[AGENTS[k]].data.root_link_quat_w) - want).abs()
 
     def contact_phi(self, k: int) -> torch.Tensor:
-        """How far robot k is from being on its contact: front-to-contact distance (m) plus
-        phi_heading_weight x heading error (rad)."""
+        """How far robot k is from being on its contact: front-to-contact distance (m) - with guide,
+        the length of its route - plus phi_heading_weight x heading error (rad; with guide, only over
+        the last metre of the route)."""
+        if self.cfg.guide:
+            _, route = self.guide(k)
+            return route + self.cfg.phi_heading_weight * self.contact_heading_err(k) * (1.0 - route).clamp(0.0, 1.0)
         return self.contact_dist(k) + self.cfg.phi_heading_weight * self.contact_heading_err(k)
+
+    def guide(self, k: int, pos_w: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Robot k's route to its contact: the next waypoint (world, (n, 2)) and the route length
+        left (m, (n,)), planned in the object frame around the bounding box inflated by guide_margin.
+        pos_w: the robot centre to plan from (default: where robot k is)."""
+        a = AGENTS[k]
+        n, dev = self.num_envs, self.device
+        ar = torch.arange(n, device=dev)
+        yaw = self.contact_frame_yaw()
+        cs, sn = torch.cos(yaw), torch.sin(yaw)
+        obj = self.box_pos()[:, :2]
+        bb = self.bbox_env[ar, self.shape]  # (cx, cy, hx, hy), object frame
+        ctr = bb[:, :2]
+        A = bb[:, 2:4] + self.cfg.guide_margin  # inflated half extents
+        d = (self.robots[a].data.root_link_pos_w[:, :2] if pos_w is None else pos_w) - obj
+        q = torch.stack([cs * d[:, 0] + sn * d[:, 1], -sn * d[:, 0] + cs * d[:, 1]], -1) - ctr  # robot centre
+        nk = self.c_nobj[:, k]
+        stand = self.c_pobj[:, k] + nk * (self.reach[a] + 0.06) - ctr
+        pre = self.c_preobj[:, k] - ctr
+        eps = 0.01
+        S = A - eps  # boundary points count as outside: the route may run along the inflated box
+        # the lane's outer end T: the approach point, pushed along the lane out of the box if it lies inside
+        ld = pre - stand
+        ld = ld / torch.linalg.norm(ld, dim=-1, keepdim=True).clamp(min=1e-6)
+        pre_in = (pre.abs() < S).all(-1)
+        sd = torch.where(ld.abs() > 1e-6, ld, torch.full_like(ld, 1e-6))
+        s_exit = ((torch.sign(sd) * A - pre) / sd).min(-1).values.clamp(min=0.0)
+        T = torch.where(pre_in.unsqueeze(-1), pre + (s_exit + 0.02).unsqueeze(-1) * ld, pre)
+        lane_len = torch.linalg.norm(T - stand, dim=-1)
+        # inside the inflated box: back out through the nearest side first (route measured to that side)
+        inside = (q.abs() < S).all(-1)
+        gap = A - q.abs()
+        ax = (gap[:, 1] < gap[:, 0]).long()
+        sgn = torch.where(q[ar, ax] >= 0, 1.0, -1.0)
+        exit_pt = q.clone()
+        exit_pt[ar, ax] = sgn * A[ar, ax]
+        back_cue = q.clone()
+        back_cue[ar, ax] = sgn * (A[ar, ax] + 0.15)
+        start = torch.where(inside.unsqueeze(-1), exit_pt, q)
+        # shortest path from start to T around the box: direct, or via 1-3 of its corners
+        Ax, Ay = A[:, 0], A[:, 1]
+        C = torch.stack([torch.stack([Ax, -Ay], -1), torch.stack([Ax, Ay], -1),
+                         torch.stack([-Ax, Ay], -1), torch.stack([-Ax, -Ay], -1)], 1)  # ccw
+
+        def clear(a, b):  # segment a->b keeps out of the open box S (a, b: (n, 2) or (n, m, 2))
+            Sb = S.view(S.shape[0], *([1] * (a.dim() - 2)), 2)
+            dv = b - a
+            ok = dv.abs() > 1e-9
+            inv = 1.0 / torch.where(ok, dv, torch.ones_like(dv))
+            t1, t2 = (-Sb - a) * inv, (Sb - a) * inv
+            within = a.abs() < Sb
+            lo = torch.where(ok, torch.minimum(t1, t2), torch.where(within, -1e9, 1e9))
+            hi = torch.where(ok, torch.maximum(t1, t2), torch.where(within, 1e9, -1e9))
+            tmin, tmax = lo.max(-1).values.clamp(min=0.0), hi.min(-1).values.clamp(max=1.0)
+            return tmax <= tmin + 1e-6
+
+        INF = torch.full_like(Ax, 1e9)
+        sC = clear(start.unsqueeze(1).expand(-1, 4, -1), C)  # (n, 4) corner visible from start
+        Ct = clear(C, T.unsqueeze(1).expand(-1, 4, -1))  # (n, 4) T visible from corner
+        dsC = torch.linalg.norm(C - start.unsqueeze(1), dim=-1)
+        dCt = torch.linalg.norm(C - T.unsqueeze(1), dim=-1)
+        side = torch.stack([2 * Ay, 2 * Ax, 2 * Ay, 2 * Ax], -1)  # edge i -> i+1 (ccw)
+        cand = [torch.where(clear(start, T), torch.linalg.norm(T - start, dim=-1), INF)]
+        first = [torch.full_like(Ax, -1, dtype=torch.long)]
+        second = [first[0].clone()]  # the vertex after the first (-1: T)
+        for i in range(4):
+            cand.append(torch.where(sC[:, i] & Ct[:, i], dsC[:, i] + dCt[:, i], INF))
+            first.append(torch.full_like(first[0], i)); second.append(torch.full_like(first[0], -1))
+            for step in (1, -1):  # walk 1 or 2 more corners along the box, either way round
+                run = torch.zeros_like(Ax)
+                j = i
+                for _ in range(2):
+                    run = run + (side[:, j] if step == 1 else side[:, (j - 1) % 4])
+                    j = (j + step) % 4
+                    cand.append(torch.where(sC[:, i] & Ct[:, j], dsC[:, i] + run + dCt[:, j], INF))
+                    first.append(torch.full_like(first[0], i)); second.append(torch.full_like(first[0], (i + step) % 4))
+        cand, first, second = torch.stack(cand, -1), torch.stack(first, -1), torch.stack(second, -1)
+        geo, best = cand.min(-1)
+        geo = torch.where(geo < 1e8, geo, torch.linalg.norm(T - start, dim=-1))  # no clear path: straight
+        fi, se = first[ar, best], second[ar, best]
+        v1 = torch.where((fi >= 0).unsqueeze(-1), C[ar, fi.clamp(min=0)], T)
+        v2 = torch.where((se >= 0).unsqueeze(-1), C[ar, se.clamp(min=0)], T)
+        nxt_wp = torch.where((torch.linalg.norm(v1 - start, dim=-1) < 0.05).unsqueeze(-1), v2, v1)  # at that corner already
+        out_route = torch.where(inside, torch.linalg.norm(q - exit_pt, dim=-1), torch.zeros_like(Ax)) + geo + lane_len
+        wp = torch.where(inside.unsqueeze(-1), back_cue, nxt_wp)
+        # near the lane (or the standing point): blend into going straight to the standing point
+        lane = T - stand
+        t = (((q - stand) * lane).sum(-1) / lane_len.square().clamp(min=1e-9)).clamp(0.0, 1.0)
+        off_lane = torch.linalg.norm(q - (stand + t.unsqueeze(-1) * lane), dim=-1)
+        to_stand = torch.linalg.norm(q - stand, dim=-1)
+        w = torch.maximum(((0.4 - off_lane) / 0.2).clamp(0.0, 1.0), ((0.6 - to_stand) / 0.2).clamp(0.0, 1.0))
+        route = w * torch.minimum(to_stand, out_route) + (1.0 - w) * out_route
+        wp = torch.where((w > 0.5).unsqueeze(-1), stand, wp)
+        wp = wp + ctr
+        wp_w = obj + torch.stack([cs * wp[:, 0] - sn * wp[:, 1], sn * wp[:, 0] + cs * wp[:, 1]], -1)
+        return wp_w, route
+
+    def contact_velocity(self, k: int) -> torch.Tensor:
+        """World velocity of robot k's contact point (the object's velocity plus its turning)."""
+        pw, _ = self.contact_world(k)
+        r = pw - self.box_pos()[:, :2]
+        w = self.box_ang_vel()[:, 2]
+        return self.box_vel()[:, :2] + torch.stack([-w * r[:, 1], w * r[:, 0]], -1)
 
     def on_contact(self, k: int) -> torch.Tensor:
         return (self.contact_dist(k) < self.cfg.drift_dist) & \
@@ -317,7 +439,7 @@ class CoopPush2Command(Push2Command):
             return
         ar = torch.arange(m, device=dev)
         shape = self.shape[ids]
-        p, nn, _, com, valid, sep = self._contact_geom(ids, shape)
+        p, nn, pre_all, com, valid, sep = self._contact_geom(ids, shape)
         yaw = self.contact_frame_yaw()[ids]
         obj = self.box_pos()[ids, :2]
         tg = self.goal_xy[ids] - obj
@@ -395,6 +517,7 @@ class CoopPush2Command(Push2Command):
             self.c_idx[e, k] = nk
             self.c_pobj[e, k] = pk
             self.c_nobj[e, k] = nnk
+            self.c_preobj[e, k] = pre_all[ar[sel], nk]
             self.c_engaged[e, k] = False
             self.c_drift_t[e, k] = 0.0
             self.c_free_t[e, k] = 0.0
@@ -486,6 +609,9 @@ class CoopPush2Command(Push2Command):
                 self.prev_near[a][:] = self.near_value(a)
         if self.cfg.contact_mode:
             dt = self._env.step_dt
+            self.c_time += dt
+            if self.cfg.disturb_frac > 0:
+                self._disturb()
             for k in range(len(AGENTS)):
                 near = self.on_contact(k)
                 arrived = near & ~self.c_engaged[:, k] & (self.c_free_t[:, k] > 0.5)  # walked to it (not started on it)
@@ -512,6 +638,20 @@ class CoopPush2Command(Push2Command):
             # a new contact or a new episode never pays for the jump)
             for k in range(len(AGENTS)):
                 self.c_prev_phi[:, k] = self.contact_phi(k)
+
+    def _disturb(self) -> None:
+        """Scripted object motion (training): inside its window, an episode's object is given a set
+        planar velocity and turn rate every step (height, tilt and their rates kept)."""
+        act = (self.c_time >= self.d_t0) & (self.c_time < self.d_t1)
+        if not bool(act.any()):
+            return
+        for k, o in enumerate(self.objs):
+            e = (act & (self.shape == k)).nonzero().flatten()
+            if len(e) == 0:
+                continue
+            v = torch.cat([o.data.root_link_lin_vel_w[e], o.data.root_link_ang_vel_w[e]], -1).clone()
+            v[:, 0], v[:, 1], v[:, 5] = self.d_vel[e, 0], self.d_vel[e, 1], self.d_vel[e, 2]
+            o.write_root_link_velocity_to_sim(v, e)
 
     # -- placement --------------------------------------------------------------------------------
     def _resample_command(self, env_ids: torch.Tensor) -> None:
@@ -610,6 +750,17 @@ class CoopPush2Command(Push2Command):
             idx, cp, cn, cpre, ccom, rule = self._pick_contacts(env_ids, shape, obj_heading, gdir_now, forced, forced_rule)
             self.c_idx[env_ids], self.c_pobj[env_ids], self.c_nobj[env_ids] = idx, cp, cn
             self.c_comobj[env_ids], self.c_rule[env_ids] = ccom, rule
+            self.c_preobj[env_ids] = cpre
+            self.c_time[env_ids] = 0.0
+            # scripted object motion for a share of (training) episodes
+            dist = torch.rand(m, device=dev) < c.disturb_frac
+            t0 = U(c.disturb_start[0], c.disturb_start[1])
+            self.d_t0[env_ids] = torch.where(dist, t0, torch.full_like(t0, 1e9))
+            self.d_t1[env_ids] = torch.where(dist, t0 + U(c.disturb_dur[0], c.disturb_dur[1]), torch.full_like(t0, -1.0))
+            ang = 2 * math.pi * torch.rand(m, device=dev)
+            spd = U(c.disturb_speed[0], c.disturb_speed[1])
+            self.d_vel[env_ids] = torch.stack([spd * torch.cos(ang), spd * torch.sin(ang),
+                                               c.disturb_yaw_rate * (2 * torch.rand(m, device=dev) - 1)], -1)
             self.c_yaw0[env_ids] = obj_heading
             self.c_drift_t[env_ids] = 0.0
             self.c_free_t[env_ids] = 0.0
@@ -660,7 +811,12 @@ class CoopPush2Command(Push2Command):
             pos = obj_xy + dist.unsqueeze(-1) * torch.stack([torch.cos(bearings[k]), torch.sin(bearings[k])], -1)
             yaw = bearings[k] + math.pi + yaw_noise[k]
             if cpose is not None:
-                pos, yaw = cpose[k]
+                sb = sc.get("start_behind") if sc is not None else None  # eval: start at the placements, walk to the contacts
+                if sb is None:
+                    pos, yaw = cpose[k]
+                else:
+                    pos = torch.where(sb.unsqueeze(-1), pos, cpose[k][0])
+                    yaw = torch.where(sb, yaw, cpose[k][1])
             far = origin + torch.tensor([0.0, c.park_distance * (1.0 if k == 0 else -1.0)], device=dev)
             pos = torch.where(park[k].unsqueeze(-1), far, pos)
             q_adr = robot.indexing.free_joint_q_adr
@@ -742,6 +898,13 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     reselect_min_dist: float = 0.15  # m: no re-selection with the object this close to its goal
     off_contact_mode: str = "terminate"  # "terminate" (Stage 4 / 4b) or "soft" (cost, no ending, no deadlines)
     phi_heading_weight: float = 0.25  # m per rad of heading error in the contact-approach potential
+    guide: bool = False  # Stage 4d: route to the contact (guide_obs inputs, route-length pull)
+    guide_margin: float = 0.6  # m around the object's bounding box the route keeps the robot's centre
+    disturb_frac: float = 0.0  # share of episodes with scripted object motion (training only)
+    disturb_start: tuple[float, float] = (1.0, 8.0)  # s after the start
+    disturb_dur: tuple[float, float] = (1.5, 3.0)  # s
+    disturb_speed: tuple[float, float] = (0.15, 0.35)  # m/s
+    disturb_yaw_rate: float = 0.3  # rad/s at most
     # success-tolerance curriculum: ((pos tol m, yaw tol deg), ...) loose -> fine; () = fixed
     # success_pos_tol / success_yaw_tol_deg
     tol_levels: tuple[tuple[float, float], ...] = ()
@@ -812,6 +975,25 @@ def contact_obs(env, robot: str) -> torch.Tensor:
     tau = arm[:, 0] * (-n_k[:, 1]) - arm[:, 1] * (-n_k[:, 0])
     return torch.cat([_to_frame(env, robot, p_k - base), _to_frame(env, robot, -n_k), _to_frame(env, robot, arm),
                       tau.unsqueeze(-1), _to_frame(env, robot, p_o - base)], dim=-1)
+
+
+def guide_obs(env, robot: str) -> torch.Tensor:
+    """Stage 4d (6), this robot's frame: the next waypoint of its route rel. the robot (2), the
+    velocity of its contact point (2), on its contact (1), route length left / 3 m (1, at most 2)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    wp, route = g.guide(k)
+    base = env.scene[robot].data.root_link_pos_w[:, :2]
+    return torch.cat([_to_frame(env, robot, wp - base), _to_frame(env, robot, g.contact_velocity(k)),
+                      g.on_contact(k).float().unsqueeze(-1), (route / 3.0).clamp(0.0, 2.0).unsqueeze(-1)], dim=-1)
+
+
+def bump_cost(env, robot: str) -> torch.Tensor:
+    """Stage 4d, per robot: 1 per second while it touches the object anywhere but on its contact."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    touching = env.scene[f"push_{robot}"].data.found.view(env.num_envs, -1).any(-1)
+    return (touching & ~g.on_contact(k)).float()
 
 
 def off_contact(env, robot: str) -> torch.Tensor:
@@ -918,8 +1100,14 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
             out[f"off_turned_{a}"] = torch.tensor(
                 (g.contact_heading_err(k)[off] >= math.radians(g.cfg.drift_heading_deg)).float().mean().item() if n_off else 0.0)
             out[f"off_share_{a}"] = off.float().mean()
+            if g.cfg.guide:
+                touching = env.scene[f"push_{a}"].data.found.view(env.num_envs, -1).any(-1)
+                out[f"bump_share_{a}"] = (touching & ~g.on_contact(k)).float().mean()
+                out[f"route_len_{a}"] = g.guide(k)[1].mean()
         if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
             out["switches_per_episode"] = g.c_switches[env_ids].mean()
+        if g.cfg.disturb_frac > 0:
+            out["disturbed_now"] = ((g.c_time >= g.d_t0) & (g.c_time < g.d_t1)).float().mean()
         if g.c_reach_cnt > 0:
             out["reach_time_s"] = torch.tensor(g.c_reach_sum / g.c_reach_cnt)
             g.c_reach_sum, g.c_reach_cnt = 0.0, 0

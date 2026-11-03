@@ -9,6 +9,11 @@
 #   PREFIX=handoff-aa-free ARGS="--executor policy --return-dist 0" sbatch slurm/contact_test.sbatch   # never pulled back
 #   PREFIX=s4-aa-s0-it3000 ARGS="--executor stage4 --checkpoint logs/marl2/s4_aa_s0/model_3000.pt" RULES=spread,adjacent,random \
 #     sbatch slurm/contact_test.sbatch                        # Stage 4 policy from assigned contacts
+#   Stage 4d (guided reaching) - the same eval, then reaching from behind the object, with the object shoved:
+#   PREFIX=s4d-aa-s0 ARGS="--executor stage4 --checkpoint logs/marl2/s4d_aa_s0/model_9000.pt" RULES=spread,adjacent,random \
+#     sbatch slurm/contact_test.sbatch
+#   PREFIX=s4d-aa-s0-reach ARGS="--executor stage4 --checkpoint logs/marl2/s4d_aa_s0/model_9000.pt --start behind \
+#     --disturb-frac 0.5 --videos 0" RULES=spread sbatch slurm/contact_test.sbatch      # and the same with s4b's model_6000
 #   Stage 5 payoff sweep (every usable contact pair; then python scripts/contact_game.py --sweep evals/game-s4b-allpairs):
 #   for m in 40 70; do MASSES=$m RULES=allpairs PREFIX=game-s4b \
 #     ARGS="--executor stage4 --checkpoint logs/marl2/s4b_aa_s0/model_6000.pt --videos 0" sbatch slurm/contact_test.sbatch; done
