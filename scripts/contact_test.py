@@ -577,14 +577,32 @@ def _num(v):
     return v
 
 
+def _get(d, key):
+    """d[key], or None when that object / scenario was not run at that mass (partial jobs)."""
+    return None if d is None else d.get(key)
+
+
 def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> None:
-    """Write the summary for this rule. Rows of other masses already saved under the same name with
-    the same settings (another job, or an earlier mass of this one) are kept, so masses can be run
-    as separate jobs into one result."""
+    """Write the summary for this rule. Rows of other (mass, object) combinations already saved under
+    the same name with the same settings (another job, or an earlier mass of this one) are kept, so
+    masses and objects can be run as separate jobs into one result. Jobs writing the same result at
+    the same moment take turns (a lock file)."""
+    import fcntl
+
+    out = ROOT / "logs" / "evals" / name / "pair"
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / ".write.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            _write(rows, name, rule, a, objects, agents, train_names, quiet)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> None:
     out = ROOT / "logs" / "evals" / name / "pair"
     stats = ROOT / "evals" / name / "eval" / "pair"
-    out.mkdir(parents=True, exist_ok=True)
-    mine = {r["mass"] for r in rows}
+    mine = {(float(r["mass"]), r["object"]) for r in rows}
     try:
         old_meta = json.loads((out / "summary.json").read_text())
         same = all(old_meta.get(k) == v for k, v in (("executor", a.executor), ("return_dist", a.return_dist),
@@ -593,7 +611,7 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
         old = []
-    rows = [r for r in old if float(r["mass"]) not in mine] + list(rows)
+    rows = [r for r in old if (float(r["mass"]), r["object"]) not in mine] + list(rows)
     rows.sort(key=lambda r: float(r["mass"]))
     masses = sorted({float(r["mass"]) for r in rows})
     objects = [o for o in objects if any(r["object"] == o for r in rows)] + \
@@ -677,7 +695,7 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         ex = next((r for r in rows if r["object"] == o and r["scenario"] == "A_straight"), None)
         cdesc = "" if ex is None else (ex["contact_1"] + ("" if not ex["contact_2"] else f" + {ex['contact_2']}"))
         md.append(f"| {o}{'' if o in train_names else ' (unseen)'} | {cdesc} | "
-                  + " | ".join(f2(summary["by_object_mass"][f"{o} / {m:g} kg"]["success"]) for m in masses) + " |")
+                  + " | ".join(f2(_get(summary["by_object_mass"][f"{o} / {m:g} kg"], "success")) for m in masses) + " |")
     md += ["", "## how episodes ended (share) by mass", "",
            "| mass | success | ran out of time | a robot fell | object tipped | object lost | overshoot (within 20 cm, ended 30+ cm away) | contact changes per episode |",
            "|---|---|---|---|---|---|---|---|"]
@@ -701,12 +719,12 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
         md += ["", "## both robots pushing (share of time) by object and mass", "",
                "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
         for o in objects:
-            md.append(f"| {o} | " + " | ".join(f2(summary["by_object_mass"][f"{o} / {m:g} kg"]["copush_frac"])
+            md.append(f"| {o} | " + " | ".join(f2(_get(summary["by_object_mass"][f"{o} / {m:g} kg"], "copush_frac"))
                                                for m in masses) + " |")
     md += ["", "## success by scenario and mass", "", "| scenario | " + " | ".join(f"{m:g} kg" for m in masses) + " |",
            "|---|" + "---|" * len(masses)]
     for s in SCENARIOS:
-        md.append(f"| {s[0]} | " + " | ".join(f2(summary["by_scenario_mass"][f"{s[0]} / {m:g} kg"]["success"])
+        md.append(f"| {s[0]} | " + " | ".join(f2(_get(summary["by_scenario_mass"][f"{s[0]} / {m:g} kg"], "success"))
                                              for m in masses) + " |")
     (out / "summary.md").write_text("\n".join(md) + "\n")
     stats.mkdir(parents=True, exist_ok=True)

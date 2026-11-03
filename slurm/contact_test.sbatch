@@ -12,6 +12,10 @@
 #   Stage 5 payoff sweep (every usable contact pair; then python scripts/contact_game.py --sweep evals/game-s4b-allpairs):
 #   for m in 40 70; do MASSES=$m RULES=allpairs PREFIX=game-s4b \
 #     ARGS="--executor stage4 --checkpoint logs/marl2/s4b_aa_s0/model_6000.pt --videos 0" sbatch slurm/contact_test.sbatch; done
+#   larger sweep (12 placements per ordered pair; jobs split by object, all merge into one result):
+#   for m in 40 70; do for objs in arch,dumbbell beam,t_shape u_channel,l_shape,plus; do MASSES=$m RULES=allpairs REPS=12 \
+#     PREFIX=game12-s4b ARGS="--executor stage4 --checkpoint logs/marl2/s4b_aa_s0/model_6000.pt --videos 0 --objects $objs" \
+#     sbatch slurm/contact_test.sbatch; done; done
 # Masses can be split over jobs with the same PREFIX: each job merges its masses into the same results, and
 # results are saved after every mass (a job that hits the time limit keeps the masses it finished), e.g.
 #   for m in 40 60 80; do MASSES=$m PREFIX=handoff-aa-free ARGS="--executor policy --return-dist 0" sbatch slurm/contact_test.sbatch; done
