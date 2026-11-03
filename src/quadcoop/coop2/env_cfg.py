@@ -108,7 +108,7 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
     return grp
 
 
-def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False) -> dict:
+def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False) -> dict:
     """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
     (+ the assigned contacts in contact mode)."""
     def nz(lim):
@@ -128,6 +128,7 @@ def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False) -> 
         "partner": T(func=mdp.partner_obs, params={"robot": name, "other": other, "other_action": f"walker_{other}"},
                      noise=nz(0.05)),
         **({"contact": T(func=mdp.contact_obs, params={"robot": name}, noise=nz(0.02))} if contacts else {}),
+        **({"guide": T(func=mdp.guide_obs, params={"robot": name}, noise=nz(0.02))} if guide else {}),
     }
 
 
@@ -145,7 +146,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        contact_mix: tuple = (1.0, 1.0, 1.0), contact_start_at: float = 0.7,
                        drift_dist: float = 0.35, drift_heading_deg: float = 45.0,
                        reselect_s: tuple = (0.0, 0.0), random_start: float = 0.0, off_contact: str = "soft",
-                       off_contact_cost: float = 1.0, contact_approach: float = 1.0) -> ManagerBasedRlEnvCfg:
+                       off_contact_cost: float = 1.0, contact_approach: float = 1.0, guide: bool = False,
+                       bump_cost: float = 1.0, disturb_frac: float = 0.0, push_sensors: bool = False) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -187,6 +189,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     pulled to its contact (contact_approach: weight of the potential-based reward, replacing r7's
     approach-the-surface term) and pays off_contact_cost per second while off a contact it had
     reached; "terminate" - Stage 4 / 4b (off-contact ends the episode as a failure, reach limits).
+    guide (Stage 4d, needs contacts and soft): a route to the contact as 6 more inputs, the pull pays
+    for shortening the route, bump_cost per second for touching the object off the contact;
+    disturb_frac: share of episodes with scripted object motion (training; an eval may set it too).
+    push_sensors: add the robot-object contact sensors even when no reward uses them (evals).
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
@@ -209,7 +215,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         secondary=ContactMatch(mode="subtree", pattern=SPECS[AGENTS[1]].base_body, entity=AGENTS[1]),
         fields=("found",), reduce="none", num_slots=1,
     ),)
-    if reward_set == "r8":  # contact force between each robot and the object (work_credit)
+    assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
+    if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
             primary=ContactMatch(mode="body", pattern=tuple(f"{o}/body" for o in OBJ_NAMES2)),
@@ -244,15 +251,16 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         drift_dist=drift_dist, drift_heading_deg=drift_heading_deg,
         reselect_s=tuple(float(x) for x in reselect_s), random_start=random_start,
         off_contact_mode=off_contact if contacts else "terminate",
+        guide=guide and contacts, disturb_frac=disturb_frac,
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
     obs = {}
     for a, o in PARTNER.items():
-        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts),
+        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide),
                                                 concatenate_terms=True, enable_corruption=not play)
-        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts),
+        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide),
                                                 concatenate_terms=True, enable_corruption=False)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
@@ -329,6 +337,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         if soft:  # pulled to its assigned contact instead of to the nearest surface
             rewards[f"contact_approach_{a}"] = R(func=mdp.contact_approach, weight=contact_approach, params={"robot": a})
             rewards[f"off_contact_cost_{a}"] = R(func=mdp.off_contact_cost, weight=-off_contact_cost, params={"robot": a})
+            if guide:
+                rewards[f"bump_cost_{a}"] = R(func=mdp.bump_cost, weight=-bump_cost, params={"robot": a})
         elif reward_set in ("r5", "r7", "r8"):
             rewards[f"approach_{a}"] = R(func=mdp.approach, weight=2.0, params={"robot": a})
         else:

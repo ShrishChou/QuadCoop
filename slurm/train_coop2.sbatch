@@ -21,6 +21,11 @@
 #   ALGO=mappo SEED=0 RUN_NAME=s4c_aa_s0 ITERS=9000 EXTRA="--pair anymal --partner-map --reward r7 --contacts \
 #     --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 100" \
 #     sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
+#   Stage 4d (guided reaching: route inputs, route-length pull, bump cost, scripted object motion), from Stage 4b's
+#   model (its networks are expanded for the 6 new inputs; a requeued job continues from its own checkpoints):
+#   ALGO=mappo SEED=0 RUN_NAME=s4d_aa_s0 ITERS=9000 EXTRA="--pair anymal --partner-map --reward r7 --contacts --guide \
+#     --disturb-frac 0.2 --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 100 \
+#     --init-from logs/marl2/s4b_aa_s0/model_6000.pt" sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2

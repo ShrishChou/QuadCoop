@@ -160,6 +160,15 @@ def main() -> int:
     ap.add_argument("--contact-approach", type=float, default=1.0, help="soft: weight of the pull to the assigned contact")
     ap.add_argument("--critic-warmup-resume", type=int, default=0,
                     help="critic-only iterations after --resume (use when the rewards changed, e.g. 100)")
+    ap.add_argument("--guide", action="store_true",
+                    help="Stage 4d: a route to the contact as 6 more inputs, the pull pays for shortening the route, "
+                         "touching the object off the contact costs --bump-cost per second (needs --contacts, soft)")
+    ap.add_argument("--bump-cost", type=float, default=1.0)
+    ap.add_argument("--disturb-frac", type=float, default=0.0,
+                    help="share of training episodes in which the object is moved and turned by script for a few seconds")
+    ap.add_argument("--init-from", default=None,
+                    help="start from this trainer checkpoint, expanding its networks for new inputs (e.g. a Stage 4b/4c "
+                         "model for --guide); ignored once the run has its own checkpoints (then --resume continues it)")
     ap.add_argument("--tol-levels", default=None,
                     help="success-tolerance curriculum 'pos_m:yaw_deg,...' loose -> fine; 'none' = fixed "
                          "10 cm / 3 deg; default with --contacts: 0.30:15,0.20:10,0.15:6,0.12:4,0.10:3")
@@ -220,6 +229,8 @@ def main() -> int:
     if a.contacts:
         resel = f"{reselect_s[0]:g}-{reselect_s[1]:g} s" if reselect_s[1] > 0 else "never"
         soft_txt = f" (cost {a.off_contact_cost:g}/s, pull {a.contact_approach:g})" if a.off_contact == "soft" else ""
+        if a.guide:
+            soft_txt += f", GUIDED (bump cost {a.bump_cost:g}/s, disturbed episodes {a.disturb_frac:g})"
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
                        f"{a.drift_heading:g} deg, re-select {resel}, random start {a.random_start:g}, off contact "
                        f"{a.off_contact}{soft_txt})  ")
@@ -249,7 +260,8 @@ def main() -> int:
                                  tol_levels=tol_levels, contact_mix=contact_mix, contact_start_at=a.contact_start_at,
                                  drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
                                  reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
-                                 off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach)
+                                 off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
+                                 guide=a.guide, bump_cost=a.bump_cost, disturb_frac=a.disturb_frac)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -266,7 +278,8 @@ def main() -> int:
                   drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
                   reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
                   off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
-                  critic_warmup_resume=a.critic_warmup_resume,
+                  critic_warmup_resume=a.critic_warmup_resume, guide=a.guide, bump_cost=a.bump_cost,
+                  disturb_frac=a.disturb_frac, init_from=a.init_from or "",
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])
@@ -280,8 +293,12 @@ def main() -> int:
             raise SystemExit(f"{log_dir} already has checkpoints: pass --resume, or another --run-name")
         if a.scratch:
             trainer.init_scratch()
+        elif a.init_from:
+            trainer.init_from(a.init_from)
         else:
             trainer.warm_start(models["policy"])
+    if a.check:
+        cfg.max_iterations = trainer.it + 2  # a check always runs 2 iterations, wherever it starts
     if a.kl_ref > 0:
         trainer.build_refs(models["policy"])
     (log_dir / "inputs.yaml").write_text(yaml.safe_dump({"run": run, "algo": a.algo, "variant": a.variant,

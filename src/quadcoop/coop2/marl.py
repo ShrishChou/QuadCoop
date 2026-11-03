@@ -124,6 +124,10 @@ class MarlCfg:
     off_contact_cost: float = 1.0  # env option (recorded): per second off a reached contact (soft)
     contact_approach: float = 1.0  # env option (recorded): weight of the pull to the assigned contact (soft)
     critic_warmup_resume: int = 0  # critic-only iterations after a resume (e.g. when the rewards changed)
+    guide: bool = False  # env option (recorded): Stage 4d route inputs (6 more per robot)
+    bump_cost: float = 1.0  # env option (recorded)
+    disturb_frac: float = 0.0  # env option (recorded)
+    init_from: str = ""  # Stage 4 checkpoint the networks were expanded from (Stage 4d)
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
@@ -461,6 +465,82 @@ class MarlTrainer:
             g.tol_last_change = g.last_change_iter
         print(f"[marl2] resumed {path} at iteration {self.it}, curriculum level {g.level}"
               f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}")
+
+    def init_from(self, path: str | Path) -> None:
+        """Start from a trainer checkpoint whose robots had fewer inputs (Stage 4b/4c -> 4d): every
+        network's weights are copied, the new inputs at the end of each actor_ / state_ group get
+        zero weight (so the policy acts exactly as before), the optimizers start fresh, and the
+        iteration count, learning rates, noise caps and curriculum state carry over."""
+        ck = torch.load(str(path), map_location=self.device, weights_only=False)
+        assert ck["algo"] == self.cfg.algo, f"checkpoint is {ck['algo']}, trainer is {self.cfg.algo}"
+        v = self.cfg.variant
+        for a in AGENTS:
+            self._expand(self.actors[a], ck["actors"][a], actor_groups(a, v), f"{a} actor")
+        for k, c in self.critics.items():
+            self._expand(c, ck["critics"][k], critic_groups(self.cfg.algo, v, None if k == "central" else k), f"{k} critic")
+        self.lr = dict(ck["lr"])
+        for a in AGENTS:
+            for pg in self.actor_opt[a].param_groups:
+                pg["lr"] = self.lr[a]
+        for a, c in (ck.get("std_cap") or {}).items():
+            if c is not None:
+                self.std_cap[a] = torch.tensor(c, device=self.device)
+        self.it = int(ck["iter"])
+        self.resume_it = self.it
+        self.warm_from = {"init_from": str(path), **ck.get("warm_from", {})}
+        es = ck.get("env_state", {})
+        self.env.common_step_counter = es.get("common_step_counter", 0)
+        g = self.env.command_manager.get_term("goal")
+        g.level = es.get("level", g.level)
+        g.ema_success = es.get("ema_success", g.ema_success)
+        if "shape_success" in es:
+            g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
+        g.last_change_iter = self.env.common_step_counter / self.cfg.num_steps_per_env
+        if getattr(g, "tol_table", None) is not None:
+            g.tol_level = int(es.get("tol_level", g.tol_level))
+            g.tol_ema = float(es.get("tol_ema", g.tol_ema))
+            g.lvl_ema = float(es.get("lvl_ema", 0.0))
+            g.tol_last_change = g.last_change_iter
+        print(f"[marl2] initialised from {path} (iteration {self.it}, curriculum level {g.level}"
+              f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}); new inputs at zero weight")
+
+    def _expand(self, model, old: dict, groups: list[str], what: str) -> None:
+        """Copy `old` into `model`; 1D input groups may have grown at their end (new columns zero)."""
+        new = model.state_dict()
+        one_d = [g_ for g_ in groups if self.obs[g_].dim() == 2]
+        n_new = {g_: int(self.obs[g_].shape[-1]) for g_ in one_d}
+        n1d_new = sum(n_new.values())
+        n1d_old = int(old["obs_normalizer._mean"].shape[-1])
+        grow = n1d_new - n1d_old
+        growing = [g_ for g_ in one_d if g_.startswith(("actor_", "state_"))]
+        if grow % max(len(growing), 1):
+            raise RuntimeError(f"{what}: {grow} new inputs do not split evenly over {growing}")
+        per = grow // max(len(growing), 1)
+        cols, o_off, n_off = [], 0, 0
+        for g_ in one_d:
+            n_old = n_new[g_] - (per if g_ in growing else 0)
+            cols.append((slice(o_off, o_off + n_old), slice(n_off, n_off + n_old)))
+            o_off += n_old
+            n_off += n_new[g_]
+        W_old, W_new = old["mlp.0.weight"], new["mlp.0.weight"]
+        W = torch.zeros_like(W_new)
+        for o, nw in cols:
+            W[:, nw] = W_old[:, o]
+        W[:, n1d_new:] = W_old[:, n1d_old:]
+        out = dict(old)
+        out["mlp.0.weight"] = W
+        for key in ("obs_normalizer._mean", "obs_normalizer._var", "obs_normalizer._std"):
+            vv = torch.zeros_like(new[key]) if key.endswith("_mean") else torch.ones_like(new[key])
+            for o, nw in cols:
+                vv[..., nw] = old[key][..., o]
+            out[key] = vv
+        for key in new:
+            if key not in out:
+                raise RuntimeError(f"{what}: {key} not in the checkpoint")
+            if out[key].shape != new[key].shape:
+                raise RuntimeError(f"{what}: {key} {tuple(out[key].shape)} vs {tuple(new[key].shape)}")
+        model.load_state_dict({k: out[k] for k in new}, strict=True)
+        print(f"[marl2] {what}: {grow} new inputs at zero weight ({per} per group in {growing})")
 
     @staticmethod
     def newest(log_dir: Path) -> Path | None:

@@ -102,6 +102,12 @@ def main() -> int:
                          "0 = contacts fixed for the episode; auto = as the checkpoint was trained)")
     ap.add_argument("--return-dist", type=float, default=0.5,
                     help="policy executor: hand back to the script when the front is this far from the contact (0 = never)")
+    ap.add_argument("--start", choices=("contact", "behind"), default="contact",
+                    help="stage4: robots start at their contacts, or at scripts/eval_coop2.py's placements behind the "
+                         "object and walk to their contacts first (tests reaching)")
+    ap.add_argument("--disturb-frac", type=float, default=0.0,
+                    help="stage4: share of episodes in which the object is shoved (scripted motion, 1.5-3 s at 0.15-0.35 m/s "
+                         "some time in 1-8 s), to test reaching moving contacts")
     ap.add_argument("--video-objects", default="cube,sphere,beam,dumbbell,arch,t_shape",
                     help="objects to film ('all' = every object); filmed: A_straight and D_far_turn, rep 0, --video-mass")
     ap.add_argument("--videos", type=int, default=1, help="1 = film rule x object (A_straight and D_far_turn) at --video-mass")
@@ -212,7 +218,9 @@ def main() -> int:
             "b", play=True, partner_map=bool(ck_cfg.get("partner_map", False)), reward_set=ck_cfg.get("reward_set", "r7"),
             contacts=True, tol_levels=tuple(tuple(x) for x in ck_cfg.get("tol_levels", ())),
             drift_dist=float(ck_cfg.get("drift_dist", 0.35)), drift_heading_deg=float(ck_cfg.get("drift_heading_deg", 45.0)),
-            reselect_s=reselect_s)
+            reselect_s=reselect_s, guide=bool(ck_cfg.get("guide", False)),
+            off_contact=ck_cfg.get("off_contact", "soft") if ck_cfg.get("guide") else "soft",
+            disturb_frac=a.disturb_frac, push_sensors=True)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -258,6 +266,8 @@ def main() -> int:
             rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0}
             sc["contact_rule"] = torch.tensor([rule_id[rule] for rule, *_ in cases], dtype=torch.long, device=dev)
             sc["contact_idx"] = torch.tensor([pr if pr is not None else (-1, -1) for pr in pair_of], dtype=torch.long, device=dev)
+            if a.start == "behind":
+                sc["start_behind"] = torch.ones(n, dtype=torch.bool, device=dev)
         g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids])
                                       for k, v in sc.items()}
         obs, _ = base.reset()
@@ -360,6 +370,15 @@ def main() -> int:
         on_steps = [torch.zeros(n, device=dev) for _ in AGENTS]
         face_steps = [torch.zeros(n, device=dev) for _ in AGENTS]  # facing the contact's push direction (45 deg)
         returns = [torch.zeros(n, device=dev) for _ in AGENTS]
+        # stage4 reaching: each time a robot's contact is (re)assigned, the time until it is first on it,
+        # the assignments never reached, and the time spent touching the object anywhere but its contact
+        bump_steps = [torch.zeros(n, device=dev) for _ in AGENTS]
+        reach_sum = [torch.zeros(n, device=dev) for _ in AGENTS]
+        reach_n = [torch.zeros(n, device=dev) for _ in AGENTS]
+        miss_n = [torch.zeros(n, device=dev) for _ in AGENTS]
+        t_assign = [torch.zeros(n, device=dev) for _ in AGENTS]
+        waiting = [present[k].clone() if stage4 else torch.zeros(n, dtype=torch.bool, device=dev) for k in range(2)]
+        prev_c = [g.c_pobj[:, k].clone() for k in range(2)] if stage4 else None
 
         def geo_pushing(k):
             ag, r = AGENTS[k], robots[k]
@@ -471,6 +490,21 @@ def main() -> int:
                     cdist_sum[k] += el * cdist[k]
                     on_steps[k] += el * (cdist[k] < 0.25).float()
                     face_steps[k] += el * (herr[k] < math.radians(45.0)).float()
+                if stage4:
+                    for k, ag in enumerate(AGENTS):
+                        lk = live & present[k]
+                        onk = g.on_contact(k)
+                        touching = base.scene[f"push_{ag}"].data.found.view(n, -1).any(-1)
+                        bump_steps[k] += (lk & touching & ~onk).float()
+                        changed = (g.c_pobj[:, k] - prev_c[k]).abs().sum(-1) > 1e-6
+                        prev_c[k] = g.c_pobj[:, k].clone()
+                        miss_n[k] += (changed & waiting[k] & lk).float()
+                        t_assign[k] = torch.where(changed, torch.full_like(t_assign[k], t), t_assign[k])
+                        waiting[k] = torch.where(changed, lk, waiting[k])
+                        got = waiting[k] & onk & lk
+                        reach_sum[k] += torch.where(got, t - t_assign[k], torch.zeros_like(t_assign[k]))
+                        reach_n[k] += got.float()
+                        waiting[k] &= ~got
                 both = pu[0] & pu[1]
                 copush += both.float()
                 spread_sum += torch.where(both, torch.linalg.norm(front_point(0) - front_point(1), dim=-1), torch.zeros(n, device=dev))
@@ -530,6 +564,13 @@ def main() -> int:
                 **{f"facing_{ag}": (round(float(face_steps[k][j] / eng_steps[k][j]), 3) if float(eng_steps[k][j]) > 0 else "")
                    for k, ag in enumerate(AGENTS)},
                 **{f"returns_{ag}": int(returns[k][j]) for k, ag in enumerate(AGENTS)},
+                **({f"bump_frac_{ag}": round(float(bump_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
+                **({f"reach_time_{ag}": (round(float(reach_sum[k][j] / reach_n[k][j]), 2) if float(reach_n[k][j]) > 0 else "")
+                    for k, ag in enumerate(AGENTS)} if stage4 else {}),
+                **({f"reached_{ag}": (round(float(reach_n[k][j]) / float(reach_n[k][j] + miss_n[k][j] + float(waiting[k][j])), 3)
+                                      if float(reach_n[k][j] + miss_n[k][j] + float(waiting[k][j])) > 0 else "")
+                    for k, ag in enumerate(AGENTS)} if stage4 else {}),
+                "disturbed": int(stage4 and float(g.d_t1[j]) > 0 and float(g.d_t0[j]) < float(t_end[j])) if stage4 else "",
                 "contact_1": "" if c1 is None else cl[c1].label, "contact_2": "" if c2 is None else cl[c2].label,
                 "contact_sep": sep, "contact_idx_1": "" if c1 is None else int(c1),
                 "contact_idx_2": "" if c2 is None else int(c2), "video": ""})
@@ -607,7 +648,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
         old_meta = json.loads((out / "summary.json").read_text())
         same = all(old_meta.get(k) == v for k, v in (("executor", a.executor), ("return_dist", a.return_dist),
                                                        ("checkpoint", a.checkpoint), ("reselect", a.reselect_s),
-                                                       ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents))))
+                                                       ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
+            old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
         old = []
@@ -649,7 +691,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 "copush_share": None if solo else sum(r["copush_frac"] for r in sel) / max(1e-9, anyp),
                 "copush_spread": mean(sel, "copush_spread"),
                 **{f"push_mode_frac_{ag}": mean(sel, f"push_mode_frac_{ag}") for ag in agents},
-                **{f"{key}_{ag}": mean(sel, f"{key}_{ag}") for key in ("engaged_frac", "contact_dist", "on_contact", "facing", "returns")
+                **{f"{key}_{ag}": mean(sel, f"{key}_{ag}") for key in ("engaged_frac", "contact_dist", "on_contact", "facing", "returns",
+                                                                       "bump_frac", "reach_time", "reached")
                    for ag in agents}}
 
     by = defaultdict(list)
@@ -658,7 +701,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
         by[("obj_mass", r["object"], r["mass"])].append(r)
         by[("group_mass", "seen" if r["seen_shape"] else "unseen", r["mass"])].append(r)
         by[("scen_mass", r["scenario"], r["mass"])].append(r)
-    what = (f"Stage 4 contact policy {a.checkpoint} (robots start at their contacts; contact rule re-applied: "
+    what = (f"Stage 4 contact policy {a.checkpoint} (robots start {'at their contacts' if a.start == 'contact' else 'behind the object and walk to their contacts'}; contact rule re-applied: "
             f"{a.reselect_s if a.reselect_s != '0' else 'never'})" if a.executor == "stage4" else
             f"{'scripted contacts' if a.executor == 'script' else 'hand-off (script to the contact, then the frozen Stage 2b policy'}"
             + ("" if a.executor == "script" else (f", back to the script beyond {a.return_dist:g} m)" if a.return_dist > 0 else ", never back)"))
@@ -666,7 +709,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
            (f", re-chosen every {a.reassign_s:g} s" if a.reassign_s > 0 else "")
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
-               "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "overall": agg(rows),
+               "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
+               "start": a.start, "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
                                  for gname in ("seen", "unseen") for m in masses},
@@ -715,6 +759,17 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             f"{f2(s[f'engaged_frac_{ag}'])} | {f2(s[f'contact_dist_{ag}'])} | {f2(s[f'on_contact_{ag}'])} | "
             f"{f2(s.get(f'facing_{ag}'))} | {f2(s[f'returns_{ag}'])}"
             for ag in (agents if not solo else agents[:1])) + " |")
+    if a.executor == "stage4":
+        md += ["", "## reaching the assigned contact (each assignment: at the start and at every contact change)"
+               + (f"; object shoved in {a.disturb_frac:g} of episodes" if a.disturb_frac > 0 else ""), "",
+               "| mass | " + " | ".join(f"{ag} reached | {ag} time to reach (s) | {ag} bumping off-contact"
+                                       for ag in (agents if not solo else agents[:1])) + " |",
+               "|---|" + "---|---|---|" * (2 if not solo else 1)]
+        for m in masses:
+            s = summary["by_mass"][f"{m:g}"]
+            md.append(f"| {m:g} kg | " + " | ".join(
+                f"{f2(s.get(f'reached_{ag}'))} | {f2(s.get(f'reach_time_{ag}'))} | {f2(s.get(f'bump_frac_{ag}'))}"
+                for ag in (agents if not solo else agents[:1])) + " |")
     if not solo:
         md += ["", "## both robots pushing (share of time) by object and mass", "",
                "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
