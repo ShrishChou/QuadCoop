@@ -105,6 +105,8 @@ def main() -> int:
     ap.add_argument("--start", choices=("contact", "behind"), default="contact",
                     help="stage4: robots start at their contacts, or at scripts/eval_coop2.py's placements behind the "
                          "object and walk to their contacts first (tests reaching)")
+    ap.add_argument("--reselect-min-dist", default="auto",
+                    help="stage4: no contact re-choice with the object this close to its goal (m); auto = as trained")
     ap.add_argument("--disturb-frac", type=float, default=0.0,
                     help="stage4: share of episodes in which the object is shoved (scripted motion, 1.5-3 s at 0.15-0.35 m/s "
                          "some time in 1-8 s), to test reaching moving contacts")
@@ -112,6 +114,13 @@ def main() -> int:
                     help="objects to film ('all' = every object); filmed: A_straight and D_far_turn, rep 0, --video-mass")
     ap.add_argument("--videos", type=int, default=1, help="1 = film rule x object (A_straight and D_far_turn) at --video-mass")
     ap.add_argument("--video-mass", type=float, default=60.0)
+    ap.add_argument("--video-masses", default=None, help="film at these masses (comma list; default --video-mass)")
+    ap.add_argument("--video-scenarios", default="A_straight,D_far_turn",
+                    help="scenarios to film (comma list of names, or 'all')")
+    ap.add_argument("--video-reps", default="0", help="placements to film (comma list of rep indices, or 'all')")
+    ap.add_argument("--video-dir", default=None,
+                    help="write the videos to <video-dir>/<prefix>-<rule>/ (e.g. eval_videos) instead of "
+                         "logs/evals/<prefix>-<rule>/pair/videos/; either way the folder gets index.html / index.csv")
     ap.add_argument("--video-size", default="640x480")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
@@ -160,9 +169,15 @@ def main() -> int:
         rs_ = [float(x) for x in a.reselect_s.split(",")]
         reselect_s = (rs_[0], rs_[-1])
     video_objects = None if a.video_objects == "all" else {o.strip() for o in a.video_objects.split(",")}
+    video_masses = {a.video_mass} if a.video_masses is None else {float(x) for x in a.video_masses.split(",")}
+    video_scen = None if a.video_scenarios == "all" else {x.strip() for x in a.video_scenarios.split(",")}
+    video_reps = None if a.video_reps == "all" else {int(x) for x in a.video_reps.split(",")}
     rules = [r.strip() for r in (a.rules or ("spread,adjacent,random" if stage4 else ",".join(RULES))).split(",")]
     if stage4 and "centre" in rules:
-        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random, allpairs")
+        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random, wrench, allpairs")
+    if "wrench" in rules and not stage4:
+        raise SystemExit("the wrench rule is the Stage 4e contact rule: --executor stage4")
+    min_dist = float(ck_cfg.get("reselect_min_dist", 0.15)) if a.reselect_min_dist == "auto" else float(a.reselect_min_dist)
     if "allpairs" in rules:
         if not stage4:
             raise SystemExit("rule allpairs needs --executor stage4")
@@ -220,7 +235,8 @@ def main() -> int:
             drift_dist=float(ck_cfg.get("drift_dist", 0.35)), drift_heading_deg=float(ck_cfg.get("drift_heading_deg", 45.0)),
             reselect_s=reselect_s, guide=bool(ck_cfg.get("guide", False)),
             off_contact=ck_cfg.get("off_contact", "soft") if ck_cfg.get("guide") else "soft",
-            disturb_frac=a.disturb_frac, push_sensors=True)
+            disturb_frac=a.disturb_frac, push_sensors=True, push_cmd=bool(ck_cfg.get("push_cmd", False)),
+            wrench="wrench" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)), reselect_min_dist=min_dist)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -263,7 +279,7 @@ def main() -> int:
               "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
               "park": park}
         if stage4:  # the env picks each env's pair with its own (training) rule code and places the robots there
-            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0}
+            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0, "wrench": 3}
             sc["contact_rule"] = torch.tensor([rule_id[rule] for rule, *_ in cases], dtype=torch.long, device=dev)
             sc["contact_idx"] = torch.tensor([pr if pr is not None else (-1, -1) for pr in pair_of], dtype=torch.long, device=dev)
             if a.start == "behind":
@@ -326,10 +342,12 @@ def main() -> int:
         steps = int(a.horizon / dt)
         reassign_every = int(round(a.reassign_s / dt)) if a.reassign_s > 0 else 0
         film_ids = [j for j, (rule, o, s, r, _) in enumerate(cases) if rule != "allpairs"
-                    if a.videos > 0 and mass == a.video_mass and r == 0 and SCENARIOS[s][0] in ("A_straight", "D_far_turn")
+                    if a.videos > 0 and mass in video_masses and (video_reps is None or r in video_reps)
+                    and (video_scen is None or SCENARIOS[s][0] in video_scen)
                     and (video_objects is None or o in video_objects)]
         stride = 2
         rec_q, rec_mp, rec_mq, rec_pts = [], [], [], []
+        rec_mark, rec_cap = [], []  # per frame: each robot's contact / push direction / waypoint / on it; errors
         nmocap = base.sim.mj_model.nmocap
         fid = torch.tensor(film_ids, dtype=torch.long, device=dev) if film_ids else None
 
@@ -343,6 +361,17 @@ def main() -> int:
             pts[1] = torch.where(solo[fid].unsqueeze(-1), pts[0], pts[1])
             rec_pts.append(np.stack([p.cpu().numpy() for p in pts] + [g.box_pos()[fid, :2].cpu().numpy(),
                                                                        g.goal_xy[fid].cpu().numpy()], 1))
+            if stage4:
+                mk = []
+                for k in range(2):
+                    pw, nw = g.contact_world(k)
+                    dk = g.push_dir_world(k) if g.cfg.wrench else -nw  # push direction (into the object)
+                    wp = g.guide(k)[0] if g.cfg.guide else pw
+                    mk.append(torch.cat([pw, dk, wp, g.on_contact(k).float().unsqueeze(-1)], -1)[fid])
+                rec_mark.append(torch.stack(mk, 1).cpu().numpy())
+                d_, e_ = g.errors()
+                e_ = torch.where(g.symmetry() > 0, e_, torch.zeros_like(e_))
+                rec_cap.append(torch.stack([d_, torch.rad2deg(e_), g.c_switches], -1)[fid].cpu().numpy())
         if fid is not None:
             record()
 
@@ -373,6 +402,8 @@ def main() -> int:
         # stage4 reaching: each time a robot's contact is (re)assigned, the time until it is first on it,
         # the assignments never reached, and the time spent touching the object anywhere but its contact
         bump_steps = [torch.zeros(n, device=dev) for _ in AGENTS]
+        press_steps = [torch.zeros(n, device=dev) for _ in AGENTS]  # front on the object while on its contact
+        resid_sum = torch.zeros(n, device=dev)  # wrench rule: residual of the current pair
         reach_sum = [torch.zeros(n, device=dev) for _ in AGENTS]
         reach_n = [torch.zeros(n, device=dev) for _ in AGENTS]
         miss_n = [torch.zeros(n, device=dev) for _ in AGENTS]
@@ -496,6 +527,7 @@ def main() -> int:
                         onk = g.on_contact(k)
                         touching = base.scene[f"push_{ag}"].data.found.view(n, -1).any(-1)
                         bump_steps[k] += (lk & touching & ~onk).float()
+                        press_steps[k] += (lk & onk & (g.surface_distance(ag) < 0.08)).float()
                         changed = (g.c_pobj[:, k] - prev_c[k]).abs().sum(-1) > 1e-6
                         prev_c[k] = g.c_pobj[:, k].clone()
                         miss_n[k] += (changed & waiting[k] & lk).float()
@@ -505,6 +537,8 @@ def main() -> int:
                         reach_sum[k] += torch.where(got, t - t_assign[k], torch.zeros_like(t_assign[k]))
                         reach_n[k] += got.float()
                         waiting[k] &= ~got
+                if stage4 and g.cfg.wrench:
+                    resid_sum += g.c_resid * live.float()
                 both = pu[0] & pu[1]
                 copush += both.float()
                 spread_sum += torch.where(both, torch.linalg.norm(front_point(0) - front_point(1), dim=-1), torch.zeros(n, device=dev))
@@ -565,6 +599,8 @@ def main() -> int:
                    for k, ag in enumerate(AGENTS)},
                 **{f"returns_{ag}": int(returns[k][j]) for k, ag in enumerate(AGENTS)},
                 **({f"bump_frac_{ag}": round(float(bump_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
+                **({f"press_frac_{ag}": round(float(press_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
+                "mean_residual": round(float(resid_sum[j]) / ls, 3) if stage4 and g.cfg.wrench else "",
                 **({f"reach_time_{ag}": (round(float(reach_sum[k][j] / reach_n[k][j]), 2) if float(reach_n[k][j]) > 0 else "")
                     for k, ag in enumerate(AGENTS)} if stage4 else {}),
                 **({f"reached_{ag}": (round(float(reach_n[k][j]) / float(reach_n[k][j] + miss_n[k][j] + float(waiting[k][j])), 3)
@@ -580,17 +616,61 @@ def main() -> int:
                 Q, P = np.stack(rec_q, 1), np.stack(rec_pts, 1)
                 MP = np.stack(rec_mp, 1) if rec_mp else None
                 MQ = np.stack(rec_mq, 1) if rec_mq else None
+                MK = np.stack(rec_mark, 1) if rec_mark else None
+                CP = np.stack(rec_cap, 1) if rec_cap else None
+                touched = set()
                 for fi, j in enumerate(film_ids):
                     rule, o, s, r, _ = cases[j]
                     F = min(Q.shape[1], int(float(t_end[j]) / (stride * dt)) + int(1.0 / (stride * dt)) + 1)
-                    vdir = ROOT / "logs" / "evals" / f"{prefix}-{rule}" / "pair" / "videos"
-                    name = f"{o}_{mass:g}kg_{SCENARIOS[s][0]}__{how[j]}.mp4"
+                    vdir = (ROOT / a.video_dir / f"{prefix}-{rule}") if a.video_dir else \
+                        ROOT / "logs" / "evals" / f"{prefix}-{rule}" / "pair" / "videos"
+                    stem = f"{o}_{mass:g}kg_{SCENARIOS[s][0]}_r{r}"
+                    name = f"{stem}__{how[j]}.mp4"
                     row = rows[rule][-n_of[rule]:][[(oo, ss, rr) for oo, ss, rr in base_cases].index((o, s, r))]
-                    cap_txt = f"{rule}: {o} {mass:g}kg {SCENARIOS[s][0].split('_')[0]} -> {how[j]}"
+                    head = f"{rule}: {o} {mass:g} kg {SCENARIOS[s][0]} rep {r} -> {how[j]}"
+                    legend = (f"cyan {AGENTS[0]}, yellow {AGENTS[1]} | post = contact (faint: not on it), "
+                              "arrow = push, dot = waypoint") if MK is not None else ""
+
+                    def cap(f, fi=fi, head=head, legend=legend):
+                        txt = f"{head} | t {f * stride * dt:4.1f} s"
+                        if CP is not None:
+                            d_, e_, sw = CP[fi, f]
+                            on = MK[fi, f, :, 6]
+                            txt += (f"\nto goal {d_:.2f} m, {e_:+.0f} deg | cyan {'ON' if on[0] > 0.5 else 'off'}, "
+                                    f"yellow {'ON' if on[1] > 0.5 else 'off'} | contact changes {sw:.0f}\n{legend}")
+                        return txt
+
+                    def marks(f, fi=fi):
+                        if MK is None:
+                            return None
+                        out = []
+                        for k, col in enumerate(((0.0, 0.95, 0.95), (1.0, 0.85, 0.0))):
+                            px, py, dx, dy, wx, wy, on = MK[fi, f, k]
+                            alpha = 1.0 if on > 0.5 else 0.4
+                            # a post standing on the contact point (visible above the robot when it is there),
+                            # the push direction at its top, and the route waypoint on the ground
+                            out.append(("arrow", (px, py, 0.25), (px, py, 1.05), 0.012, (*col, alpha)))
+                            out.append(("sphere", (px, py, 1.05), 0.07, (*col, alpha)))
+                            out.append(("arrow", (px - 0.6 * dx, py - 0.6 * dy, 1.05), (px - 0.1 * dx, py - 0.1 * dy, 1.05),
+                                        0.035, (*col, alpha)))
+                            out.append(("sphere", (wx, wy, 0.05), 0.06, (*col, 0.9)))
+                            rx, ry = P[fi, f, k]
+                            out.append(("sphere", (rx, ry, 1.45), 0.11, (*col, 1.0)))  # which robot is which
+                        return out
+
                     render_episode(cam, j, Q[fi, :F], None if MP is None else MP[fi, :F], None if MQ is None else MQ[fi, :F],
-                                   P[fi, :F], vdir / name, 1.0 / (stride * dt),
-                                   caption=lambda f, c=cap_txt: f"{c} | t {f * stride * dt:4.1f}s")
-                    row["video"] = f"videos/{name}"
+                                   P[fi, :F], vdir / name, 1.0 / (stride * dt), caption=cap, marks=marks)
+                    row["video"] = str(vdir / name) if a.video_dir else f"videos/{name}"
+                    keep = ("object", "scenario", "mass", "rep", "turn", "outcome", "success", "t_success", "final_pos_err",
+                            "final_yaw_err", "min_pos_err", "switches", "copush_frac", "disturbed", "contact_1", "contact_2",
+                            "mean_residual",
+                            *[f"{x}_{ag}" for x in ("on_contact", "press_frac", "reached", "reach_time", "bump_frac", "push_frac")
+                              for ag in AGENTS])
+                    (vdir / f"{stem}.json").write_text(json.dumps({**{k: row.get(k, "") for k in keep}, "rule": rule,
+                                                                   "file": name, "checkpoint": a.checkpoint}))
+                    touched.add(vdir)
+                for vd in touched:
+                    _video_index(vd)
             except Exception as ex:  # noqa: BLE001
                 print(f"videos skipped: {ex}")
         for rule in rules:
@@ -640,6 +720,43 @@ def write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> Non
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
+def _video_index(vdir: Path) -> None:
+    """index.csv / index.html of every filmed episode in vdir (from the per-episode .json files): failures
+    first, then by object, scenario and mass; open index.html in a browser next to the videos."""
+    import html
+    recs = []
+    for f in sorted(vdir.glob("*.json")):
+        try:
+            recs.append(json.loads(f.read_text()))
+        except ValueError:
+            continue
+    if not recs:
+        return
+    recs.sort(key=lambda r: (int(r.get("success") or 0), str(r["object"]), str(r["scenario"]), float(r["mass"]), int(r["rep"])))
+    cols = [k for k in recs[0] if k not in ("file", "checkpoint")]
+    with open(vdir / "index.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols + ["file"], extrasaction="ignore")
+        w.writeheader()
+        w.writerows(recs)
+    short = {"final_pos_err": "pos err (m)", "final_yaw_err": "yaw err (deg)", "min_pos_err": "closest (m)",
+             "copush_frac": "both pushing"}
+    show = ["outcome", "object", "scenario", "mass", "rep", "turn", "final_pos_err", "final_yaw_err", "min_pos_err",
+            "switches", "copush_frac", "mean_residual"] + [c for c in cols if c.startswith(("on_contact_", "press_frac_", "reached_", "bump_frac_"))]
+    out = ["<!doctype html><meta charset='utf-8'><title>" + html.escape(vdir.name) + "</title>",
+           "<style>body{font:13px sans-serif;margin:16px}table{border-collapse:collapse}td,th{border:1px solid #ccc;"
+           "padding:3px 6px;text-align:center}tr.ok{background:#eefbe9}tr.bad{background:#fdecec}</style>",
+           f"<h2>{html.escape(vdir.name)}</h2><p>{len(recs)} filmed episodes; checkpoint {html.escape(str(recs[0].get('checkpoint')))}. "
+           "Cyan = robot 1, yellow = robot 2: post = assigned contact (faint when not on it), arrow = push direction, "
+           "dot = route waypoint, ball high above a robot = which robot it is.</p><table><tr>"
+           + "".join(f"<th>{html.escape(short.get(c, c))}</th>" for c in show) + "<th>video</th></tr>"]
+    for r in recs:
+        cls = "ok" if int(r.get("success") or 0) else "bad"
+        out.append(f"<tr class='{cls}'>" + "".join(f"<td>{html.escape(str(r.get(c, '')))}</td>" for c in show)
+                   + f"<td><video src='{html.escape(r['file'])}' controls preload='none' width='360'></video></td></tr>")
+    out.append("</table>")
+    (vdir / "index.html").write_text("\n".join(out) + "\n")
+
+
 def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> None:
     out = ROOT / "logs" / "evals" / name / "pair"
     stats = ROOT / "evals" / name / "eval" / "pair"
@@ -649,7 +766,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
         same = all(old_meta.get(k) == v for k, v in (("executor", a.executor), ("return_dist", a.return_dist),
                                                        ("checkpoint", a.checkpoint), ("reselect", a.reselect_s),
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
-            old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start
+            old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
+            old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
         old = []
@@ -682,6 +800,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 "outcome": {kk: v / k for kk, v in sorted(outs.items())},
                 "overshoot": sum(int(r.get("overshoot") or 0) for r in sel) / k,
                 "switches": mean(sel, "switches"),
+                "mean_residual": mean(sel, "mean_residual"),
                 "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
                 **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in agents},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
@@ -692,7 +811,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 "copush_spread": mean(sel, "copush_spread"),
                 **{f"push_mode_frac_{ag}": mean(sel, f"push_mode_frac_{ag}") for ag in agents},
                 **{f"{key}_{ag}": mean(sel, f"{key}_{ag}") for key in ("engaged_frac", "contact_dist", "on_contact", "facing", "returns",
-                                                                       "bump_frac", "reach_time", "reached")
+                                                                       "bump_frac", "reach_time", "reached", "press_frac")
                    for ag in agents}}
 
     by = defaultdict(list)
@@ -710,7 +829,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
-               "start": a.start, "overall": agg(rows),
+               "start": a.start, "reselect_min_dist": a.reselect_min_dist, "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
                                  for gname in ("seen", "unseen") for m in masses},
@@ -770,6 +889,14 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             md.append(f"| {m:g} kg | " + " | ".join(
                 f"{f2(s.get(f'reached_{ag}'))} | {f2(s.get(f'reach_time_{ag}'))} | {f2(s.get(f'bump_frac_{ag}'))}"
                 for ag in (agents if not solo else agents[:1])) + " |")
+        md += ["", "## pressing the contact (front on the object while on its contact, share of time)"
+               + ("; mean pair residual (wrench rule)" if any(r.get("mean_residual", "") != "" for r in rows) else ""), "",
+               "| mass | " + " | ".join(f"{ag} pressing" for ag in (agents if not solo else agents[:1])) + " | residual |",
+               "|---|" + "---|" * (2 if not solo else 1) + "---|"]
+        for m in masses:
+            s = summary["by_mass"][f"{m:g}"]
+            md.append(f"| {m:g} kg | " + " | ".join(f"{f2(s.get(f'press_frac_{ag}'))}" for ag in (agents if not solo else agents[:1]))
+                      + f" | {f2(s.get('mean_residual'))} |")
     if not solo:
         md += ["", "## both robots pushing (share of time) by object and mass", "",
                "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]

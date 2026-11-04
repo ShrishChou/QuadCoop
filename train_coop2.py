@@ -112,6 +112,27 @@ def set_env(models: dict) -> None:
             os.environ["QUADCOOP_SPOT_PROFILE"] = env.get("QUADCOOP_SPOT_PROFILE", "v1")
 
 
+RULES = ("spread", "adjacent", "random", "wrench")
+
+
+def parse_contact_mix(txt: str) -> tuple[float, ...]:
+    """'1,1,1' / '1,1,1,2' (spread, adjacent, random[, wrench]) or 'wrench:2,spread:1' -> weights."""
+    parts = [x.strip() for x in txt.split(",") if x.strip()]
+    if all(":" in x for x in parts):
+        w = dict.fromkeys(RULES, 0.0)
+        for x in parts:
+            k, v = x.split(":")
+            if k not in w:
+                raise SystemExit(f"--contact-mix: unknown rule {k!r} (rules: {', '.join(RULES)})")
+            w[k] = float(v)
+        out = tuple(w[r] for r in RULES)
+        return out if out[3] > 0 else out[:3]
+    out = tuple(float(x) for x in parts)
+    if len(out) not in (3, 4):
+        raise SystemExit("--contact-mix needs 3 or 4 weights (spread, adjacent, random[, wrench]) or name:weight pairs")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--algo", choices=("ippo", "mappo"), required=True)
@@ -141,7 +162,9 @@ def main() -> int:
     ap.add_argument("--need-mass", type=float, default=45.0)
     ap.add_argument("--contacts", action="store_true",
                     help="Stage 4: assigned contact pairs as inputs, robots start at them, leaving one fails")
-    ap.add_argument("--contact-mix", default="1,1,1", help="weights of spread / adjacent / random contact pairs")
+    ap.add_argument("--contact-mix", default="1,1,1",
+                    help="weights of the contact rules: 3 or 4 numbers (spread, adjacent, random[, wrench]) or "
+                         "name:weight pairs, e.g. wrench:2,spread:1,random:1")
     ap.add_argument("--contact-start-at", type=float, default=0.7,
                     help="share of robots starting at their contact (the rest at its approach point)")
     ap.add_argument("--drift-dist", type=float, default=0.35,
@@ -166,6 +189,13 @@ def main() -> int:
     ap.add_argument("--bump-cost", type=float, default=1.0)
     ap.add_argument("--disturb-frac", type=float, default=0.0,
                     help="share of training episodes in which the object is moved and turned by script for a few seconds")
+    ap.add_argument("--push-cmd", action="store_true",
+                    help="Stage 4e (needs --guide): each robot's push direction recomputed every step from the "
+                         "remaining error (4 more inputs), on-contact judged against it, pose_progress / "
+                         "motion_credit / walk_cost rewards, partner-aware route")
+    ap.add_argument("--walk-cost", type=float, default=0.3, help="--push-cmd: per second on the way to a new contact")
+    ap.add_argument("--reselect-min-dist", type=float, default=0.15,
+                    help="no contact re-choice with the object this close to its goal (m); 0 = re-choose anywhere")
     ap.add_argument("--init-from", default=None,
                     help="start from this trainer checkpoint, expanding its networks for new inputs (e.g. a Stage 4b/4c "
                          "model for --guide); ignored once the run has its own checkpoints (then --resume continues it)")
@@ -209,10 +239,11 @@ def main() -> int:
         a.tol_levels = "0.30:15,0.20:10,0.15:6,0.12:4,0.10:3" if a.contacts else "none"
     tol_levels = () if a.tol_levels == "none" else tuple(tuple(float(v) for v in x.split(":"))
                                                         for x in a.tol_levels.split(","))
-    contact_mix = tuple(float(x) for x in a.contact_mix.split(","))
+    contact_mix = parse_contact_mix(a.contact_mix)
     rs = [float(x) for x in a.reselect_s.split(",")]
     reselect_s = (rs[0], rs[-1])
-    assert len(contact_mix) == 3, "--contact-mix needs three weights (spread, adjacent, random)"
+    if a.push_cmd and not a.guide:
+        raise SystemExit("--push-cmd builds on --guide (Stage 4d)")
     if a.critic_warmup is None:
         a.critic_warmup = 0 if a.scratch else 100
     if a.actor_lr is None:
@@ -231,6 +262,10 @@ def main() -> int:
         soft_txt = f" (cost {a.off_contact_cost:g}/s, pull {a.contact_approach:g})" if a.off_contact == "soft" else ""
         if a.guide:
             soft_txt += f", GUIDED (bump cost {a.bump_cost:g}/s, disturbed episodes {a.disturb_frac:g})"
+        if a.push_cmd:
+            soft_txt += f", PUSH DIRECTIONS (walk cost {a.walk_cost:g}/s)"
+        if a.reselect_min_dist != 0.15:
+            soft_txt += f", re-choice down to {a.reselect_min_dist:g} m from the goal"
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
                        f"{a.drift_heading:g} deg, re-select {resel}, random start {a.random_start:g}, off contact "
                        f"{a.off_contact}{soft_txt})  ")
@@ -261,7 +296,8 @@ def main() -> int:
                                  drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
                                  reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
                                  off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
-                                 guide=a.guide, bump_cost=a.bump_cost, disturb_frac=a.disturb_frac)
+                                 guide=a.guide, bump_cost=a.bump_cost, disturb_frac=a.disturb_frac,
+                                 push_cmd=a.push_cmd, walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -279,7 +315,8 @@ def main() -> int:
                   reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
                   off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
                   critic_warmup_resume=a.critic_warmup_resume, guide=a.guide, bump_cost=a.bump_cost,
-                  disturb_frac=a.disturb_frac, init_from=a.init_from or "",
+                  disturb_frac=a.disturb_frac, init_from=a.init_from or "", push_cmd=a.push_cmd,
+                  walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])

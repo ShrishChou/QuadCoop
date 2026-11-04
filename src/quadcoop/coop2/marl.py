@@ -114,7 +114,7 @@ class MarlCfg:
     start_mode: str = "behind"  # env option (recorded): robots' start, "behind" or "around"
     need_frac: float = 0.0  # env option (recorded): share of episodes that need both robots
     contacts: bool = False  # env option (recorded): Stage 4 contact mode (assigned contacts as inputs)
-    contact_mix: tuple = (1.0, 1.0, 1.0)  # env option (recorded): spread / adjacent / random pairs
+    contact_mix: tuple = (1.0, 1.0, 1.0)  # env option (recorded): spread / adjacent / random[ / wrench] pairs
     contact_start_at: float = 0.7  # env option (recorded)
     drift_dist: float = 0.35  # env option (recorded): on contact = front within this of the contact point
     drift_heading_deg: float = 45.0  # env option (recorded): ... and facing its push direction within this
@@ -127,7 +127,10 @@ class MarlCfg:
     guide: bool = False  # env option (recorded): Stage 4d route inputs (6 more per robot)
     bump_cost: float = 1.0  # env option (recorded)
     disturb_frac: float = 0.0  # env option (recorded)
-    init_from: str = ""  # Stage 4 checkpoint the networks were expanded from (Stage 4d)
+    init_from: str = ""  # Stage 4 checkpoint the networks were expanded from (Stage 4d / 4e)
+    push_cmd: bool = False  # env option (recorded): Stage 4e push directions (4 more inputs per robot), 4e rewards
+    walk_cost: float = 0.3  # env option (recorded): per second on the way to a new contact (push_cmd)
+    reselect_min_dist: float = 0.15  # env option (recorded): no contact re-choice this close to the goal (m)
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
