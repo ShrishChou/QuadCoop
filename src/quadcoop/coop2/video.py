@@ -50,7 +50,8 @@ class Camera:
         self.synced = j
 
     def frame(self, qpos: np.ndarray, mocap_pos: np.ndarray | None, mocap_quat: np.ndarray | None,
-              pts: np.ndarray) -> bytes:
+              pts: np.ndarray, marks: list | None = None) -> bytes:
+        """marks: extra drawings, each ("sphere", pos3, radius, rgba) or ("arrow", from3, to3, width, rgba)."""
         import mujoco
 
         self.d.qpos[:] = qpos
@@ -64,7 +65,29 @@ class Camera:
         self.cam.lookat[:] = [self.look[0][0], self.look[0][1], 0.3]
         self.cam.distance, self.cam.azimuth, self.cam.elevation = self.look[1], 90.0, -40.0
         self.r.update_scene(self.d, camera=self.cam)
+        if marks:
+            self._draw(marks)
         return self.r.render().tobytes()
+
+    def _draw(self, marks: list) -> None:
+        import mujoco
+
+        scn = self.r.scene
+        for mk in marks:
+            if scn.ngeom >= scn.maxgeom:
+                break
+            g = scn.geoms[scn.ngeom]
+            if mk[0] == "sphere":
+                _, pos, rad, rgba = mk
+                mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_SPHERE, np.array([rad, rad, rad]), np.asarray(pos, float),
+                                    np.eye(3).flatten(), np.asarray(rgba, np.float32))
+            else:
+                _, a, b, width, rgba = mk
+                mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_ARROW, np.zeros(3), np.zeros(3), np.eye(3).flatten(),
+                                    np.asarray(rgba, np.float32))
+                mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_ARROW, width, np.asarray(a, float), np.asarray(b, float))
+            g.category = mujoco.mjtCatBit.mjCAT_DECOR
+            scn.ngeom += 1
 
 
 def key_points(env, j: int) -> np.ndarray:
@@ -118,9 +141,10 @@ class PairVideo:
 
 
 def render_episode(cam: Camera, j: int, qpos: np.ndarray, mocap_pos: np.ndarray | None, mocap_quat: np.ndarray | None,
-                   pts: np.ndarray, path: Path, fps: float, caption=None) -> Path:
+                   pts: np.ndarray, path: Path, fps: float, caption=None, marks=None) -> Path:
     """qpos (F, nq), mocap (F, nmocap, 3/4), pts (F, 4, 2) for env j -> MP4 at `path`.
-    caption(f) -> optional text burned into frame f (needs Pillow)."""
+    caption(f) -> optional text burned into frame f (needs Pillow; may have several lines).
+    marks(f) -> optional drawings for frame f (see Camera.frame)."""
     import imageio_ffmpeg
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,17 +153,26 @@ def render_episode(cam: Camera, j: int, qpos: np.ndarray, mocap_pos: np.ndarray 
     wr = imageio_ffmpeg.write_frames(str(path), (cam.W, cam.H), fps=fps, quality=6, ffmpeg_log_level="error")
     wr.send(None)
     font = None
+    try:
+        from PIL import ImageFont
+
+        font = ImageFont.load_default(size=13)  # Pillow >= 10.1; older: the small bitmap font
+    except Exception:  # noqa: BLE001
+        font = None
     for f in range(len(qpos)):
         raw = cam.frame(qpos[f], None if mocap_pos is None else mocap_pos[f],
-                        None if mocap_quat is None else mocap_quat[f], pts[f])
+                        None if mocap_quat is None else mocap_quat[f], pts[f], None if marks is None else marks(f))
         if caption is not None:
             try:
                 from PIL import Image, ImageDraw
 
                 im = Image.frombytes("RGB", (cam.W, cam.H), raw)
                 dr = ImageDraw.Draw(im)
-                dr.rectangle([0, 0, cam.W, 22], fill=(0, 0, 0))
-                dr.text((6, 5), caption(f), fill=(255, 255, 255), font=font)
+                lines = caption(f).split("\n")
+                lh = 16 if font is not None else 14
+                dr.rectangle([0, 0, cam.W, 6 + lh * len(lines)], fill=(0, 0, 0))
+                for li, txt in enumerate(lines):
+                    dr.text((6, 4 + lh * li), txt, fill=(255, 255, 255), font=font)
                 raw = im.tobytes()
             except Exception:  # noqa: BLE001
                 caption = None

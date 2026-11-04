@@ -26,6 +26,12 @@
 #   ALGO=mappo SEED=0 RUN_NAME=s4d_aa_s0 ITERS=9000 EXTRA="--pair anymal --partner-map --reward r7 --contacts --guide \
 #     --disturb-frac 0.2 --reselect-s 3,6 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 100 \
 #     --init-from logs/marl2/s4b_aa_s0/model_6000.pt" sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
+#   Stage 4e (a push direction per robot recomputed every step, the wrench contact rule, pose_progress /
+#   motion_credit / walk_cost rewards, partner-aware route), from Stage 4d's model (4 more inputs per robot):
+#   ALGO=mappo SEED=0 RUN_NAME=s4e_aa_s0 ITERS=12000 EXTRA="--pair anymal --partner-map --reward r7 --contacts --guide \
+#     --push-cmd --contact-mix wrench:2,spread:1,random:1 --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 \
+#     --disturb-frac 0.2 --reselect-s 3,6 --random-start 0.5 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 \
+#     --init-from logs/marl2/s4d_aa_s0/model_9000.pt" sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2

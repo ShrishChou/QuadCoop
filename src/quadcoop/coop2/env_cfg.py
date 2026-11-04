@@ -108,7 +108,8 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
     return grp
 
 
-def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False) -> dict:
+def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False,
+                 push_cmd: bool = False) -> dict:
     """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
     (+ the assigned contacts in contact mode)."""
     def nz(lim):
@@ -129,6 +130,7 @@ def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, gui
                      noise=nz(0.05)),
         **({"contact": T(func=mdp.contact_obs, params={"robot": name}, noise=nz(0.02))} if contacts else {}),
         **({"guide": T(func=mdp.guide_obs, params={"robot": name}, noise=nz(0.02))} if guide else {}),
+        **({"push": T(func=mdp.push_obs, params={"robot": name}, noise=nz(0.02))} if push_cmd else {}),
     }
 
 
@@ -147,7 +149,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        drift_dist: float = 0.35, drift_heading_deg: float = 45.0,
                        reselect_s: tuple = (0.0, 0.0), random_start: float = 0.0, off_contact: str = "soft",
                        off_contact_cost: float = 1.0, contact_approach: float = 1.0, guide: bool = False,
-                       bump_cost: float = 1.0, disturb_frac: float = 0.0, push_sensors: bool = False) -> ManagerBasedRlEnvCfg:
+                       bump_cost: float = 1.0, disturb_frac: float = 0.0, push_sensors: bool = False,
+                       push_cmd: bool = False, wrench: bool = False, walk_cost: float = 0.3,
+                       reselect_min_dist: float = 0.15) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -193,6 +197,13 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     for shortening the route, bump_cost per second for touching the object off the contact;
     disturb_frac: share of episodes with scripted object motion (training; an eval may set it too).
     push_sensors: add the robot-object contact sensors even when no reward uses them (evals).
+    push_cmd (Stage 4e, needs guide): a push direction per robot recomputed every step from the
+    remaining error (4 more inputs: direction, share, pair residual), on-contact judged against
+    it, pose_progress (distance + radius of gyration x angle) replaces box / yaw progress,
+    motion_credit replaces push_credit, walk_cost per second on the way to a new contact, and a
+    partner-aware route. wrench: only the machinery the wrench contact rule needs (evals of
+    older checkpoints with that rule). contact_mix may carry a 4th weight: the wrench rule.
+    reselect_min_dist: no contact re-choice with the object this close to its goal (m).
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
@@ -216,6 +227,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         fields=("found",), reduce="none", num_slots=1,
     ),)
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
+    assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
+    wrench = contacts and (wrench or push_cmd or (len(contact_mix) > 3 and contact_mix[3] > 0))
     if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
@@ -252,15 +265,18 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         reselect_s=tuple(float(x) for x in reselect_s), random_start=random_start,
         off_contact_mode=off_contact if contacts else "terminate",
         guide=guide and contacts, disturb_frac=disturb_frac,
+        wrench=wrench, push_cmd=push_cmd and contacts, reselect_min_dist=reselect_min_dist,
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
     obs = {}
     for a, o in PARTNER.items():
-        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide),
+        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide,
+                                                                   push_cmd=push_cmd),
                                                 concatenate_terms=True, enable_corruption=not play)
-        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide),
+        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide,
+                                                                   push_cmd=push_cmd),
                                                 concatenate_terms=True, enable_corruption=False)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
@@ -325,6 +341,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                          R(func=mdp.robots_close_exp, weight=-1.0, params={"threshold": 0.6, "rate": 8.0})),
         "robots_touch": R(func=mdp.robots_touching, weight=-1.0),
     }
+    if push_cmd:  # Stage 4e: one progress measure, turning worth the object's radius of gyration in metres
+        rewards.pop("box_progress")
+        rewards.pop("yaw_progress")
+        rewards["pose_progress"] = R(func=mdp.pose_progress, weight=3.0)
     if reward_set == "r5":
         rewards["time_cost"] = R(func=mdp.time_cost, weight=-0.2)
     if reward_set == "r8":
@@ -349,6 +369,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         rewards[f"action_limit_{a}"] = R(func=mdp.agent_action_limit, weight=-0.02, params={"agent": k})
         if reward_set == "r8":
             rewards[f"work_credit_{a}"] = R(func=mdp.work_credit, weight=3.0, params={"robot": a})
+        elif reward_set == "r7" and push_cmd:
+            rewards[f"motion_credit_{a}"] = R(func=mdp.motion_credit, weight=1.0, params={"robot": a})
+            rewards[f"walk_cost_{a}"] = R(func=mdp.walk_cost, weight=-walk_cost, params={"robot": a})
         elif reward_set == "r7":
             rewards[f"push_credit_{a}"] = R(func=mdp.push_credit, weight=1.0, params={"robot": a})
         else:
