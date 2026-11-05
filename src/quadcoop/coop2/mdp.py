@@ -231,6 +231,9 @@ class CoopPush2Command(Push2Command):
         self.c_left_t = torch.full((n, 2), -1e9, device=dev)  # ... and when (s, c_time)
         self.c_win_t = torch.zeros(n, device=dev)  # no-progress window: time in it,
         self.c_win_xy = torch.zeros(n, 2, device=dev)  # the object's pose at its start
+        self.c_win_pe = torch.full((n,), 1e6, device=dev)  # ... and its pose error then (finishing zone)
+        self.c_fin_stalls = torch.zeros(n, device=dev)  # no-progress windows in the finishing zone (logged)
+        self.c_fin = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window: no progress in the zone
         self.c_win_yaw = torch.zeros(n, device=dev)
         self.c_stalled = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress
         self.c_replans = torch.zeros(n, device=dev)  # re-plans by cause (logged): no progress,
@@ -931,7 +934,8 @@ class CoopPush2Command(Push2Command):
         enough to slide it there (a pair at its force limit is not penalised for being slow; when no
         pair can slide the object, c_need_more is set). A robot may not go back
         to a contact it left less than relock_s ago (no flip-flopping). Switch only when the best
-        option beats the current one by expert_margin."""
+        option beats the current one by expert_margin; within finish_dist of the goal only when the current
+        pair cannot make the motion left (residual > finish_resid)."""
         c, dev = self.cfg, self.device
         m = len(ids)
         ar = torch.arange(m, device=dev)
@@ -969,6 +973,11 @@ class CoopPush2Command(Push2Command):
         best, flat = J.view(m, -1).min(-1)
         gi, gj = flat // K, flat % K
         go = best < j_cur - c.expert_margin
+        if c.finish_dist > 0:
+            # finishing zone: keep the pair unless it cannot make the motion left (residual > finish_resid)
+            res_cur = torch.where(cur_ok, res[ar, cur[:, 0], cur[:, 1]], torch.ones_like(j_cur))
+            zone = self.pose_error()[ids] < c.finish_dist
+            go = go & (~zone | (res_cur > c.finish_resid))
         new = cur.clone()
         new[:, 0] = torch.where(go, gi, new[:, 0])
         new[:, 1] = torch.where(go, gj, new[:, 1])
@@ -994,6 +1003,7 @@ class CoopPush2Command(Push2Command):
             self.c_switches[e] += 1
         self.c_stalled[ids] = False
         self.c_weak[ids] = False
+        self.c_fin[ids] = False
 
     def _update_expert(self, dt: float | None = None) -> None:
         """At 1 / expert_dt: priorities, expected arrivals, the no-progress window and the go / hold
@@ -1017,7 +1027,19 @@ class CoopPush2Command(Push2Command):
         done = (d < 0.1) & (e.abs() < math.radians(6.0))
         # only time spent pushing counts: a robot holding for its partner is waiting, not stalled
         pushing = (on & (self.c_phase == 2)).any(-1)
-        stalled = full & (moved < c.stall_move) & (turned < c.stall_turn) & pushing & ~done & (self.c_rule == 4)
+        pe = self.pose_error()
+        # finishing zone (pose error < finish_dist): the motion left is small, so progress is judged
+        # against it (no progress = the pose error fell by less than finish_frac of itself over the
+        # window), and a stall there never counts against the place: fine positioning is slow, and
+        # walking to another pair this close to the goal costs more than it gains
+        zone = (pe < c.finish_dist) & (self.c_rule == 4)
+        stuck_far = (moved < c.stall_move) & (turned < c.stall_turn)
+        stuck_fin = (self.c_win_pe - pe) < c.finish_frac * self.c_win_pe.clamp(max=c.finish_dist)
+        stalled = full & torch.where(zone, stuck_fin, stuck_far) & pushing & ~done & (self.c_rule == 4)
+        fin = stalled & zone
+        self.c_fin_stalls += fin.float()
+        self.c_fin |= fin
+        stalled = stalled & ~zone
         if bool(stalled.any()):
             # a stall counts against the place only if the force model says the pair should slide the object
             # there (strength >= strength_margin); a pair at its force limit is expected to be slow: re-plan
@@ -1033,6 +1055,7 @@ class CoopPush2Command(Push2Command):
         self.c_win_t = torch.where(restart, torch.zeros_like(self.c_win_t), self.c_win_t)
         self.c_win_xy[:] = torch.where(restart.unsqueeze(-1), self.box_pos()[:, :2], self.c_win_xy)
         self.c_win_yaw[:] = torch.where(restart, self.heading(), self.c_win_yaw)
+        self.c_win_pe[:] = torch.where(restart, pe, self.c_win_pe)
         # go / hold: a robot on its contact pushes when its partner is on too; alone only if it can make
         # the wanted motion by itself (solo residual < resid_bad), the partner is > solo_wait_s away and
         # the object is light enough for one robot (mass x friction x g < robot_push_force)
@@ -1262,8 +1285,8 @@ class CoopPush2Command(Push2Command):
                     slow = (~self.c_engaged & (self.c_free_t >= self.c_reach_lim)).any(-1) & (self.c_rule == 4)
                     self.c_replans += (self.c_stalled & ~due).float()
                     self.c_replan_weak += (self.c_weak & ~due & ~self.c_stalled).float()
-                    self.c_replan_slow += (slow & ~due & ~self.c_stalled & ~self.c_weak).float()
-                    due |= self.c_stalled | self.c_weak | slow
+                    self.c_replan_slow += (slow & ~due & ~self.c_stalled & ~self.c_weak & ~self.c_fin).float()
+                    due |= self.c_stalled | self.c_weak | self.c_fin | slow
                 if bool(due.any()):
                     ids = due.nonzero().flatten()
                     nd = len(ids)
@@ -1415,6 +1438,9 @@ class CoopPush2Command(Push2Command):
                 self.c_win_t[env_ids] = 0.0
                 self.c_win_xy[env_ids] = obj_xy
                 self.c_win_yaw[env_ids] = obj_heading
+                self.c_win_pe[env_ids] = 1e6
+                self.c_fin_stalls[env_ids] = 0.0
+                self.c_fin[env_ids] = False
                 self.c_stalled[env_ids] = False
                 self.c_replans[env_ids] = 0.0
                 self.c_replan_slow[env_ids] = 0.0
@@ -1616,6 +1642,9 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     stall_move: float = 0.05  # ... no progress = moved less than this (m) ...
     stall_turn: float = 0.05  # ... and turned less than this (rad)
     strength_margin: float = 1.3  # a stall is the place's fault only if the pair can push this x the sliding force
+    finish_dist: float = 0.0  # > 0: finishing zone, pose error (m, distance + rho_g x angle) below this:
+    finish_frac: float = 0.1  # ... no progress = pose error fell by less than this share of itself in a window;
+    finish_resid: float = 0.5  # ... stalls not penalised, the pair changed only if its residual is above this
     turn_full_dist: float = 0.0  # > 0: beyond this distance (m) the wanted turn shrinks as 1 / distance
     robot_push_force: float = 250.0  # N one robot can push with (assumed; to be measured): heavier -> push together
     solo_wait_s: float = 2.0  # push alone only if the partner is further than this from its contact

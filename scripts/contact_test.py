@@ -414,6 +414,20 @@ def main() -> int:
         hold_steps = torch.zeros(n, device=dev)
         on_any_steps = torch.zeros(n, device=dev)
         last_xy = [r.data.root_link_pos_w[:, :2].clone() for r in robots]
+        # push force (stage4): histogram (20 N bins, last = 1000 N+) of each robot's horizontal contact force on the
+        # object while it presses its contact and touches it, both robots pooled; and the same while the object is nearly still
+        # (speed < 0.05 m/s: the robot meets the object's full resistance, so this is what it can sustain)
+        FB = 20.0
+        fb_all = torch.zeros(n, 51, device=dev)
+        fb_still = torch.zeros(n, 51, device=dev)
+
+        def hist_q(h, q):
+            """q-quantile (N, bin centre) of a force histogram; "" when empty."""
+            tot = float(h.sum())
+            if tot <= 0:
+                return ""
+            b = int((torch.cumsum(h, 0) >= q * tot).nonzero()[0])
+            return round((b + 0.5) * FB, 0)
         reach_sum = [torch.zeros(n, device=dev) for _ in AGENTS]
         reach_n = [torch.zeros(n, device=dev) for _ in AGENTS]
         miss_n = [torch.zeros(n, device=dev) for _ in AGENTS]
@@ -550,6 +564,13 @@ def main() -> int:
                 if stage4:
                     pr = [live & present[k] & g.on_contact(k) & (g.surface_distance(AGENTS[k]) < 0.08) for k in range(2)]
                     far = [present[k] & (g.contact_dist(k) > 1.0) for k in range(2)]
+                    still = torch.linalg.norm(g.box_vel()[:, :2], dim=-1) < 0.05
+                    for k, ag in enumerate(AGENTS):
+                        fk = torch.linalg.norm(cm.object_force_from(base, ag), dim=-1)
+                        bk = (fk / FB).long().clamp(0, 50).view(-1, 1)
+                        tk = pr[k] & base.scene[f"push_{ag}"].data.found.view(n, -1).any(-1)  # pressing and in contact
+                        fb_all.scatter_add_(1, bk, tk.float().view(-1, 1))
+                        fb_still.scatter_add_(1, bk, (tk & still).float().view(-1, 1))
                     solo_far += sum((pr[k] & far[1 - k]).float() for k in range(2)) * dt
                     press_any += (pr[0] | pr[1]).float()
                     press_both += (pr[0] & pr[1]).float()
@@ -631,6 +652,10 @@ def main() -> int:
                 "walked_m": round(float(walked[j]), 1) if stage4 else "",
                 "stall_replans": int(g.c_replans[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "limit_replans": int(g.c_replan_weak[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
+                "finish_stalls": int(g.c_fin_stalls[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
+                "push_force_med": hist_q(fb_all[j], 0.5) if stage4 else "",
+                "push_force_p90": hist_q(fb_all[j], 0.9) if stage4 else "",
+                "push_force_still_p90": hist_q(fb_still[j], 0.9) if stage4 else "",
                 "needs_more_s": round(float(g.c_need_more_t[j]), 1) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "hold_share": (round(float(hold_steps[j] / on_any_steps[j]), 3) if float(on_any_steps[j]) > 0 else "")
                 if stage4 and getattr(g.cfg, "expert", False) else "",
@@ -696,7 +721,8 @@ def main() -> int:
                     row["video"] = str(vdir / name) if a.video_dir else f"videos/{name}"
                     keep = ("object", "scenario", "mass", "rep", "turn", "outcome", "success", "t_success", "final_pos_err",
                             "final_yaw_err", "min_pos_err", "switches", "copush_frac", "disturbed", "contact_1", "contact_2",
-                            "mean_residual", "solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "needs_more_s", "hold_share",
+                            "mean_residual", "solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "finish_stalls", "needs_more_s", "hold_share",
+                            "push_force_med", "push_force_p90", "push_force_still_p90",
                             *[f"{x}_{ag}" for x in ("on_contact", "press_frac", "reached", "reach_time", "bump_frac", "push_frac")
                               for ag in AGENTS])
                     (vdir / f"{stem}.json").write_text(json.dumps({**{k: row.get(k, "") for k in keep}, "rule": rule,
@@ -834,7 +860,9 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 "overshoot": sum(int(r.get("overshoot") or 0) for r in sel) / k,
                 "switches": mean(sel, "switches"),
                 "mean_residual": mean(sel, "mean_residual"),
-                **{key: mean(sel, key) for key in ("solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "needs_more_s", "hold_share")},
+                **{key: mean(sel, key) for key in ("solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "finish_stalls",
+                                                  "needs_more_s", "hold_share", "push_force_med", "push_force_p90",
+                                                  "push_force_still_p90")},
                 "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
                 **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in agents},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
@@ -871,6 +899,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "by_scenario_mass": {f"{s[0]} / {m:g} kg": agg(by[("scen_mass", s[0], m)]) for s in SCENARIOS for m in masses}}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     f2 = lambda x: "" if x is None else f"{x:.2f}"  # noqa: E731
+    f0 = lambda x: "" if x is None else f"{x:.0f}"  # noqa: E731
     md = [f"# Pair evaluation: {name}", "", f"policy: {what}", "",
           f"success = 10 cm / 6 deg held 1 s within {a.horizon:g} s; precise = 10 cm / 3 deg with the object at rest; "
           f"{a.reps} placements per object x scenario x mass; nominal object sizes; same tasks and robot placements as "
@@ -934,16 +963,25 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
     if a.executor == "stage4" and not solo:
         md += ["", "## coordination (pressing alone while the partner is > 1 m from its contact; share of pressing time with "
                "both pressing; metres walked by both robots; expert rule: no-progress re-plans that penalise the place, "
-               "re-plans for no progress at the force limit (no penalty), seconds no pair could slide the object (needs more "
-               "robots), share of on-contact time holding)", "",
+               "re-plans for no progress at the force limit (no penalty), no-progress windows within 0.5 m of the goal (no "
+               "penalty), seconds no pair could slide the object (needs more robots), share of on-contact time holding)", "",
                "| mass | pressing alone, partner far (s) | both pressing | walked (m) | contact changes | stall re-plans | "
-               "at-limit re-plans | needs more robots (s) | holding |",
-               "|---|---|---|---|---|---|---|---|---|"]
+               "at-limit re-plans | finishing stalls | needs more robots (s) | holding |",
+               "|---|---|---|---|---|---|---|---|---|---|"]
         for m in masses:
             s = summary["by_mass"][f"{m:g}"]
             md.append(f"| {m:g} kg | {f2(s.get('solo_far_s'))} | {f2(s.get('both_press_share'))} | {f2(s.get('walked_m'))} | "
                       f"{f2(s.get('switches'))} | {f2(s.get('stall_replans'))} | {f2(s.get('limit_replans'))} | "
-                      f"{f2(s.get('needs_more_s'))} | {f2(s.get('hold_share'))} |")
+                      f"{f2(s.get('finish_stalls'))} | {f2(s.get('needs_more_s'))} | {f2(s.get('hold_share'))} |")
+        md += ["", "## push force (each robot's horizontal contact force on the object while pressing its contact and touching it, both "
+               "robots pooled; mean over episodes of each episode's median and 90th percentile, and of the 90th percentile "
+               "while the object is nearly still (< 0.05 m/s), i.e. what a robot sustains against the object's full "
+               "resistance: the planner's robot_push_force should come from this)", "",
+               "| mass | median (N) | 90th percentile (N) | 90th percentile, object still (N) |", "|---|---|---|---|"]
+        for m in masses:
+            s = summary["by_mass"][f"{m:g}"]
+            md.append(f"| {m:g} kg | {f0(s.get('push_force_med'))} | {f0(s.get('push_force_p90'))} | "
+                      f"{f0(s.get('push_force_still_p90'))} |")
     if not solo:
         md += ["", "## both robots pushing (share of time) by object and mass", "",
                "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
