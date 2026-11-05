@@ -112,7 +112,7 @@ def set_env(models: dict) -> None:
             os.environ["QUADCOOP_SPOT_PROFILE"] = env.get("QUADCOOP_SPOT_PROFILE", "v1")
 
 
-RULES = ("spread", "adjacent", "random", "wrench")
+RULES = ("spread", "adjacent", "random", "wrench", "expert")
 
 
 def parse_contact_mix(txt: str) -> tuple[float, ...]:
@@ -126,10 +126,10 @@ def parse_contact_mix(txt: str) -> tuple[float, ...]:
                 raise SystemExit(f"--contact-mix: unknown rule {k!r} (rules: {', '.join(RULES)})")
             w[k] = float(v)
         out = tuple(w[r] for r in RULES)
-        return out if out[3] > 0 else out[:3]
+        return out if out[4] > 0 else (out[:4] if out[3] > 0 else out[:3])
     out = tuple(float(x) for x in parts)
-    if len(out) not in (3, 4):
-        raise SystemExit("--contact-mix needs 3 or 4 weights (spread, adjacent, random[, wrench]) or name:weight pairs")
+    if len(out) not in (3, 4, 5):
+        raise SystemExit("--contact-mix needs 3-5 weights (spread, adjacent, random[, wrench[, expert]]) or name:weight pairs")
     return out
 
 

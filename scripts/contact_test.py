@@ -174,9 +174,9 @@ def main() -> int:
     video_reps = None if a.video_reps == "all" else {int(x) for x in a.video_reps.split(",")}
     rules = [r.strip() for r in (a.rules or ("spread,adjacent,random" if stage4 else ",".join(RULES))).split(",")]
     if stage4 and "centre" in rules:
-        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random, wrench, allpairs")
-    if "wrench" in rules and not stage4:
-        raise SystemExit("the wrench rule is the Stage 4e contact rule: --executor stage4")
+        raise SystemExit("the stage4 executor runs two robots: rules spread, adjacent, random, wrench, expert, allpairs")
+    if ("wrench" in rules or "expert" in rules) and not stage4:
+        raise SystemExit("the wrench and expert rules are Stage 4 contact rules: --executor stage4")
     min_dist = float(ck_cfg.get("reselect_min_dist", 0.15)) if a.reselect_min_dist == "auto" else float(a.reselect_min_dist)
     if "allpairs" in rules:
         if not stage4:
@@ -236,7 +236,8 @@ def main() -> int:
             reselect_s=reselect_s, guide=bool(ck_cfg.get("guide", False)),
             off_contact=ck_cfg.get("off_contact", "soft") if ck_cfg.get("guide") else "soft",
             disturb_frac=a.disturb_frac, push_sensors=True, push_cmd=bool(ck_cfg.get("push_cmd", False)),
-            wrench="wrench" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)), reselect_min_dist=min_dist)
+            wrench="wrench" in rules or "expert" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)),
+            reselect_min_dist=min_dist, expert="expert" in rules)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -279,7 +280,7 @@ def main() -> int:
               "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
               "park": park}
         if stage4:  # the env picks each env's pair with its own (training) rule code and places the robots there
-            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0, "wrench": 3}
+            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0, "wrench": 3, "expert": 4}
             sc["contact_rule"] = torch.tensor([rule_id[rule] for rule, *_ in cases], dtype=torch.long, device=dev)
             sc["contact_idx"] = torch.tensor([pr if pr is not None else (-1, -1) for pr in pair_of], dtype=torch.long, device=dev)
             if a.start == "behind":
@@ -404,6 +405,15 @@ def main() -> int:
         bump_steps = [torch.zeros(n, device=dev) for _ in AGENTS]
         press_steps = [torch.zeros(n, device=dev) for _ in AGENTS]  # front on the object while on its contact
         resid_sum = torch.zeros(n, device=dev)  # wrench rule: residual of the current pair
+        # coordination (stage4): time a robot presses while its partner is > 1 m from its own contact, the share of
+        # pressing time with both pressing, metres walked, and (expert) the share of on-contact time spent holding
+        solo_far = torch.zeros(n, device=dev)
+        press_any = torch.zeros(n, device=dev)
+        press_both = torch.zeros(n, device=dev)
+        walked = torch.zeros(n, device=dev)
+        hold_steps = torch.zeros(n, device=dev)
+        on_any_steps = torch.zeros(n, device=dev)
+        last_xy = [r.data.root_link_pos_w[:, :2].clone() for r in robots]
         reach_sum = [torch.zeros(n, device=dev) for _ in AGENTS]
         reach_n = [torch.zeros(n, device=dev) for _ in AGENTS]
         miss_n = [torch.zeros(n, device=dev) for _ in AGENTS]
@@ -537,6 +547,21 @@ def main() -> int:
                         reach_sum[k] += torch.where(got, t - t_assign[k], torch.zeros_like(t_assign[k]))
                         reach_n[k] += got.float()
                         waiting[k] &= ~got
+                if stage4:
+                    pr = [live & present[k] & g.on_contact(k) & (g.surface_distance(AGENTS[k]) < 0.08) for k in range(2)]
+                    far = [present[k] & (g.contact_dist(k) > 1.0) for k in range(2)]
+                    solo_far += sum((pr[k] & far[1 - k]).float() for k in range(2)) * dt
+                    press_any += (pr[0] | pr[1]).float()
+                    press_both += (pr[0] & pr[1]).float()
+                    for k in range(2):
+                        xy = robots[k].data.root_link_pos_w[:, :2]
+                        stepm = torch.linalg.norm(xy - last_xy[k], dim=-1)
+                        walked += torch.where(live & present[k] & (stepm < 0.5), stepm, torch.zeros_like(stepm))  # (< 0.5: not a reset)
+                        last_xy[k] = xy.clone()
+                    if getattr(g.cfg, "expert", False):
+                        onb = torch.stack([g.on_contact(k) for k in range(2)], -1) & live.unsqueeze(-1)
+                        hold_steps += ((g.c_phase == 1) & onb).float().sum(-1)
+                        on_any_steps += onb.float().sum(-1)
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
                 both = pu[0] & pu[1]
@@ -601,6 +626,14 @@ def main() -> int:
                 **({f"bump_frac_{ag}": round(float(bump_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
                 **({f"press_frac_{ag}": round(float(press_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
                 "mean_residual": round(float(resid_sum[j]) / ls, 3) if stage4 and g.cfg.wrench else "",
+                "solo_far_s": round(float(solo_far[j]), 2) if stage4 else "",
+                "both_press_share": (round(float(press_both[j] / press_any[j]), 3) if float(press_any[j]) > 0 else "") if stage4 else "",
+                "walked_m": round(float(walked[j]), 1) if stage4 else "",
+                "stall_replans": int(g.c_replans[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
+                "limit_replans": int(g.c_replan_weak[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
+                "needs_more_s": round(float(g.c_need_more_t[j]), 1) if stage4 and getattr(g.cfg, "expert", False) else "",
+                "hold_share": (round(float(hold_steps[j] / on_any_steps[j]), 3) if float(on_any_steps[j]) > 0 else "")
+                if stage4 and getattr(g.cfg, "expert", False) else "",
                 **({f"reach_time_{ag}": (round(float(reach_sum[k][j] / reach_n[k][j]), 2) if float(reach_n[k][j]) > 0 else "")
                     for k, ag in enumerate(AGENTS)} if stage4 else {}),
                 **({f"reached_{ag}": (round(float(reach_n[k][j]) / float(reach_n[k][j] + miss_n[k][j] + float(waiting[k][j])), 3)
@@ -663,7 +696,7 @@ def main() -> int:
                     row["video"] = str(vdir / name) if a.video_dir else f"videos/{name}"
                     keep = ("object", "scenario", "mass", "rep", "turn", "outcome", "success", "t_success", "final_pos_err",
                             "final_yaw_err", "min_pos_err", "switches", "copush_frac", "disturbed", "contact_1", "contact_2",
-                            "mean_residual",
+                            "mean_residual", "solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "needs_more_s", "hold_share",
                             *[f"{x}_{ag}" for x in ("on_contact", "press_frac", "reached", "reach_time", "bump_frac", "push_frac")
                               for ag in AGENTS])
                     (vdir / f"{stem}.json").write_text(json.dumps({**{k: row.get(k, "") for k in keep}, "rule": rule,
@@ -741,7 +774,7 @@ def _video_index(vdir: Path) -> None:
     short = {"final_pos_err": "pos err (m)", "final_yaw_err": "yaw err (deg)", "min_pos_err": "closest (m)",
              "copush_frac": "both pushing"}
     show = ["outcome", "object", "scenario", "mass", "rep", "turn", "final_pos_err", "final_yaw_err", "min_pos_err",
-            "switches", "copush_frac", "mean_residual"] + [c for c in cols if c.startswith(("on_contact_", "press_frac_", "reached_", "bump_frac_"))]
+            "switches", "copush_frac", "mean_residual", "solo_far_s", "both_press_share", "walked_m"] + [c for c in cols if c.startswith(("on_contact_", "press_frac_", "reached_", "bump_frac_"))]
     out = ["<!doctype html><meta charset='utf-8'><title>" + html.escape(vdir.name) + "</title>",
            "<style>body{font:13px sans-serif;margin:16px}table{border-collapse:collapse}td,th{border:1px solid #ccc;"
            "padding:3px 6px;text-align:center}tr.ok{background:#eefbe9}tr.bad{background:#fdecec}</style>",
@@ -801,6 +834,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 "overshoot": sum(int(r.get("overshoot") or 0) for r in sel) / k,
                 "switches": mean(sel, "switches"),
                 "mean_residual": mean(sel, "mean_residual"),
+                **{key: mean(sel, key) for key in ("solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "needs_more_s", "hold_share")},
                 "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
                 **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in agents},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
@@ -897,6 +931,19 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             s = summary["by_mass"][f"{m:g}"]
             md.append(f"| {m:g} kg | " + " | ".join(f"{f2(s.get(f'press_frac_{ag}'))}" for ag in (agents if not solo else agents[:1]))
                       + f" | {f2(s.get('mean_residual'))} |")
+    if a.executor == "stage4" and not solo:
+        md += ["", "## coordination (pressing alone while the partner is > 1 m from its contact; share of pressing time with "
+               "both pressing; metres walked by both robots; expert rule: no-progress re-plans that penalise the place, "
+               "re-plans for no progress at the force limit (no penalty), seconds no pair could slide the object (needs more "
+               "robots), share of on-contact time holding)", "",
+               "| mass | pressing alone, partner far (s) | both pressing | walked (m) | contact changes | stall re-plans | "
+               "at-limit re-plans | needs more robots (s) | holding |",
+               "|---|---|---|---|---|---|---|---|---|"]
+        for m in masses:
+            s = summary["by_mass"][f"{m:g}"]
+            md.append(f"| {m:g} kg | {f2(s.get('solo_far_s'))} | {f2(s.get('both_press_share'))} | {f2(s.get('walked_m'))} | "
+                      f"{f2(s.get('switches'))} | {f2(s.get('stall_replans'))} | {f2(s.get('limit_replans'))} | "
+                      f"{f2(s.get('needs_more_s'))} | {f2(s.get('hold_share'))} |")
     if not solo:
         md += ["", "## both robots pushing (share of time) by object and mass", "",
                "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]

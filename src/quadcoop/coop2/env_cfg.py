@@ -151,7 +151,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        off_contact_cost: float = 1.0, contact_approach: float = 1.0, guide: bool = False,
                        bump_cost: float = 1.0, disturb_frac: float = 0.0, push_sensors: bool = False,
                        push_cmd: bool = False, wrench: bool = False, walk_cost: float = 0.3,
-                       reselect_min_dist: float = 0.15) -> ManagerBasedRlEnvCfg:
+                       reselect_min_dist: float = 0.15, expert: bool = False) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -204,6 +204,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     partner-aware route. wrench: only the machinery the wrench contact rule needs (evals of
     older checkpoints with that rule). contact_mix may carry a 4th weight: the wrench rule.
     reselect_min_dist: no contact re-choice with the object this close to its goal (m).
+    expert: the expert planner v2 machinery (contact rule 4: pair and robot assignment together at
+    least cost incl. walking time, no-progress / slow-arrival re-plans, priorities, go / hold,
+    turning that grows as the object nears its goal); contact_mix may carry a 5th weight for it.
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
@@ -228,7 +231,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     ),)
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
-    wrench = contacts and (wrench or push_cmd or (len(contact_mix) > 3 and contact_mix[3] > 0))
+    expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
+    wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
     if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
@@ -266,6 +270,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         off_contact_mode=off_contact if contacts else "terminate",
         guide=guide and contacts, disturb_frac=disturb_frac,
         wrench=wrench, push_cmd=push_cmd and contacts, reselect_min_dist=reselect_min_dist,
+        expert=expert, turn_full_dist=1.0 if expert else 0.0,
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
