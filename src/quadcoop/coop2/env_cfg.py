@@ -270,7 +270,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         off_contact_mode=off_contact if contacts else "terminate",
         guide=guide and contacts, disturb_frac=disturb_frac,
         wrench=wrench, push_cmd=push_cmd and contacts, reselect_min_dist=reselect_min_dist,
-        expert=expert, turn_full_dist=1.0 if expert else 0.0,
+        expert=expert, turn_full_dist=1.0 if expert else 0.0, finish_dist=0.5 if expert else 0.0,
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
