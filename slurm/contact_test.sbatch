@@ -23,6 +23,16 @@
 #     RULES=wrench,spread sbatch slurm/contact_test.sbatch
 #   PREFIX=s4e-aa-s0 ARGS="--executor stage4 --checkpoint logs/marl2/s4e_aa_s0/model_12000.pt" \
 #     RULES=wrench,spread,adjacent,random sbatch slurm/contact_test.sbatch
+#   Phase 1 expert planner (rule "expert": joint pair + assignment from route-based arrival times, priorities,
+#   no-progress re-plans, centre of friction and per-robot force limits) on the 4e executor, against the wrench
+#   rule; then reaching from behind with shoves; then videos (coordination table: pushing alone with the partner
+#   far, both pressing, metres walked, stall re-plans):
+#   PREFIX=s4e-expert ARGS="--executor stage4 --checkpoint logs/marl2/s4e_aa_s0/model_12000.pt" \
+#     RULES=expert,wrench sbatch slurm/contact_test.sbatch
+#   PREFIX=s4e-expert-reach ARGS="--executor stage4 --checkpoint logs/marl2/s4e_aa_s0/model_12000.pt --start behind \
+#     --disturb-frac 0.5 --videos 0" RULES=expert,wrench sbatch slurm/contact_test.sbatch
+#   PREFIX=vid-s4e-expert RULES=expert MASSES=40,80 REPS=1 ARGS="--executor stage4 --checkpoint logs/marl2/s4e_aa_s0/model_12000.pt \
+#     --video-masses 40,80 --video-scenarios all --video-objects all --video-dir eval_videos" sbatch slurm/contact_test.sbatch
 #   Stage 5 payoff sweep (every usable contact pair; then python scripts/contact_game.py --sweep evals/game-s4b-allpairs):
 #   for m in 40 70; do MASSES=$m RULES=allpairs PREFIX=game-s4b \
 #     ARGS="--executor stage4 --checkpoint logs/marl2/s4b_aa_s0/model_6000.pt --videos 0" sbatch slurm/contact_test.sbatch; done
