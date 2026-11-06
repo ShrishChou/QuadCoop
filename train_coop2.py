@@ -194,6 +194,12 @@ def main() -> int:
                          "remaining error (4 more inputs), on-contact judged against it, pose_progress / "
                          "motion_credit / walk_cost rewards, partner-aware route")
     ap.add_argument("--walk-cost", type=float, default=0.3, help="--push-cmd: per second on the way to a new contact")
+    ap.add_argument("--exec-v2", action="store_true",
+                    help="Phase 2 executor (needs --push-cmd): a phase command (walk / hold / push) and the team-ready "
+                         "flag as 4 more inputs, motion credit only when told to push, hold_cost while told to hold")
+    ap.add_argument("--hold-rand", type=float, default=0.3,
+                    help="--exec-v2: share of contact arrivals told to hold 0.5-4 s whatever the partner does")
+    ap.add_argument("--hold-cost", type=float, default=1.0, help="--exec-v2: hold_cost weight")
     ap.add_argument("--reselect-min-dist", type=float, default=0.15,
                     help="no contact re-choice with the object this close to its goal (m); 0 = re-choose anywhere")
     ap.add_argument("--init-from", default=None,
@@ -244,6 +250,8 @@ def main() -> int:
     reselect_s = (rs[0], rs[-1])
     if a.push_cmd and not a.guide:
         raise SystemExit("--push-cmd builds on --guide (Stage 4d)")
+    if a.exec_v2 and not a.push_cmd:
+        raise SystemExit("--exec-v2 builds on --push-cmd (Stage 4e)")
     if a.critic_warmup is None:
         a.critic_warmup = 0 if a.scratch else 100
     if a.actor_lr is None:
@@ -264,6 +272,8 @@ def main() -> int:
             soft_txt += f", GUIDED (bump cost {a.bump_cost:g}/s, disturbed episodes {a.disturb_frac:g})"
         if a.push_cmd:
             soft_txt += f", PUSH DIRECTIONS (walk cost {a.walk_cost:g}/s)"
+        if a.exec_v2:
+            soft_txt += f", EXECUTOR V2 (random holds {a.hold_rand:g}, hold cost {a.hold_cost:g}/s)"
         if a.reselect_min_dist != 0.15:
             soft_txt += f", re-choice down to {a.reselect_min_dist:g} m from the goal"
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
@@ -297,7 +307,8 @@ def main() -> int:
                                  reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
                                  off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
                                  guide=a.guide, bump_cost=a.bump_cost, disturb_frac=a.disturb_frac,
-                                 push_cmd=a.push_cmd, walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist)
+                                 push_cmd=a.push_cmd, walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
+                                 exec_v2=a.exec_v2, hold_rand=a.hold_rand, hold_cost_w=a.hold_cost)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -317,6 +328,7 @@ def main() -> int:
                   critic_warmup_resume=a.critic_warmup_resume, guide=a.guide, bump_cost=a.bump_cost,
                   disturb_frac=a.disturb_frac, init_from=a.init_from or "", push_cmd=a.push_cmd,
                   walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
+                  exec_v2=a.exec_v2, hold_rand=a.hold_rand if a.exec_v2 else 0.0, hold_cost_w=a.hold_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])

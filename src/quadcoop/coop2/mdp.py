@@ -243,6 +243,17 @@ class CoopPush2Command(Push2Command):
         self.c_strength = torch.full((n,), 1e6, device=dev)  # current pair: most push along the wanted motion / sliding force
         self.c_need_more = torch.zeros(n, dtype=torch.bool, device=dev)  # no usable pair can slide the object
         self.c_need_more_t = torch.zeros(n, device=dev)  # s flagged (logged)
+        # Phase 2 executor (exec_v2): the command each robot obeys and the team-ready barrier
+        self.c_cmd = torch.zeros(n, 2, dtype=torch.long, device=dev)  # 0 walk, 1 hold, 2 push
+        self.c_ready_t = torch.zeros(n, 2, device=dev)  # s steadily ready (front and heading on its contact)
+        self.c_ready = torch.zeros(n, 2, dtype=torch.bool, device=dev)  # ready for ready_steady_s
+        self.c_team_ready = torch.zeros(n, dtype=torch.bool, device=dev)  # every robot of the push group ready
+        self.c_in_group = torch.ones(n, 2, dtype=torch.bool, device=dev)  # in the push group (an eval parks robot 2)
+        self.c_rhold = torch.zeros(n, 2, device=dev)  # s left of a random hold (training)
+        self.c_was_eng = torch.zeros(n, 2, dtype=torch.bool, device=dev)  # engaged last step (arrivals)
+        self.c_was_idx = torch.full((n, 2), -1, dtype=torch.long, device=dev)  # contact last step (arrivals)
+        self.c_go = torch.zeros(n, dtype=torch.bool, device=dev)  # the push group is pushing (latched)
+        self.c_cmd_flips = torch.zeros(n, device=dev)  # push -> hold changes of the command (logged)
         self.c_mass = torch.ones(n, device=dev)
         self.c_exp_t = 0.0  # time since the last expert update
         self.c_mu = torch.full((n,), 0.5, device=dev)  # sliding friction: weight-averaged over the grounded parts
@@ -1275,6 +1286,8 @@ class CoopPush2Command(Push2Command):
                 self.c_drift_t[:, k] = torch.where(self.c_engaged[:, k] & ~near, self.c_drift_t[:, k] + dt,
                                                    torch.zeros_like(self.c_drift_t[:, k]))
                 self.c_free_t[:, k] = torch.where(self.c_engaged[:, k], self.c_free_t[:, k], self.c_free_t[:, k] + dt)
+            if self.cfg.exec_v2:
+                self._update_exec(dt)
             lo, hi = self.cfg.reselect_s
             if hi > 0:
                 self.c_reselect_t -= dt
@@ -1307,6 +1320,49 @@ class CoopPush2Command(Push2Command):
                 self.c_prev_phi[:, k] = self.contact_phi(k)
             if self.cfg.push_cmd:
                 self.c_prev_pose[:] = self.pose_error()
+
+    def _update_exec(self, dt: float) -> None:
+        """Phase 2 executor commands, every step.
+        On = engaged on its contact (reached since the contact was assigned) and off it for less than
+        flicker_s: a robot pushing at the edge of the drift radius drifts in and out, and that must not
+        change its command. Ready = on for ready_steady_s outside a random hold; team ready = every robot
+        of the push group ready. Once the group pushes the command is latched (c_go): push until a robot
+        is no longer on or its contact changes. Before that: the expert's go / hold (rule 4) or, for the
+        other rules, hold until the team is ready. On hold_rand of its real arrivals (engaged for the
+        first time on this contact) a robot holds hold_rand_s whatever its partner does; it is not ready
+        meanwhile, so a barrier partner waits for it."""
+        c = self.cfg
+        on = self.c_engaged & (self.c_drift_t < c.flicker_s)
+        grp = self.c_in_group
+        if c.hold_rand > 0:
+            arrive = self.c_engaged & (~self.c_was_eng | (self.c_idx != self.c_was_idx))  # reached a (new) contact
+            lo, hi = c.hold_rand_s
+            draw = arrive & (torch.rand_like(self.c_rhold) < c.hold_rand)
+            self.c_rhold[:] = torch.where(draw, lo + (hi - lo) * torch.rand_like(self.c_rhold), self.c_rhold)
+        self.c_was_eng[:] = self.c_engaged
+        self.c_was_idx[:] = self.c_idx
+        held = on & (self.c_rhold > 0)
+        self.c_ready_t[:] = torch.where(on & ~held, self.c_ready_t + dt, torch.zeros_like(self.c_ready_t))
+        self.c_ready[:] = self.c_ready_t >= c.ready_steady_s - 1e-6
+        self.c_team_ready[:] = (self.c_ready | ~grp).all(-1) & grp.any(-1)
+        all_on = (on | ~grp).all(-1)
+        start = self.c_team_ready
+        if c.expert:  # expert envs: the group pushes once the planner tells every robot of it to push
+            r4 = self.c_rule == 4
+            start = torch.where(r4, ((self.c_phase == 2) | ~grp).all(-1) & all_on & ~held.any(-1), start)
+        self.c_go[:] = (self.c_go | start) & all_on
+        ph = torch.where(self.c_go.unsqueeze(-1), torch.full_like(self.c_cmd, 2), torch.ones_like(self.c_cmd))
+        if c.expert:  # before the group pushes the planner decides (it may send one robot alone)
+            ph = torch.where((r4 & ~self.c_go).unsqueeze(-1), self.c_phase.long(), ph)
+        ph = torch.where(on, ph.clamp(min=1), torch.zeros_like(ph))
+        ph = torch.where(held, torch.ones_like(ph), ph)
+        if c.exec_cmd_mode == "always_push":  # ablation: Stage 4e's behaviour, a robot on its contact pushes
+            ph = torch.where(on, torch.full_like(ph, 2), torch.zeros_like(ph))
+            self.c_team_ready[:] = all_on
+            self.c_go[:] = all_on
+        self.c_rhold[:] = (self.c_rhold - dt).clamp(min=0.0)
+        self.c_cmd_flips += ((self.c_cmd == 2) & (ph == 1)).any(-1).float()
+        self.c_cmd[:] = ph
 
     def _disturb(self) -> None:
         """Scripted object motion (training): inside its window, an episode's object is given a set
@@ -1432,6 +1488,16 @@ class CoopPush2Command(Push2Command):
             self.c_idx[env_ids], self.c_pobj[env_ids], self.c_nobj[env_ids] = idx, cp, cn
             self.push_dir_obj[env_ids] = -cn
             self.push_share[env_ids] = 0.5
+            if c.exec_v2:
+                self.c_cmd[env_ids] = 0
+                self.c_ready_t[env_ids] = 0.0
+                self.c_ready[env_ids] = False
+                self.c_team_ready[env_ids] = False
+                self.c_rhold[env_ids] = 0.0
+                self.c_was_eng[env_ids] = False
+                self.c_was_idx[env_ids] = -1
+                self.c_go[env_ids] = False
+                self.c_cmd_flips[env_ids] = 0.0
             if c.expert:
                 self.c_left_idx[env_ids] = -1
                 self.c_left_t[env_ids] = -1e9
@@ -1642,6 +1708,14 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     stall_move: float = 0.05  # ... no progress = moved less than this (m) ...
     stall_turn: float = 0.05  # ... and turned less than this (rad)
     strength_margin: float = 1.3  # a stall is the place's fault only if the pair can push this x the sliding force
+    exec_v2: bool = False  # Phase 2 executor: a phase command (walk / hold / push) + team ready as inputs, hold_cost
+    hold_rand: float = 0.0  # exec_v2 training: share of contact arrivals told to hold hold_rand_s regardless
+    hold_rand_s: tuple[float, float] = (0.5, 4.0)
+    ready_dist: float = 0.25  # exec_v2: ready = front within this of its contact (m) ...
+    ready_heading_deg: float = 30.0  # ... heading within this of its push direction ...
+    ready_steady_s: float = 0.3  # ... for this long
+    flicker_s: float = 0.5  # exec_v2: a robot off its contact for less than this still counts as on it
+    exec_cmd_mode: str = "planner"  # exec_v2 (eval ablation): "always_push" = on its contact -> push (no hold, no barrier)
     finish_dist: float = 0.0  # > 0: finishing zone, pose error (m, distance + rho_g x angle) below this:
     finish_frac: float = 0.1  # ... no progress = pose error fell by less than this share of itself in a window;
     finish_resid: float = 0.5  # ... stalls not penalised, the pair changed only if its residual is above this
@@ -1743,6 +1817,24 @@ def push_obs(env, robot: str) -> torch.Tensor:
     return torch.stack([torch.cos(ang), torch.sin(ang), g.push_share[:, k], g.c_resid], -1)
 
 
+def cmd_obs(env, robot: str) -> torch.Tensor:
+    """Phase 2 executor (4): this robot's phase command one-hot (walk, hold, push) and team ready."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    return torch.cat([torch.nn.functional.one_hot(g.c_cmd[:, k], 3).float(), g.c_team_ready.float().unsqueeze(-1)], -1)
+
+
+def hold_cost(env, robot: str, f_ref: float = 100.0, max_ratio: float = 3.0) -> torch.Tensor:
+    """Phase 2 executor, per robot, while told to hold: its horizontal contact force on the object /
+    f_ref (at most max_ratio) + its base's horizontal speed (m/s). Holding = staying on the contact
+    without pushing or walking; 0 in the other phases."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    f = (torch.linalg.norm(object_force_from(env, robot), dim=-1) / f_ref).clamp(max=max_ratio)
+    v = torch.linalg.norm(env.scene[robot].data.root_link_lin_vel_w[:, :2], dim=-1)
+    return torch.where(g.c_cmd[:, k] == 1, f + v, torch.zeros_like(f))
+
+
 def pose_progress(env, max_rate: float = 1.0) -> torch.Tensor:
     """Stage 4e, team: decrease per second of distance + rho_g x |angle error| (rho_g = the object's
     radius of gyration), clipped: a radian of turning is worth rho_g metres of travel."""
@@ -1761,6 +1853,8 @@ def motion_credit(env, robot: str, contact: float = 0.08, max_speed: float = 1.0
     norm = torch.sqrt(g.c_vdes.square().sum(-1) + rg2 * g.c_wdes.square())
     proj = ((g.box_vel()[:, :2] * g.c_vdes).sum(-1) + rg2 * g.box_ang_vel()[:, 2] * g.c_wdes) / norm.clamp(min=1e-6)
     on = (g.surface_distance(robot) < contact) & g.on_contact(k) & (norm > 1e-3)
+    if g.cfg.exec_v2:  # Phase 2: paid only when told to push
+        on = on & (g.c_cmd[:, k] == 2)
     return torch.where(on, proj.clamp(0.0, max_speed), torch.zeros_like(proj))
 
 
@@ -1892,6 +1986,14 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
             out["switches_per_episode"] = g.c_switches[env_ids].mean()
         if g.cfg.disturb_frac > 0:
             out["disturbed_now"] = ((g.c_time >= g.d_t0) & (g.c_time < g.d_t1)).float().mean()
+        if g.cfg.exec_v2:
+            for k, a in enumerate(AGENTS):
+                for ph, nm in ((0, "walk"), (1, "hold"), (2, "push")):
+                    out[f"cmd_{nm}_{a}"] = (g.c_cmd[:, k] == ph).float().mean()
+            out["team_pushing"] = g.c_go.float().mean()
+            out["random_hold"] = (g.c_rhold > 0).float().mean()
+            if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
+                out["push_to_hold_per_episode"] = g.c_cmd_flips[env_ids].mean()
         if g.cfg.expert:
             out["expert_rule_share"] = (g.c_rule == 4).float().mean()
             out["holding_share"] = (g.c_phase == 1).float().mean()

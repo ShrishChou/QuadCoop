@@ -109,7 +109,7 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
 
 
 def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False,
-                 push_cmd: bool = False) -> dict:
+                 push_cmd: bool = False, exec_v2: bool = False) -> dict:
     """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
     (+ the assigned contacts in contact mode)."""
     def nz(lim):
@@ -131,6 +131,7 @@ def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, gui
         **({"contact": T(func=mdp.contact_obs, params={"robot": name}, noise=nz(0.02))} if contacts else {}),
         **({"guide": T(func=mdp.guide_obs, params={"robot": name}, noise=nz(0.02))} if guide else {}),
         **({"push": T(func=mdp.push_obs, params={"robot": name}, noise=nz(0.02))} if push_cmd else {}),
+        **({"cmd": T(func=mdp.cmd_obs, params={"robot": name})} if exec_v2 else {}),  # last: init_from widens at the end
     }
 
 
@@ -151,7 +152,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        off_contact_cost: float = 1.0, contact_approach: float = 1.0, guide: bool = False,
                        bump_cost: float = 1.0, disturb_frac: float = 0.0, push_sensors: bool = False,
                        push_cmd: bool = False, wrench: bool = False, walk_cost: float = 0.3,
-                       reselect_min_dist: float = 0.15, expert: bool = False) -> ManagerBasedRlEnvCfg:
+                       reselect_min_dist: float = 0.15, expert: bool = False, exec_v2: bool = False,
+                       hold_rand: float = 0.0, hold_cost_w: float = 1.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -231,6 +233,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     ),)
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
+    assert not exec_v2 or push_cmd, "exec_v2 builds on push_cmd (Stage 4e)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
     if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
@@ -271,6 +274,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         guide=guide and contacts, disturb_frac=disturb_frac,
         wrench=wrench, push_cmd=push_cmd and contacts, reselect_min_dist=reselect_min_dist,
         expert=expert, turn_full_dist=1.0 if expert else 0.0, finish_dist=0.5 if expert else 0.0,
+        exec_v2=exec_v2 and push_cmd and contacts, hold_rand=hold_rand if exec_v2 else 0.0,
         tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
@@ -278,10 +282,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     obs = {}
     for a, o in PARTNER.items():
         obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide,
-                                                                   push_cmd=push_cmd),
+                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts),
                                                 concatenate_terms=True, enable_corruption=not play)
         obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide,
-                                                                   push_cmd=push_cmd),
+                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts),
                                                 concatenate_terms=True, enable_corruption=False)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
@@ -377,6 +381,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         elif reward_set == "r7" and push_cmd:
             rewards[f"motion_credit_{a}"] = R(func=mdp.motion_credit, weight=1.0, params={"robot": a})
             rewards[f"walk_cost_{a}"] = R(func=mdp.walk_cost, weight=-walk_cost, params={"robot": a})
+            if exec_v2:  # Phase 2: told to hold -> stay on the contact without pushing or walking
+                rewards[f"hold_cost_{a}"] = R(func=mdp.hold_cost, weight=-hold_cost_w, params={"robot": a})
         elif reward_set == "r7":
             rewards[f"push_credit_{a}"] = R(func=mdp.push_credit, weight=1.0, params={"robot": a})
         else:
