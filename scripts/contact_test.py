@@ -122,6 +122,14 @@ def main() -> int:
                     help="write the videos to <video-dir>/<prefix>-<rule>/ (e.g. eval_videos) instead of "
                          "logs/evals/<prefix>-<rule>/pair/videos/; either way the folder gets index.html / index.csv")
     ap.add_argument("--video-size", default="640x480")
+    ap.add_argument("--diag", type=int, default=1,
+                    help="stage4: executor diagnosis (commands vs what the robots do, the push, the object, every "
+                         "standstill by cause; quadcoop.coop2.diag) in the episodes and the summary")
+    ap.add_argument("--cmd-mode", choices=("planner", "always_push"), default="planner",
+                    help="executor v2 checkpoints: 'always_push' = a robot on its contact is told to push (no hold, no "
+                         "team-ready wait), as Stage 4e; to tell the waiting rules from the push itself")
+    ap.add_argument("--trace", type=int, default=0,
+                    help="1 = per-step traces (10 Hz) of the rep-0 episodes in logs/evals/<prefix>-<rule>/pair/trace_<mass>kg.csv.gz")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -141,6 +149,7 @@ def main() -> int:
     from quadcoop import falls
     from quadcoop.contact_control import IDLE_ACTION, ContactController, to_action
     from quadcoop.coop2 import mdp as cm
+    from quadcoop.coop2 import diag as dgm
     from quadcoop.coop2.env_cfg import SPECS, make_coop2_env_cfg
     from quadcoop.coop2.marl import PairPolicy
     from quadcoop.coop2.mdp import AGENTS
@@ -237,7 +246,7 @@ def main() -> int:
             off_contact=ck_cfg.get("off_contact", "soft") if ck_cfg.get("guide") else "soft",
             disturb_frac=a.disturb_frac, push_sensors=True, push_cmd=bool(ck_cfg.get("push_cmd", False)),
             wrench="wrench" in rules or "expert" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)),
-            reselect_min_dist=min_dist, expert="expert" in rules)
+            reselect_min_dist=min_dist, expert="expert" in rules, exec_v2=bool(ck_cfg.get("exec_v2", False)))
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -295,6 +304,9 @@ def main() -> int:
         robots = [base.scene[ag] for ag in AGENTS]
         handed = [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]  # under the push policy
         present = [torch.ones(n, dtype=torch.bool, device=dev), ~solo]  # robot 2 not parked
+        if stage4 and getattr(g.cfg, "exec_v2", False):
+            g.c_in_group[:, 1] = ~solo  # a parked robot is not waited for
+            g.cfg.exec_cmd_mode = a.cmd_mode
         active = [x.clone() for x in present]  # has a contact to work on
         ctrl = [ContactController(n, dev, reach=SPECS[ag].half_length) for ag in AGENTS]
         p_obj = [torch.zeros(n, 2, device=dev) for _ in AGENTS]
@@ -340,6 +352,9 @@ def main() -> int:
         first_choice = [list(chosen[0]), list(chosen[1])]
 
         dt = base.step_dt
+        dg = dgm.ExecDiag(n, dev, dt) if stage4 and a.diag else None
+        tr_ids = [j for j, cs in enumerate(cases) if cs[3] == 0] if (dg is not None and a.trace) else []
+        tr_rows = []
         steps = int(a.horizon / dt)
         reassign_every = int(round(a.reassign_s / dt)) if a.reassign_s > 0 else 0
         film_ids = [j for j, (rule, o, s, r, _) in enumerate(cases) if rule != "allpairs"
@@ -372,7 +387,14 @@ def main() -> int:
                 rec_mark.append(torch.stack(mk, 1).cpu().numpy())
                 d_, e_ = g.errors()
                 e_ = torch.where(g.symmetry() > 0, e_, torch.zeros_like(e_))
-                rec_cap.append(torch.stack([d_, torch.rad2deg(e_), g.c_switches], -1)[fid].cpu().numpy())
+                ex = [torch.full_like(d_, -1.0)] * 5
+                if getattr(g.cfg, "exec_v2", False):  # executor v2: each robot's command, team ready, contact force
+                    ex = [g.c_cmd[:, 0].float(), g.c_cmd[:, 1].float(), g.c_team_ready.float()] + \
+                         [torch.linalg.norm(cm.object_force_from(base, ag), dim=-1) for ag in AGENTS]
+                elif getattr(g.cfg, "guide", False):
+                    ex = ex[:3] + [torch.linalg.norm(cm.object_force_from(base, ag), dim=-1) for ag in AGENTS]
+                rule_now = g.c_rule.float() if hasattr(g, "c_rule") else torch.full_like(d_, -1.0)
+                rec_cap.append(torch.stack([d_, torch.rad2deg(e_), g.c_switches, *ex, rule_now], -1)[fid].cpu().numpy())
         if fid is not None:
             record()
 
@@ -420,6 +442,17 @@ def main() -> int:
         FB = 20.0
         fb_all = torch.zeros(n, 51, device=dev)
         fb_still = torch.zeros(n, 51, device=dev)
+        # executor v2: time every robot of the push group is told to hold, the object's speed then (sum, and
+        # time above 2 cm/s), each robot's contact force while told to hold, and the delay from team ready to
+        # both robots pressing
+        allhold_t = torch.zeros(n, device=dev)
+        allhold_v = torch.zeros(n, device=dev)
+        allhold_mv = torch.zeros(n, device=dev)
+        holdf_sum = torch.zeros(n, device=dev)
+        holdf_t = torch.zeros(n, device=dev)
+        tr_wait = torch.full((n,), -1.0, device=dev)  # s since team ready while not both pressing; -1 = not waiting
+        tr_sum = torch.zeros(n, device=dev)
+        tr_n = torch.zeros(n, device=dev)
 
         def hist_q(h, q):
             """q-quantile (N, bin centre) of a force histogram; "" when empty."""
@@ -579,10 +612,50 @@ def main() -> int:
                         stepm = torch.linalg.norm(xy - last_xy[k], dim=-1)
                         walked += torch.where(live & present[k] & (stepm < 0.5), stepm, torch.zeros_like(stepm))  # (< 0.5: not a reset)
                         last_xy[k] = xy.clone()
+                    if getattr(g.cfg, "exec_v2", False):
+                        grp = torch.stack(present, -1)
+                        cmd = g.c_cmd
+                        ah = live & ((cmd == 1) | ~grp).all(-1) & grp.any(-1)
+                        spd = torch.linalg.norm(g.box_vel()[:, :2], dim=-1)
+                        allhold_t += ah.float() * dt
+                        allhold_v += torch.where(ah, spd, torch.zeros_like(spd)) * dt
+                        allhold_mv += (ah & (spd > 0.02)).float() * dt
+                        for k, ag in enumerate(AGENTS):
+                            hk = live & present[k] & (cmd[:, k] == 1)
+                            fk = torch.linalg.norm(cm.object_force_from(base, ag), dim=-1)
+                            holdf_sum += torch.where(hk, fk, torch.zeros_like(fk)) * dt
+                            holdf_t += hk.float() * dt
+                        tch = [pr[k] & base.scene[f"push_{AGENTS[k]}"].data.found.view(n, -1).any(-1) for k in range(2)]
+                        allp = (tch[0] | ~present[0]) & (tch[1] | ~present[1])
+                        tr = g.c_team_ready & live
+                        start = tr & (tr_wait < 0)
+                        tr_wait = torch.where(start, torch.zeros_like(tr_wait), tr_wait)
+                        done_w = (tr_wait >= 0) & allp
+                        tr_sum += torch.where(done_w, tr_wait, torch.zeros_like(tr_wait))
+                        tr_n += done_w.float()
+                        tr_wait = torch.where(done_w | ~tr, torch.full_like(tr_wait, -1.0), tr_wait)
+                        tr_wait = torch.where(tr_wait >= 0, tr_wait + dt, tr_wait)
                     if getattr(g.cfg, "expert", False):
                         onb = torch.stack([g.on_contact(k) for k in range(2)], -1) & live.unsqueeze(-1)
                         hold_steps += ((g.c_phase == 1) & onb).float().sum(-1)
                         on_any_steps += onb.float().sum(-1)
+                if dg is not None:
+                    dgi = dgm.gather(g, base, robots, AGENTS, torch.stack(present, -1), live, cm.object_force_from,
+                                     (d < pt) & (ea < yt))
+                    dg.observe(**dgi)
+                    if tr_ids and i % 5 == 0:
+                        ti = torch.tensor(tr_ids, device=dev)
+                        bp, hd = g.box_pos()[ti, :2], g.heading()[ti]
+                        fm = torch.linalg.norm(dgi["force"][ti], dim=-1)
+                        cosf = (dgi["force"][ti] * dgi["push_dir"][ti]).sum(-1) / fm.clamp(min=1e-6)
+                        cols = [torch.full_like(hd, t), bp[:, 0], bp[:, 1], torch.rad2deg(hd), d[ti], torch.rad2deg(ea[ti]),
+                                dgi["pe"][ti], torch.linalg.norm(dgi["v_obj"][ti], dim=-1), dgi["w_obj"][ti],
+                                live[ti].float(), (dgi["go"][ti].float() if dgi["go"] is not None else torch.full_like(hd, -1))]
+                        for k in range(2):
+                            cols += [dgi["cmd"][ti, k].float(), dgi["on"][ti, k].float(), dgi["engaged"][ti, k].float(),
+                                     dgi["cdist"][ti, k], torch.rad2deg(dgi["herr"][ti, k]), dgi["touch"][ti, k].float(),
+                                     fm[:, k], cosf[:, k], dgi["base_speed"][ti, k]]
+                        tr_rows.append(torch.stack(cols, -1).cpu().numpy())
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
                 both = pu[0] & pu[1]
@@ -608,6 +681,27 @@ def main() -> int:
                 if all_done_at is not None and i >= all_done_at + tail:
                     break
 
+        if tr_rows:  # per-step traces of the rep-0 episodes, one file per rule
+            import gzip
+            arr = np.stack(tr_rows, 1)  # (episodes, samples, fields)
+            head = ["t", "obj_x", "obj_y", "obj_yaw_deg", "goal_dist", "goal_yaw_err_deg", "pose_err", "obj_speed", "obj_yaw_rate",
+                    "live", "team_pushing"] + [f"{x}_{ag}" for ag in AGENTS for x in
+                                               ("cmd", "on", "engaged", "contact_dist", "heading_err_deg", "touching", "force",
+                                                "force_align", "base_speed")]
+            for rule_ in dict.fromkeys(cases[j][0] for j in tr_ids):
+                pth = ROOT / "logs" / "evals" / f"{prefix}-{rule_}" / "pair" / f"trace_{mass:g}kg.csv.gz"
+                pth.parent.mkdir(parents=True, exist_ok=True)
+                with gzip.open(pth, "wt", newline="") as fh:
+                    wr = csv.writer(fh)
+                    wr.writerow(["object", "scenario", "outcome"] + head)
+                    for ei, j in enumerate(tr_ids):
+                        if cases[j][0] != rule_:
+                            continue
+                        for row_ in arr[ei]:
+                            if row_[9] < 0.5 and row_[0] > float(t_end[j]) + 0.2:
+                                break
+                            wr.writerow([cases[j][1], SCENARIOS[cases[j][2]][0], how[j]] + [f"{v:.3f}" for v in row_])
+                print(f"trace: {pth}", flush=True)
         for j, (rule, o, s, r, _) in enumerate(cases):
             ls = float(live_steps[j].clamp(min=1))
             duo = rule != "centre"  # (a two-robot rule may still have parked robot 2: contact_2 empty)
@@ -645,6 +739,7 @@ def main() -> int:
                    for k, ag in enumerate(AGENTS)},
                 **{f"returns_{ag}": int(returns[k][j]) for k, ag in enumerate(AGENTS)},
                 **({f"bump_frac_{ag}": round(float(bump_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
+                **(dg.row(j) if dg is not None else {}),
                 **({f"press_frac_{ag}": round(float(press_steps[k][j]) / ls, 3) for k, ag in enumerate(AGENTS)} if stage4 else {}),
                 "mean_residual": round(float(resid_sum[j]) / ls, 3) if stage4 and g.cfg.wrench else "",
                 "solo_far_s": round(float(solo_far[j]), 2) if stage4 else "",
@@ -654,6 +749,12 @@ def main() -> int:
                 "limit_replans": int(g.c_replan_weak[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "finish_stalls": int(g.c_fin_stalls[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "push_force_med": hist_q(fb_all[j], 0.5) if stage4 else "",
+                **({"all_hold_s": round(float(allhold_t[j]), 2),
+                    "all_hold_speed": round(float(allhold_v[j] / allhold_t[j]), 3) if float(allhold_t[j]) > 0 else "",
+                    "all_hold_moving_share": round(float(allhold_mv[j] / allhold_t[j]), 3) if float(allhold_t[j]) > 0 else "",
+                    "hold_force": round(float(holdf_sum[j] / holdf_t[j]), 1) if float(holdf_t[j]) > 0 else "",
+                    "ready_to_push_s": round(float(tr_sum[j] / tr_n[j]), 2) if float(tr_n[j]) > 0 else ""}
+                   if stage4 and getattr(g.cfg, "exec_v2", False) else {}),
                 "push_force_p90": hist_q(fb_all[j], 0.9) if stage4 else "",
                 "push_force_still_p90": hist_q(fb_still[j], 0.9) if stage4 else "",
                 "needs_more_s": round(float(g.c_need_more_t[j]), 1) if stage4 and getattr(g.cfg, "expert", False) else "",
@@ -692,10 +793,17 @@ def main() -> int:
                     def cap(f, fi=fi, head=head, legend=legend):
                         txt = f"{head} | t {f * stride * dt:4.1f} s"
                         if CP is not None:
-                            d_, e_, sw = CP[fi, f]
+                            d_, e_, sw, c0, c1, trd, f0, f1, rl = CP[fi, f]
                             on = MK[fi, f, :, 6]
-                            txt += (f"\nto goal {d_:.2f} m, {e_:+.0f} deg | cyan {'ON' if on[0] > 0.5 else 'off'}, "
-                                    f"yellow {'ON' if on[1] > 0.5 else 'off'} | contact changes {sw:.0f}\n{legend}")
+                            cmd = {0.0: "WALK", 1.0: "HOLD", 2.0: "PUSH"}
+                            r0 = f" {cmd.get(float(c0), '')}" if c0 >= 0 else ""
+                            r1 = f" {cmd.get(float(c1), '')}" if c1 >= 0 else ""
+                            ff0 = f" {f0:.0f} N" if f0 >= 0 else ""
+                            ff1 = f" {f1:.0f} N" if f1 >= 0 else ""
+                            team = (" | team READY" if trd > 0.5 else " | team not ready") if trd >= 0 else ""
+                            txt += (f"\nto goal {d_:.2f} m, {e_:+.0f} deg | cyan {'ON' if on[0] > 0.5 else 'off'}{r0}{ff0}, "
+                                    f"yellow {'ON' if on[1] > 0.5 else 'off'}{r1}{ff1}{team} | contact changes {sw:.0f}"
+                                    f" | rule {int(rl)}\n{legend}")
                         return txt
 
                     def marks(f, fi=fi):
@@ -816,6 +924,67 @@ def _video_index(vdir: Path) -> None:
     (vdir / "index.html").write_text("\n".join(out) + "\n")
 
 
+DIAG_KEYS = ("dg_walk", "dg_hold", "dg_push", "dg_push_press", "dg_push_light", "dg_push_notouch", "dg_hold_press", "dg_hold_move",
+             "dg_drift", "dg_drift_dist", "dg_drift_head", "dg_edge", "dg_push_force", "dg_push_align", "dg_misaligned",
+             "dg_both_press", "dg_one_press", "dg_none_press", "dg_obj_moving", "dg_obj_speed", "dg_obj_align", "dg_progress",
+             "dg_still_n", "dg_still_s", "dg_still_force", "dg_go_breaks", "dg_flips_min",
+             "dg_st_push_hard", "dg_st_push_soft", "dg_st_wait", "dg_st_hold", "dg_st_walk")
+
+
+def _diag_md(summary, masses, objects) -> list:
+    """The diagnosis tables (quadcoop.coop2.diag): means over episodes."""
+    f2 = lambda x: "" if x is None else f"{x:.2f}"  # noqa: E731
+    f0 = lambda x: "" if x is None else f"{x:.0f}"  # noqa: E731
+    pc = lambda x: "" if x is None else f"{100 * x:.0f}%"  # noqa: E731
+    bm = lambda m: summary["by_mass"][f"{m:g}"]  # noqa: E731
+    md = ["", "## diagnosis 1: what each robot is told, and what it does then",
+          "(shares of robot time; push: of the time told to push, pressing = touching the object with 30 N or more; hold: of the "
+          "time told to hold, pressing 30 N+ or walking > 0.15 m/s; drifted: of the time engaged on its contact, outside the "
+          "on-contact zone (0.25 m / 30 deg), and why; near edge: of the time inside the zone, beyond 80% of either limit. "
+          "Stage 4e has no commands: on its contact = told to push)", "",
+          "| mass | walk | hold | push | push: pressing | push: light touch | push: not touching | hold: pressing | hold: moving "
+          "| drifted off | ... by distance | ... by heading | near zone edge |", "|---|" + "---|" * 12]
+    for m in masses:
+        s = bm(m)
+        md.append(f"| {m:g} kg | " + " | ".join(pc(_get(s, k)) for k in (
+            "dg_walk", "dg_hold", "dg_push", "dg_push_press", "dg_push_light", "dg_push_notouch", "dg_hold_press", "dg_hold_move",
+            "dg_drift", "dg_drift_dist", "dg_drift_head", "dg_edge")) + " |")
+    md += ["", "## diagnosis 2: the push (while told to push and pressing) and the team",
+           "(force = mean contact force; alignment = mean cosine between the force and the commanded push direction, 1 = "
+           "exactly along it; misaligned = more than 45 deg off; team = share of episode time both robots press, one, none)", "",
+           "| mass | force (N) | alignment | misaligned | both pressing | one pressing | none pressing |", "|---|---|---|---|---|---|---|"]
+    for m in masses:
+        s = bm(m)
+        md.append(f"| {m:g} kg | {f0(_get(s, 'dg_push_force'))} | {f2(_get(s, 'dg_push_align'))} | {pc(_get(s, 'dg_misaligned'))} | "
+                  f"{pc(_get(s, 'dg_both_press'))} | {pc(_get(s, 'dg_one_press'))} | {pc(_get(s, 'dg_none_press'))} |")
+    md += ["", "## diagnosis 3: the object and every standstill",
+           "(moving = speed > 2 cm/s or turning > 3 deg/s; alignment = cosine between its velocity and the planner's wanted "
+           "motion; progress = pose error removed per second (m/s); standstill = still for 3 s or more before the goal, its "
+           "seconds filed by what the robots did: push hard = told to push and pressing (the push does not move it), push soft "
+           "= told to push but not pressing, wait = a robot holds while its partner is off its contact, hold = both on and "
+           "holding, walk = nobody on a contact; per episode)", "",
+           "| mass | moving | speed (m/s) | alignment | progress (m/s) | standstills | standstill (s) | push hard | push soft | wait "
+           "| hold | walk | force in push-hard standstills (N) | team-push breaks | push->hold per min |", "|---|" + "---|" * 14]
+    for m in masses:
+        s = bm(m)
+        md.append(f"| {m:g} kg | {pc(_get(s, 'dg_obj_moving'))} | {f2(_get(s, 'dg_obj_speed'))} | {f2(_get(s, 'dg_obj_align'))} | "
+                  f"{f2(_get(s, 'dg_progress'))} | {f2(_get(s, 'dg_still_n'))} | {f0(_get(s, 'dg_still_s'))} | "
+                  + " | ".join(f0(_get(s, f"dg_st_{c}")) for c in ("push_hard", "push_soft", "wait", "hold", "walk"))
+                  + f" | {f0(_get(s, 'dg_still_force'))} | {f2(_get(s, 'dg_go_breaks'))} | {f2(_get(s, 'dg_flips_min'))} |")
+    md += ["", "## diagnosis 4: by object (all masses)", "",
+           "| object | success | push: pressing | both pressing | alignment | object moving | progress (m/s) | standstill (s) "
+           "| push hard | push soft | wait | hold | walk |", "|---|" + "---|" * 12]
+    for o in objects:
+        s = summary["by_object"].get(o)
+        if not s:
+            continue
+        md.append(f"| {o} | {f2(_get(s, 'success'))} | {pc(_get(s, 'dg_push_press'))} | {pc(_get(s, 'dg_both_press'))} | "
+                  f"{f2(_get(s, 'dg_push_align'))} | {pc(_get(s, 'dg_obj_moving'))} | {f2(_get(s, 'dg_progress'))} | "
+                  f"{f0(_get(s, 'dg_still_s'))} | " + " | ".join(f0(_get(s, f"dg_st_{c}")) for c in ("push_hard", "push_soft", "wait", "hold", "walk"))
+                  + " |")
+    return md
+
+
 def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> None:
     out = ROOT / "logs" / "evals" / name / "pair"
     stats = ROOT / "evals" / name / "eval" / "pair"
@@ -823,7 +992,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
     try:
         old_meta = json.loads((out / "summary.json").read_text())
         same = all(old_meta.get(k) == v for k, v in (("executor", a.executor), ("return_dist", a.return_dist),
-                                                       ("checkpoint", a.checkpoint), ("reselect", a.reselect_s),
+                                                       ("checkpoint", a.checkpoint), ("reselect", a.reselect_s), ("cmd_mode", getattr(a, "cmd_mode", "planner")),
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist
@@ -862,7 +1031,9 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 "mean_residual": mean(sel, "mean_residual"),
                 **{key: mean(sel, key) for key in ("solo_far_s", "both_press_share", "walked_m", "stall_replans", "limit_replans", "finish_stalls",
                                                   "needs_more_s", "hold_share", "push_force_med", "push_force_p90",
-                                                  "push_force_still_p90")},
+                                                  "push_force_still_p90", "all_hold_s", "all_hold_speed",
+                                                  "all_hold_moving_share", "hold_force", "ready_to_push_s")},
+                **{key: mean(sel, key) for key in DIAG_KEYS},
                 "success": sum(r["success"] for r in sel) / k, "precise": sum(r["precise"] for r in sel) / k,
                 **{f"fell_{ag}": sum(r[f"fell_{ag}"] for r in sel) / k for ag in agents},
                 "t_success": (sum(r["t_success"] for r in ok) / len(ok)) if ok else None,
@@ -882,6 +1053,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
         by[("obj_mass", r["object"], r["mass"])].append(r)
         by[("group_mass", "seen" if r["seen_shape"] else "unseen", r["mass"])].append(r)
         by[("scen_mass", r["scenario"], r["mass"])].append(r)
+        by[("obj", r["object"])].append(r)
     what = (f"Stage 4 contact policy {a.checkpoint} (robots start {'at their contacts' if a.start == 'contact' else 'behind the object and walk to their contacts'}; contact rule re-applied: "
             f"{a.reselect_s if a.reselect_s != '0' else 'never'})" if a.executor == "stage4" else
             f"{'scripted contacts' if a.executor == 'script' else 'hand-off (script to the contact, then the frozen Stage 2b policy'}"
@@ -891,12 +1063,14 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
-               "start": a.start, "reselect_min_dist": a.reselect_min_dist, "overall": agg(rows),
+               "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
+               "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
                                  for gname in ("seen", "unseen") for m in masses},
                "by_object_mass": {f"{o} / {m:g} kg": agg(by[("obj_mass", o, m)]) for o in objects for m in masses},
-               "by_scenario_mass": {f"{s[0]} / {m:g} kg": agg(by[("scen_mass", s[0], m)]) for s in SCENARIOS for m in masses}}
+               "by_scenario_mass": {f"{s[0]} / {m:g} kg": agg(by[("scen_mass", s[0], m)]) for s in SCENARIOS for m in masses},
+               "by_object": {o: agg(by[("obj", o)]) for o in objects}}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     f2 = lambda x: "" if x is None else f"{x:.2f}"  # noqa: E731
     f0 = lambda x: "" if x is None else f"{x:.0f}"  # noqa: E731
@@ -982,6 +1156,16 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             s = summary["by_mass"][f"{m:g}"]
             md.append(f"| {m:g} kg | {f0(s.get('push_force_med'))} | {f0(s.get('push_force_p90'))} | "
                       f"{f0(s.get('push_force_still_p90'))} |")
+        if any(summary["by_mass"][f"{m:g}"].get("all_hold_s") is not None for m in masses):
+            md += ["", "## executor v2: holding and the team-ready barrier (time every robot of the push group is told to "
+                   "hold; the object's mean speed then and the share of it above 2 cm/s (gate: under 2 cm/s); each robot's "
+                   "contact force while told to hold; delay from team ready to both robots pressing (gate: under 0.2 s))", "",
+                   "| mass | all holding (s) | object speed (m/s) | moving > 2 cm/s | force while holding (N) | ready to push (s) |",
+                   "|---|---|---|---|---|---|"]
+            for m in masses:
+                s = summary["by_mass"][f"{m:g}"]
+                md.append(f"| {m:g} kg | {f2(s.get('all_hold_s'))} | {f2(s.get('all_hold_speed'))} | "
+                          f"{f2(s.get('all_hold_moving_share'))} | {f0(s.get('hold_force'))} | {f2(s.get('ready_to_push_s'))} |")
     if not solo:
         md += ["", "## both robots pushing (share of time) by object and mass", "",
                "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
@@ -993,6 +1177,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
     for s in SCENARIOS:
         md.append(f"| {s[0]} | " + " | ".join(f2(_get(summary["by_scenario_mass"][f"{s[0]} / {m:g} kg"], "success"))
                                              for m in masses) + " |")
+    if any(_get(summary["by_mass"][f"{m:g}"], "dg_push") is not None for m in masses):
+        md += _diag_md(summary, masses, objects)
     (out / "summary.md").write_text("\n".join(md) + "\n")
     stats.mkdir(parents=True, exist_ok=True)
     for f in ("summary.md", "summary.json", "episodes.csv"):

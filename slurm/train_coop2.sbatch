@@ -32,6 +32,17 @@
 #     --push-cmd --contact-mix wrench:2,spread:1,random:1 --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 \
 #     --disturb-frac 0.2 --reselect-s 3,6 --random-start 0.5 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 \
 #     --init-from logs/marl2/s4d_aa_s0/model_9000.pt" sbatch -p mit_preemptable --requeue -t 2-00:00:00 slurm/train_coop2.sbatch
+#   Phase 2 executor v2 (a phase command walk / hold / push and the team-ready flag, 4 more inputs per robot; motion
+#   credit only when told to push, hold_cost while told to hold; commands from the expert planner and the barrier,
+#   random holds on 30% of arrivals), from Stage 4e's model. ITERS is the iteration to stop at (4e ends at 12000):
+#   first a 200-iteration trial (throughput, every reward term moving), then the full run (8000 more):
+#   ALGO=mappo SEED=0 RUN_NAME=ex2_trial ITERS=12200 EXTRA="--pair anymal --partner-map --reward r7 --contacts --guide \
+#     --push-cmd --exec-v2 --hold-rand 0.3 --contact-mix wrench:1,spread:1,random:1,expert:2 --reselect-min-dist 0 \
+#     --drift-dist 0.25 --drift-heading 30 --disturb-frac 0.2 --reselect-s 3,6 --random-start 0.5 --need-frac 0.5 \
+#     --max-actor-lr 1e-4 --critic-warmup-resume 300 --init-from logs/marl2/s4e_aa_s0/model_12000.pt" \
+#     sbatch -p mit_preemptable --requeue -t 0-04:00:00 slurm/train_coop2.sbatch
+#   ALGO=mappo SEED=0 RUN_NAME=ex2_aa_s0 ITERS=20000 EXTRA="<the same>" sbatch -p mit_preemptable --requeue \
+#     -t 2-00:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2

@@ -130,6 +130,9 @@ class MarlCfg:
     init_from: str = ""  # Stage 4 checkpoint the networks were expanded from (Stage 4d / 4e)
     push_cmd: bool = False  # env option (recorded): Stage 4e push directions (4 more inputs per robot), 4e rewards
     walk_cost: float = 0.3  # env option (recorded): per second on the way to a new contact (push_cmd)
+    exec_v2: bool = False  # env option (recorded): Phase 2 executor (phase + team ready inputs, hold_cost)
+    hold_rand: float = 0.0  # env option (recorded): share of contact arrivals given a random hold (exec_v2)
+    hold_cost_w: float = 1.0  # env option (recorded): hold_cost weight (exec_v2)
     reselect_min_dist: float = 0.15  # env option (recorded): no contact re-choice this close to the goal (m)
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
