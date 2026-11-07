@@ -114,7 +114,7 @@ class CoopPush2Command(Push2Command):
         self.level = cfg.start_level
         self.ema_success = 0.0
         self.last_change_iter = 0.0
-        for k in ("success", "pos_err", "yaw_err_deg", "level", "hold_frac"):
+        for k in ("success", "pos_err", "yaw_err_deg", "level", "hold_frac", "turn_task", "turn_success"):
             self.metrics[k] = torch.zeros(n, device=dev)
         self.shape_success = torch.zeros(S, device=dev)
         self.train_mask = (torch.tensor(TRAIN_MASK, device=dev) if not cfg.allow_heldout
@@ -137,6 +137,7 @@ class CoopPush2Command(Push2Command):
         # start distance to the goal, per episode (r7's goal-error cost is measured against it)
         self.d0 = torch.ones(n, device=dev)
         self.need_episode = torch.zeros(n, dtype=torch.bool, device=dev)  # need_frac pick (for logging)
+        self.turn_episode = torch.zeros(n, dtype=torch.bool, device=dev)  # turn_frac pick
         # evaluation switches (as in Stage 2)
         self.heading_zero = False
         self.heading_zero_map = False
@@ -1192,6 +1193,9 @@ class CoopPush2Command(Push2Command):
                     (self.box_ang_vel()[:, 2].abs() < c.success_max_yaw_rate)
             self.success_flag[:] = (d < self.tol_pos) & (e.abs() < self.tol_yaw) & still
             self.metrics["success"][:] = self.success_flag.float()
+        # turn practice: turn-in-place success rate = turn_success / turn_task (episode means)
+        self.metrics["turn_task"][:] = self.turn_episode.float()
+        self.metrics["turn_success"][:] = ((self.metrics["success"] > 0.5) & self.turn_episode).float()
 
     # -- per-robot geometry -------------------------------------------------------------------
     def obs_rel_yaw(self, robot: str = AGENTS[0]) -> torch.Tensor:
@@ -1442,6 +1446,16 @@ class CoopPush2Command(Push2Command):
                           torch.zeros_like(gd))
         dyaw = torch.minimum(torch.deg2rad(t[:, DYAW]), cap) * (2 * torch.rand(m, device=dev) - 1)
         goal_yaw = wrap(obj_heading + dyaw)
+        tt = torch.zeros(m, dtype=torch.bool, device=dev)
+        if c.turn_frac > 0 and sc is None:  # turn practice (training only): a turn in place
+            tt = (torch.rand(m, device=dev) < c.turn_frac) & (self.sym[shape] > 0)
+            td = U(c.turn_dist[0], c.turn_dist[1])
+            near = obj_xy + td.unsqueeze(-1) * torch.stack([torch.cos(gdir), torch.sin(gdir)], -1)
+            goal_xy = torch.where(tt.unsqueeze(-1), near, goal_xy)
+            tmag = torch.minimum(torch.deg2rad(U(c.turn_deg[0], c.turn_deg[1])), cap)
+            sgn = torch.where(torch.rand(m, device=dev) < 0.5, -torch.ones_like(tmag), torch.ones_like(tmag))
+            goal_yaw = torch.where(tt, wrap(obj_heading + sgn * tmag), goal_yaw)
+        self.turn_episode[env_ids] = tt
         behind = gdir + math.pi + sym_u(t[:, BEHIND])
         b0 = behind + sym_u(t[:, SPREAD])
         b1 = behind + sym_u(t[:, SPREAD])
@@ -1653,6 +1667,12 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     need_mass: float = 45.0  # kg: about what one ANYmal can push alone
     need_extra: float = 20.0  # kg above the level's mass window allowed for those episodes
     need_shapes: tuple[str, ...] = ("long", "arch", "dumbbell", "t_shape")  # trainable wide shapes
+    # turn practice (turn_debug): a share of episodes is a turn in place - the goal within turn_dist m of the object,
+    # its heading off by turn_deg (either way, capped by the object's symmetry). Objects whose heading does not
+    # matter (sphere) are left out; these episodes do not count toward the task-level curriculum.
+    turn_frac: float = 0.0
+    turn_dist: tuple[float, float] = (0.0, 0.3)
+    turn_deg: tuple[float, float] = (15.0, 90.0)
     # Stage 4 contact mode (see the module docstring)
     contact_mode: bool = False
     contact_mix: tuple[float, ...] = (1.0, 1.0, 1.0)  # spread, adjacent, random[, wrench[, expert]] pair
@@ -1953,7 +1973,7 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
         g.lvl_ema = 0.0
     if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
         succ = g.metrics["success"][env_ids]
-        ordinary = ~g.need_episode[env_ids]
+        ordinary = ~g.need_episode[env_ids] & ~g.turn_episode[env_ids]
 
         def update(ema, sel):
             cnt = int(sel.sum())

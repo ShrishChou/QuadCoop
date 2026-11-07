@@ -156,6 +156,9 @@ def main() -> int:
                          "full beyond 3 m (partner-aware anchor: stay 2b alone, free to change together)")
     ap.add_argument("--start-around", action="store_true",
                     help="robots start anywhere around the object (>= 60 deg apart) instead of behind it")
+    ap.add_argument("--turn-frac", type=float, default=0.0,
+                    help="turn practice: share of training episodes that are a turn in place (the goal within 0.3 m, "
+                         "heading off 15-90 deg either way, capped by symmetry); evaluations unchanged")
     ap.add_argument("--need-frac", type=float, default=0.0,
                     help="share of training episodes with a wide object (long, arch, dumbbell, T) above "
                          "--need-mass kg, i.e. one robot alone cannot do it (evaluations unchanged)")
@@ -284,6 +287,8 @@ def main() -> int:
             soft_txt += f", MOTION CREDIT ONLY WHILE PRESSING ({a.credit_press:g} N+)"
         if a.reward == "rmin":
             soft_txt += f", MINIMAL REWARD (progress, success, failure, falls, contact approach, contact work x{a.work_w:g})"
+        if a.turn_frac > 0:
+            soft_txt += f", TURN PRACTICE ({a.turn_frac:g} of episodes turn in place)"
         if a.reselect_min_dist != 0.15:
             soft_txt += f", re-choice down to {a.reselect_min_dist:g} m from the goal"
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
@@ -323,6 +328,7 @@ def main() -> int:
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
+    env_cfg.commands["goal"].turn_frac = a.turn_frac
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     cfg = MarlCfg(algo=a.algo, variant=a.variant, num_envs=a.num_envs, seed=a.seed,
                   max_iterations=2 if a.check else a.max_iterations,
@@ -340,7 +346,7 @@ def main() -> int:
                   disturb_frac=a.disturb_frac, init_from=a.init_from or "", push_cmd=a.push_cmd,
                   walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                   exec_v2=a.exec_v2, hold_rand=a.hold_rand if a.exec_v2 else 0.0, hold_cost_w=a.hold_cost,
-                  credit_press=a.credit_press, work_w=a.work_w,
+                  credit_press=a.credit_press, work_w=a.work_w, turn_frac=a.turn_frac,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])

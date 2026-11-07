@@ -113,6 +113,7 @@ class MarlCfg:
     kl_partner_far: float = 3.0  # m: full beta beyond this partner distance
     start_mode: str = "behind"  # env option (recorded): robots' start, "behind" or "around"
     need_frac: float = 0.0  # env option (recorded): share of episodes that need both robots
+    turn_frac: float = 0.0  # env option (recorded): share of episodes that are a turn in place (turn practice)
     contacts: bool = False  # env option (recorded): Stage 4 contact mode (assigned contacts as inputs)
     contact_mix: tuple = (1.0, 1.0, 1.0)  # env option (recorded): spread / adjacent / random[ / wrench] pairs
     contact_start_at: float = 0.7  # env option (recorded)

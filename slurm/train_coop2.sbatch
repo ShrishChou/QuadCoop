@@ -53,6 +53,13 @@
 #     sbatch -p mit_normal_gpu -t 06:00:00 slurm/train_coop2.sbatch
 #   ALGO=mappo SEED=0 RUN_NAME=hvB_aa_s0 ITERS=13500 EXTRA="$S4E --reward rmin" \
 #     sbatch -p mit_normal_gpu -t 06:00:00 slurm/train_coop2.sbatch
+#   turn_debug: the minimal-reward run (hvB) with turn practice - 30% of episodes are a turn in place (goal within
+#   0.3 m, heading off 15-90 deg either way); same settings otherwise, 1500 more iterations from hvB's kept model.
+#   wandb: turn-in-place success = Metrics turn_success / turn_task. Evaluate with contact_test.py --tasks turn.
+#   ALGO=mappo SEED=0 RUN_NAME=turn_debug ITERS=15000 EXTRA="--pair anymal --partner-map --contacts --guide --push-cmd \
+#     --contact-mix wrench:2,spread:1,random:1 --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 --disturb-frac 0.2 \
+#     --reselect-s 3,6 --random-start 0.5 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 --reward rmin \
+#     --turn-frac 0.3 --init-from logs/keep/marl2/hvB_aa_s0/model_13500.pt" sbatch -p mit_normal_gpu -t 06:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2
