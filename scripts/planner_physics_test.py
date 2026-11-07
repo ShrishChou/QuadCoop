@@ -50,9 +50,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import shutil
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -84,8 +86,12 @@ def main() -> int:
                     help="object friction: the middle of the training range for every env (paired cases see the "
                          "same object), or randomised as in training")
     ap.add_argument("--settle", type=float, default=0.3, help="s at rest before pushing")
-    ap.add_argument("--max-envs", type=int, default=4096, help="envs per simulation batch")
+    ap.add_argument("--max-envs", type=int, default=1024,
+                    help="envs per simulation batch; each batch runs in its own process so GPU memory is freed "
+                         "(4096 ran out of memory on an L40S in collision detection)")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--fresh", action="store_true", help="redo batches already finished by an earlier run")
+    ap.add_argument("--_batch", default="", help=argparse.SUPPRESS)  # internal: run one batch file, write its rows
     a = ap.parse_args()
 
     from train_coop2 import resolve_models, set_env
@@ -105,6 +111,14 @@ def main() -> int:
     from quadcoop.stage2.shapes import OBJ_NAMES2, SHAPE_NAMES2, SHAPES2, kinds_tensor, nominal_parts
 
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+    if a._batch:  # child process: one batch of cases
+        job = json.loads(Path(a._batch).read_text())
+        out = run_chunk([tuple(c) for c in job["cases"]], job["mass"], a, device, None, torch, ManagerBasedRlEnv,
+                        make_coop2_env_cfg, wrap, NOMINAL_MASS, m2, OBJ_NAMES2, SHAPE_NAMES2, FRICTION_RANGE)
+        tmp = Path(job["rows"]).with_suffix(".tmp")
+        tmp.write_text(json.dumps(out))
+        tmp.replace(job["rows"])  # appears only when complete
+        return 0
     objects = list(SHAPE_NAMES2) if a.objects == "all" else [o.strip() for o in a.objects.split(",")]
     bad = [o for o in objects if o not in SHAPE_NAMES2]
     if bad:
@@ -144,10 +158,26 @@ def main() -> int:
                     cases += [(o, mo, "single", i, -1, fm) for i in range(len(cands[o]))]
                     if a.pairs == "all":
                         cases += [(o, mo, "pair", i, j, fm) for i, j in usable[o]]
-        for c0 in range(0, len(cases), a.max_envs):
+        # each batch in its own process (GPU memory fully freed between batches); a finished batch's rows are
+        # kept in logs/evals/<name>/batches/, so a re-run after a crash or time-out resumes where it stopped
+        bdir = out_logs / "batches"
+        bdir.mkdir(exist_ok=True)
+        for b, c0 in enumerate(range(0, len(cases), a.max_envs)):
             chunk = cases[c0:c0 + a.max_envs]
-            rows += run_chunk(chunk, mass, a, device, objects, torch, ManagerBasedRlEnv, make_coop2_env_cfg, wrap,
-                              NOMINAL_MASS, m2, OBJ_NAMES2, SHAPE_NAMES2, FRICTION_RANGE)
+            h = hashlib.sha1(json.dumps([mass, chunk, a.duration, a.measure_from, a.target_speed, a.friction,
+                                         a.settle]).encode()).hexdigest()[:8]
+            tag = f"m{mass:g}_b{b}_{h}"  # the hash: a batch is reused only for exactly the same cases and settings
+            rpath, jpath = bdir / f"{tag}.rows.json", bdir / f"{tag}.cases.json"
+            if rpath.exists() and not a.fresh:
+                print(f"[{mass:g} kg] batch {b}: done earlier, reusing {rpath.name}", flush=True)
+            else:
+                jpath.write_text(json.dumps({"mass": mass, "cases": chunk, "rows": str(rpath)}))
+                argv = [x for x in sys.argv[1:]]
+                r = subprocess.run([sys.executable, str(Path(__file__).resolve()), *argv, "--_batch", str(jpath)])
+                if r.returncode != 0 or not rpath.exists():
+                    raise SystemExit(f"batch {tag} failed (exit {r.returncode}); finished batches are kept - "
+                                     f"re-run the same command to resume, or lower --max-envs")
+            rows += json.loads(rpath.read_text())
             print(f"[{mass:g} kg] {min(c0 + a.max_envs, len(cases))}/{len(cases)} cases ({time.time() - t_start:.0f} s)",
                   flush=True)
 
