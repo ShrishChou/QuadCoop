@@ -139,7 +139,7 @@ def walker_history(robot_name: str) -> int:
     return int(float(os.environ.get(f"QUADCOOP_WALKER_HISTORY_{robot_name.upper()}", "0")))
 
 
-REWARD_SETS = ("r3", "r4", "r5", "r7", "r8")
+REWARD_SETS = ("r3", "r4", "r5", "r7", "r8", "rmin")
 GOAL_ERROR_COST = 0.25  # r7: per second at the start error (distance fraction 1 + heading fraction)
 
 
@@ -153,7 +153,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        bump_cost: float = 1.0, disturb_frac: float = 0.0, push_sensors: bool = False,
                        push_cmd: bool = False, wrench: bool = False, walk_cost: float = 0.3,
                        reselect_min_dist: float = 0.15, expert: bool = False, exec_v2: bool = False,
-                       hold_rand: float = 0.0, hold_cost_w: float = 1.0) -> ManagerBasedRlEnvCfg:
+                       hold_rand: float = 0.0, hold_cost_w: float = 1.0, credit_press: float = 0.0,
+                       work_w: float = 3.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -234,6 +235,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
     assert not exec_v2 or push_cmd, "exec_v2 builds on push_cmd (Stage 4e)"
+    assert reward_set != "rmin" or (push_cmd and contacts and off_contact == "soft"), "rmin builds on Stage 4e (push_cmd)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
     if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
@@ -265,7 +267,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     cfg.commands["goal"] = mdp.CoopPush2CommandCfg(
         variant=variant, reach=tuple(SPECS[a].half_length for a in AGENTS), robot_reach=SPECS[AGENTS[0]].half_length,
         map_hz=float(os.environ.get("QUADCOOP_MAP_HZ", "10")), start_level=0, success_mode="terminate",
-        partner_map=partner_map, track_approach=reward_set in ("r5", "r7", "r8"),
+        partner_map=partner_map, track_approach=reward_set in ("r5", "r7", "r8", "rmin"),
         start_mode=start_mode, need_frac=need_frac, need_mass=need_mass,
         contact_mode=contacts, contact_mix=tuple(contact_mix), contact_start_at=contact_start_at,
         drift_dist=drift_dist, drift_heading_deg=drift_heading_deg,
@@ -366,7 +368,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         if soft:  # pulled to its assigned contact instead of to the nearest surface
             rewards[f"contact_approach_{a}"] = R(func=mdp.contact_approach, weight=contact_approach, params={"robot": a})
             rewards[f"off_contact_cost_{a}"] = R(func=mdp.off_contact_cost, weight=-off_contact_cost, params={"robot": a})
-            if guide:
+            if guide and bump_cost > 0:
                 rewards[f"bump_cost_{a}"] = R(func=mdp.bump_cost, weight=-bump_cost, params={"robot": a})
         elif reward_set in ("r5", "r7", "r8"):
             rewards[f"approach_{a}"] = R(func=mdp.approach, weight=2.0, params={"robot": a})
@@ -379,7 +381,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         if reward_set == "r8":
             rewards[f"work_credit_{a}"] = R(func=mdp.work_credit, weight=3.0, params={"robot": a})
         elif reward_set == "r7" and push_cmd:
-            rewards[f"motion_credit_{a}"] = R(func=mdp.motion_credit, weight=1.0, params={"robot": a})
+            rewards[f"motion_credit_{a}"] = R(func=mdp.motion_credit, weight=1.0,
+                                              params={"robot": a, **({"press_force": credit_press} if credit_press > 0 else {})})
             rewards[f"walk_cost_{a}"] = R(func=mdp.walk_cost, weight=-walk_cost, params={"robot": a})
             if exec_v2:  # Phase 2: told to hold -> stay on the contact without pushing or walking
                 rewards[f"hold_cost_{a}"] = R(func=mdp.hold_cost, weight=-hold_cost_w, params={"robot": a})
@@ -393,6 +396,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         if contacts and not soft:  # leaving its contact costs the robot that left as much as its own fall
             rewards[f"own_off_contact_{a}"] = R(func=mdp.own_off_contact, weight=-0.2 * BONUS / step_dt,
                                                 params={"robot": a})
+    if reward_set == "rmin":
+        # minimal reward (hovering test, run B): progress (two potential-based terms), success, failure, the
+        # robot's own fall, the potential-based pull to its assigned contact, and its own pushing work
+        keep = ["pose_progress", "precise_progress", "goal_bonus", "terminated"] + \
+               [f"{x}_{a}" for a in AGENTS for x in ("own_fall", "contact_approach")]
+        rewards = {k: rewards[k] for k in keep}
+        for a in AGENTS:
+            rewards[f"contact_work_{a}"] = R(func=mdp.contact_work, weight=work_w, params={"robot": a})
     cfg.rewards = rewards
 
     # -- terminations ----------------------------------------------------------------------------------

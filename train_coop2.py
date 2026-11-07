@@ -200,6 +200,10 @@ def main() -> int:
     ap.add_argument("--hold-rand", type=float, default=0.3,
                     help="--exec-v2: share of contact arrivals told to hold 0.5-4 s whatever the partner does")
     ap.add_argument("--hold-cost", type=float, default=1.0, help="--exec-v2: hold_cost weight")
+    ap.add_argument("--credit-press", type=float, default=0.0,
+                    help="--push-cmd, r7: motion_credit only while the robot touches the object with at least this many N "
+                         "(0 = a front within 8 cm is enough, as Stage 4e)")
+    ap.add_argument("--work-w", type=float, default=3.0, help="--reward rmin: contact_work weight")
     ap.add_argument("--reselect-min-dist", type=float, default=0.15,
                     help="no contact re-choice with the object this close to its goal (m); 0 = re-choose anywhere")
     ap.add_argument("--init-from", default=None,
@@ -215,7 +219,7 @@ def main() -> int:
     ap.add_argument("--max-actor-lr", type=float, default=None,
                     help="cap on the adapted actor learning rate; default 3e-4, 1e-3 with --scratch")
     ap.add_argument("--partner-map", action="store_true", help="partner footprint as a 2nd map channel")
-    ap.add_argument("--reward", choices=("r3", "r4", "r5", "r7", "r8"), default="r3",
+    ap.add_argument("--reward", choices=("r3", "r4", "r5", "r7", "r8", "rmin"), default="r3",
                     help="r4: no per-robot behind-the-object term, exponential proximity penalty below 0.6 m; "
                          "r5: r4 + approach reward only for getting closer, team time cost, stronger "
                          "push_along and yaw_progress; r7: outcome-based: goal-error cost per second, "
@@ -252,6 +256,8 @@ def main() -> int:
         raise SystemExit("--push-cmd builds on --guide (Stage 4d)")
     if a.exec_v2 and not a.push_cmd:
         raise SystemExit("--exec-v2 builds on --push-cmd (Stage 4e)")
+    if a.reward == "rmin" and not (a.push_cmd and a.contacts):
+        raise SystemExit("--reward rmin builds on Stage 4e (--contacts --guide --push-cmd)")
     if a.critic_warmup is None:
         a.critic_warmup = 0 if a.scratch else 100
     if a.actor_lr is None:
@@ -274,6 +280,10 @@ def main() -> int:
             soft_txt += f", PUSH DIRECTIONS (walk cost {a.walk_cost:g}/s)"
         if a.exec_v2:
             soft_txt += f", EXECUTOR V2 (random holds {a.hold_rand:g}, hold cost {a.hold_cost:g}/s)"
+        if a.credit_press > 0:
+            soft_txt += f", MOTION CREDIT ONLY WHILE PRESSING ({a.credit_press:g} N+)"
+        if a.reward == "rmin":
+            soft_txt += f", MINIMAL REWARD (progress, success, failure, falls, contact approach, contact work x{a.work_w:g})"
         if a.reselect_min_dist != 0.15:
             soft_txt += f", re-choice down to {a.reselect_min_dist:g} m from the goal"
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
@@ -308,7 +318,8 @@ def main() -> int:
                                  off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
                                  guide=a.guide, bump_cost=a.bump_cost, disturb_frac=a.disturb_frac,
                                  push_cmd=a.push_cmd, walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
-                                 exec_v2=a.exec_v2, hold_rand=a.hold_rand, hold_cost_w=a.hold_cost)
+                                 exec_v2=a.exec_v2, hold_rand=a.hold_rand, hold_cost_w=a.hold_cost,
+                                 credit_press=a.credit_press, work_w=a.work_w)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -329,6 +340,7 @@ def main() -> int:
                   disturb_frac=a.disturb_frac, init_from=a.init_from or "", push_cmd=a.push_cmd,
                   walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                   exec_v2=a.exec_v2, hold_rand=a.hold_rand if a.exec_v2 else 0.0, hold_cost_w=a.hold_cost,
+                  credit_press=a.credit_press, work_w=a.work_w,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])

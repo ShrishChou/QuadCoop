@@ -43,6 +43,16 @@
 #     sbatch -p mit_preemptable --requeue -t 0-04:00:00 slurm/train_coop2.sbatch
 #   ALGO=mappo SEED=0 RUN_NAME=ex2_aa_s0 ITERS=20000 EXTRA="<the same>" sbatch -p mit_preemptable --requeue \
 #     -t 2-00:00:00 slurm/train_coop2.sbatch
+#   Hovering test, both from Stage 4e's model, 1500 more iterations each (about 4-5 h; mit_normal_gpu, 6 h):
+#   A: Stage 4e's reward without bump_cost, motion credit only while pressing 30 N or more;
+#   B: minimal reward (progress x2, success, failure, falls, contact approach, contact work):
+#   S4E="--pair anymal --partner-map --contacts --guide --push-cmd --contact-mix wrench:2,spread:1,random:1 \
+#     --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 --disturb-frac 0.2 --reselect-s 3,6 --random-start 0.5 \
+#     --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 --init-from logs/marl2/s4e_aa_s0/model_12000.pt"
+#   ALGO=mappo SEED=0 RUN_NAME=hvA_aa_s0 ITERS=13500 EXTRA="$S4E --reward r7 --bump-cost 0 --credit-press 30" \
+#     sbatch -p mit_normal_gpu -t 06:00:00 slurm/train_coop2.sbatch
+#   ALGO=mappo SEED=0 RUN_NAME=hvB_aa_s0 ITERS=13500 EXTRA="$S4E --reward rmin" \
+#     sbatch -p mit_normal_gpu -t 06:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2
