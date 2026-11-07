@@ -81,7 +81,14 @@ SCENARIOS = (  # as scripts/eval_coop2.py
     ("C_backright", 3.0, -135.0, -60.0),
     ("D_far_turn", 5.0, 0.0, 90.0),
 )
+TURN_SCENARIOS = (  # --tasks turn (test 3): the object already at the goal position, its heading off by this much
+    ("T15", 0.0, 0.0, 15.0),
+    ("T30", 0.0, 0.0, -30.0),
+    ("T60", 0.0, 0.0, 60.0),
+    ("T90", 0.0, 0.0, -90.0),
+)
 RULES = ("centre", "adjacent", "spread")
+SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the force split)
 
 
 def main() -> int:
@@ -130,9 +137,22 @@ def main() -> int:
                          "team-ready wait), as Stage 4e; to tell the waiting rules from the push itself")
     ap.add_argument("--trace", type=int, default=0,
                     help="1 = per-step traces (10 Hz) of the rep-0 episodes in logs/evals/<prefix>-<rule>/pair/trace_<mass>kg.csv.gz")
+    ap.add_argument("--tasks", choices=("standard", "turn"), default="standard",
+                    help="standard: scripts/eval_coop2.py's 4 scenarios; turn: turn in place (the object starts at the goal "
+                         "position with its heading off by 15 / 30 / 60 / 90 deg, capped by the object's symmetry)")
+    ap.add_argument("--set", default="",
+                    help="planner settings to override, comma list key=value on the goal command's config, e.g. "
+                         "'finish_dist=0' or 'robot_push_force=320'")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
+    global SCENARIOS
+    if a.tasks == "turn":
+        SCENARIOS = TURN_SCENARIOS
+    overrides = {}
+    for kv in [x for x in a.set.split(",") if x.strip()]:
+        k_, v_ = kv.split("=", 1)
+        overrides[k_.strip()] = float(v_)
 
     from train_coop2 import resolve_models, set_env
 
@@ -250,6 +270,12 @@ def main() -> int:
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
+        for k_, v_ in overrides.items():
+            gc = cfg.commands["goal"]
+            if not hasattr(gc, k_):
+                raise SystemExit(f"--set: the goal command has no setting '{k_}'")
+            setattr(gc, k_, type(getattr(gc, k_))(v_))
+            print(f"[set] goal.{k_} = {getattr(gc, k_)}", flush=True)
         alpha = 0.5 * math.log(mass / NOMINAL_MASS)
         for name in OBJ_NAMES2:
             cfg.events[f"{name}_mass"].params["alpha_range"] = (alpha, alpha)
@@ -442,6 +468,14 @@ def main() -> int:
         FB = 20.0
         fb_all = torch.zeros(n, 51, device=dev)
         fb_still = torch.zeros(n, 51, device=dev)
+        # following the force split (stage4 with push commands): while both robots press their contacts and push
+        # 20 N+ in total along their commanded directions, robot 1's measured share of that push against its
+        # commanded share (seconds, sum of |measured - commanded|, and by commanded-share bin: seconds and sum of
+        # measured share)
+        sh_t = torch.zeros(n, device=dev)
+        sh_err = torch.zeros(n, device=dev)
+        sh_bt = torch.zeros(n, SHARE_BINS, device=dev)
+        sh_bm = torch.zeros(n, SHARE_BINS, device=dev)
         # executor v2: time every robot of the push group is told to hold, the object's speed then (sum, and
         # time above 2 cm/s), each robot's contact force while told to hold, and the delay from team ready to
         # both robots pressing
@@ -604,6 +638,19 @@ def main() -> int:
                         tk = pr[k] & base.scene[f"push_{ag}"].data.found.view(n, -1).any(-1)  # pressing and in contact
                         fb_all.scatter_add_(1, bk, tk.float().view(-1, 1))
                         fb_still.scatter_add_(1, bk, (tk & still).float().view(-1, 1))
+                    if hasattr(g, "push_share"):
+                        fa = [(cm.object_force_from(base, AGENTS[k]) * g.push_dir_world(k)).sum(-1).clamp(min=0.0)
+                              for k in range(2)]
+                        tot_c = g.push_share[:, 0] + g.push_share[:, 1]
+                        ok_s = pr[0] & pr[1] & (fa[0] + fa[1] > 20.0) & (tot_c > 1e-6)
+                        s_cmd = g.push_share[:, 0] / tot_c.clamp(min=1e-6)
+                        s_meas = fa[0] / (fa[0] + fa[1]).clamp(min=1e-6)
+                        w_s = ok_s.float() * dt
+                        sh_t += w_s
+                        sh_err += w_s * (s_meas - s_cmd).abs()
+                        bi = (s_cmd * SHARE_BINS).long().clamp(0, SHARE_BINS - 1).view(-1, 1)
+                        sh_bt.scatter_add_(1, bi, w_s.view(-1, 1))
+                        sh_bm.scatter_add_(1, bi, (w_s * s_meas).view(-1, 1))
                     solo_far += sum((pr[k] & far[1 - k]).float() for k in range(2)) * dt
                     press_any += (pr[0] | pr[1]).float()
                     press_both += (pr[0] & pr[1]).float()
@@ -651,10 +698,15 @@ def main() -> int:
                         cols = [torch.full_like(hd, t), bp[:, 0], bp[:, 1], torch.rad2deg(hd), d[ti], torch.rad2deg(ea[ti]),
                                 dgi["pe"][ti], torch.linalg.norm(dgi["v_obj"][ti], dim=-1), dgi["w_obj"][ti],
                                 live[ti].float(), (dgi["go"][ti].float() if dgi["go"] is not None else torch.full_like(hd, -1))]
+                        has_sh = hasattr(g, "push_share") and getattr(g.cfg, "wrench", False)
+                        cols += [torch.linalg.norm(g.c_vdes[ti], dim=-1) if has_sh else torch.full_like(hd, -1),
+                                 torch.rad2deg(g.c_wdes[ti]) if has_sh else torch.full_like(hd, -1),
+                                 g.c_resid[ti] if has_sh else torch.full_like(hd, -1)]
                         for k in range(2):
                             cols += [dgi["cmd"][ti, k].float(), dgi["on"][ti, k].float(), dgi["engaged"][ti, k].float(),
                                      dgi["cdist"][ti, k], torch.rad2deg(dgi["herr"][ti, k]), dgi["touch"][ti, k].float(),
-                                     fm[:, k], cosf[:, k], dgi["base_speed"][ti, k]]
+                                     fm[:, k], cosf[:, k], dgi["base_speed"][ti, k],
+                                     g.push_share[ti, k] if has_sh else torch.full_like(hd, -1), fm[:, k] * cosf[:, k]]
                         tr_rows.append(torch.stack(cols, -1).cpu().numpy())
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
@@ -685,9 +737,10 @@ def main() -> int:
             import gzip
             arr = np.stack(tr_rows, 1)  # (episodes, samples, fields)
             head = ["t", "obj_x", "obj_y", "obj_yaw_deg", "goal_dist", "goal_yaw_err_deg", "pose_err", "obj_speed", "obj_yaw_rate",
-                    "live", "team_pushing"] + [f"{x}_{ag}" for ag in AGENTS for x in
-                                               ("cmd", "on", "engaged", "contact_dist", "heading_err_deg", "touching", "force",
-                                                "force_align", "base_speed")]
+                    "live", "team_pushing", "want_speed", "want_yaw_rate_deg", "pair_residual"] + [
+                        f"{x}_{ag}" for ag in AGENTS for x in
+                        ("cmd", "on", "engaged", "contact_dist", "heading_err_deg", "touching", "force",
+                         "force_align", "base_speed", "share_cmd", "force_along_cmd")]
             for rule_ in dict.fromkeys(cases[j][0] for j in tr_ids):
                 pth = ROOT / "logs" / "evals" / f"{prefix}-{rule_}" / "pair" / f"trace_{mass:g}kg.csv.gz"
                 pth.parent.mkdir(parents=True, exist_ok=True)
@@ -756,6 +809,11 @@ def main() -> int:
                     "ready_to_push_s": round(float(tr_sum[j] / tr_n[j]), 2) if float(tr_n[j]) > 0 else ""}
                    if stage4 and getattr(g.cfg, "exec_v2", False) else {}),
                 "push_force_p90": hist_q(fb_all[j], 0.9) if stage4 else "",
+                "share_s": round(float(sh_t[j]), 2) if stage4 else "",
+                "share_err": round(float(sh_err[j] / sh_t[j]), 3) if stage4 and float(sh_t[j]) > 0 else "",
+                **({f"share_b{b_}_s": round(float(sh_bt[j, b_]), 3) for b_ in range(SHARE_BINS)} if stage4 else {}),
+                **({f"share_b{b_}_m": round(float(sh_bm[j, b_] / sh_bt[j, b_]), 3) if float(sh_bt[j, b_]) > 0 else ""
+                    for b_ in range(SHARE_BINS)} if stage4 else {}),
                 "push_force_still_p90": hist_q(fb_still[j], 0.9) if stage4 else "",
                 "needs_more_s": round(float(g.c_need_more_t[j]), 1) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "hold_share": (round(float(hold_steps[j] / on_any_steps[j]), 3) if float(on_any_steps[j]) > 0 else "")
@@ -995,7 +1053,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                                                        ("checkpoint", a.checkpoint), ("reselect", a.reselect_s), ("cmd_mode", getattr(a, "cmd_mode", "planner")),
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
-            old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist
+            old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
+            old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "")
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
         old = []
@@ -1060,10 +1119,15 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             + ("" if a.executor == "script" else (f", back to the script beyond {a.return_dist:g} m)" if a.return_dist > 0 else ", never back)"))
             + f", rule '{rule}' ({'one robot' if solo else 'two robots'}), pair {a.pair}") + \
            (f", re-chosen every {a.reassign_s:g} s" if a.reassign_s > 0 else "")
+    if getattr(a, "tasks", "standard") == "turn":
+        what += "; TASKS: turn in place (object at the goal position, heading off 15/30/60/90 deg, capped by symmetry)"
+    if getattr(a, "set", ""):
+        what += f"; planner settings changed: {a.set}"
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
+               "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
                "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
@@ -1156,6 +1220,27 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             s = summary["by_mass"][f"{m:g}"]
             md.append(f"| {m:g} kg | {f0(s.get('push_force_med'))} | {f0(s.get('push_force_p90'))} | "
                       f"{f0(s.get('push_force_still_p90'))} |")
+        if any(r.get("share_s") not in ("", None) for r in rows):
+            md += ["", "## following the force split (while both robots press their contacts: robot 1's measured share of the "
+                   "pair's push along the commanded directions, against its commanded share; pooled over episodes. A robot "
+                   "that follows its share tracks the commanded column; 0.5 everywhere = both push alike whatever they are told)", "",
+                   "| mass | seconds | mean abs error | " + " | ".join(
+                       f"told {b_ / SHARE_BINS:.1f}-{(b_ + 1) / SHARE_BINS:.1f}: measured (s)" for b_ in range(SHARE_BINS)) + " |",
+                   "|---|---|---|" + "---|" * SHARE_BINS]
+            share_sum = {}
+            for m in masses:
+                sel = [r for r in rows if r["mass"] == m and r.get("share_s") not in ("", None)]
+                tt = sum(r["share_s"] for r in sel)
+                err = sum(r["share_err"] * r["share_s"] for r in sel if r["share_err"] != "") / tt if tt > 0 else None
+                cells, bins = [], []
+                for b_ in range(SHARE_BINS):
+                    bt = sum(r[f"share_b{b_}_s"] for r in sel)
+                    bm_ = sum(r[f"share_b{b_}_m"] * r[f"share_b{b_}_s"] for r in sel if r[f"share_b{b_}_m"] != "")
+                    cells.append(f"{bm_ / bt:.2f} ({bt:.0f})" if bt > 0 else "-")
+                    bins.append({"seconds": bt, "measured": bm_ / bt if bt > 0 else None})
+                share_sum[f"{m:g}"] = {"seconds": tt, "mean_abs_error": err, "bins": bins}
+                md.append(f"| {m:g} kg | {tt:.0f} | {'' if err is None else f'{err:.2f}'} | " + " | ".join(cells) + " |")
+            summary["share_following"] = share_sum
         if any(summary["by_mass"][f"{m:g}"].get("all_hold_s") is not None for m in masses):
             md += ["", "## executor v2: holding and the team-ready barrier (time every robot of the push group is told to "
                    "hold; the object's mean speed then and the share of it above 2 cm/s (gate: under 2 cm/s); each robot's "
@@ -1179,6 +1264,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                                              for m in masses) + " |")
     if any(_get(summary["by_mass"][f"{m:g}"], "dg_push") is not None for m in masses):
         md += _diag_md(summary, masses, objects)
+    (out / "summary.json").write_text(json.dumps(summary, indent=1))  # again: with the sections added above
     (out / "summary.md").write_text("\n".join(md) + "\n")
     stats.mkdir(parents=True, exist_ok=True)
     for f in ("summary.md", "summary.json", "episodes.csv"):

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Test 1, the planner's force model against the physics (scripts/planner_physics_test.py): no robots,
 # no learning; the planner's pushes applied as forces at the contacts of every object x mass x motion.
-# Stats -> evals/<NAME>/ (committed), every case -> logs/evals/<NAME>/cases.csv.
+# Stats -> evals/<NAME>/ (committed), every case -> logs/evals/<NAME>/cases.csv. Runs in batches of 1024
+# envs, each in its own process; if the job dies, resubmitting the same command resumes from the last batch.
 #
 #   sbatch slurm/planner_physics_test.sbatch                                     # 250 N, 20-80 kg -> evals/pp-test
 #   NAME=pp-fsweep ARGS="--fmax 150,250,350" sbatch slurm/planner_physics_test.sbatch   # how much the force limit matters
