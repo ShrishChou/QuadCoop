@@ -133,6 +133,8 @@ class MarlCfg:
     exec_v2: bool = False  # env option (recorded): Phase 2 executor (phase + team ready inputs, hold_cost)
     hold_rand: float = 0.0  # env option (recorded): share of contact arrivals given a random hold (exec_v2)
     hold_cost_w: float = 1.0  # env option (recorded): hold_cost weight (exec_v2)
+    credit_press: float = 0.0  # env option (recorded): motion_credit needs this much contact force (0 = proximity)
+    work_w: float = 3.0  # env option (recorded): contact_work weight (reward rmin)
     reselect_min_dist: float = 0.15  # env option (recorded): no contact re-choice this close to the goal (m)
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations

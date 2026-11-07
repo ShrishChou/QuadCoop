@@ -1817,6 +1817,23 @@ def push_obs(env, robot: str) -> torch.Tensor:
     return torch.stack([torch.cos(ang), torch.sin(ang), g.push_share[:, k], g.c_resid], -1)
 
 
+def contact_work(env, robot: str, f_ref: float = 200.0, max_ratio: float = 2.0, max_speed: float = 1.0) -> torch.Tensor:
+    """rmin, per robot: this robot's own pushing work toward the motion the planner wants, per second,
+    normalised: (its contact force on the object along its commanded push direction / f_ref, 0..
+    max_ratio) x (the object's motion along the wanted motion, m/s with turning as rho_g x yaw rate,
+    0..max_speed). 0 without contact, 0 if the object does not move the wanted way: only a push that
+    helps pays, and two robots share it by how hard each pushes (a difference-reward approximation,
+    as r8's work_credit, but along the commanded directions). f_ref = 200 N ~ one ANYmal's push."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    rg2 = g.c_rg.square()
+    norm = torch.sqrt(g.c_vdes.square().sum(-1) + rg2 * g.c_wdes.square())
+    proj = ((g.box_vel()[:, :2] * g.c_vdes).sum(-1) + rg2 * g.box_ang_vel()[:, 2] * g.c_wdes) / norm.clamp(min=1e-6)
+    f = (object_force_from(env, robot) * g.push_dir_world(k)).sum(-1)
+    push = (f / f_ref).clamp(0.0, max_ratio)
+    return torch.where(norm > 1e-3, push * proj.clamp(0.0, max_speed), torch.zeros_like(proj))
+
+
 def cmd_obs(env, robot: str) -> torch.Tensor:
     """Phase 2 executor (4): this robot's phase command one-hot (walk, hold, push) and team ready."""
     g = _g(env)
@@ -1842,17 +1859,22 @@ def pose_progress(env, max_rate: float = 1.0) -> torch.Tensor:
     return ((g.c_prev_pose - g.pose_error()) / env.step_dt).clamp(-max_rate, max_rate)
 
 
-def motion_credit(env, robot: str, contact: float = 0.08, max_speed: float = 1.0) -> torch.Tensor:
+def motion_credit(env, robot: str, contact: float = 0.08, max_speed: float = 1.0, press_force: float = 0.0) -> torch.Tensor:
     """Stage 4e, per robot: the object's motion along the motion still wanted (m/s; turning counted
     as rho_g x yaw rate), clipped to 0..max_speed, credited only while this robot's front is on the
-    object (within `contact`) and it is on its contact. Pays for turning as much as for travel and
-    cannot be earned without a push."""
+    object (within `contact`) and it is on its contact. Pays for turning as much as for travel.
+    press_force > 0 (run A of the hovering test): credited only while this robot actually touches
+    the object with at least press_force N (contact sensor); with 0 a front within `contact` is
+    enough, so a robot hovering near the object is paid for its partner's push."""
     g = _g(env)
     k = AGENTS.index(robot)
     rg2 = g.c_rg.square()
     norm = torch.sqrt(g.c_vdes.square().sum(-1) + rg2 * g.c_wdes.square())
     proj = ((g.box_vel()[:, :2] * g.c_vdes).sum(-1) + rg2 * g.box_ang_vel()[:, 2] * g.c_wdes) / norm.clamp(min=1e-6)
     on = (g.surface_distance(robot) < contact) & g.on_contact(k) & (norm > 1e-3)
+    if press_force > 0:
+        touching = env.scene[f"push_{robot}"].data.found.view(env.num_envs, -1).any(-1)
+        on = on & touching & (torch.linalg.norm(object_force_from(env, robot), dim=-1) >= press_force)
     if g.cfg.exec_v2:  # Phase 2: paid only when told to push
         on = on & (g.c_cmd[:, k] == 2)
     return torch.where(on, proj.clamp(0.0, max_speed), torch.zeros_like(proj))
