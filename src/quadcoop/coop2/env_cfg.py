@@ -109,7 +109,7 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
 
 
 def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False,
-                 push_cmd: bool = False, exec_v2: bool = False) -> dict:
+                 push_cmd: bool = False, exec_v2: bool = False, effort: bool = False) -> dict:
     """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
     (+ the assigned contacts in contact mode)."""
     def nz(lim):
@@ -131,7 +131,9 @@ def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, gui
         **({"contact": T(func=mdp.contact_obs, params={"robot": name}, noise=nz(0.02))} if contacts else {}),
         **({"guide": T(func=mdp.guide_obs, params={"robot": name}, noise=nz(0.02))} if guide else {}),
         **({"push": T(func=mdp.push_obs, params={"robot": name}, noise=nz(0.02))} if push_cmd else {}),
-        **({"cmd": T(func=mdp.cmd_obs, params={"robot": name})} if exec_v2 else {}),  # last: init_from widens at the end
+        **({"cmd": T(func=mdp.cmd_obs, params={"robot": name})} if exec_v2 else {}),
+        **({"effort": T(func=mdp.effort_obs, params={"robot": name}, noise=nz(0.02))} if effort else {}),
+        # new terms go last: init_from widens at the end
     }
 
 
@@ -154,7 +156,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        push_cmd: bool = False, wrench: bool = False, walk_cost: float = 0.3,
                        reselect_min_dist: float = 0.15, expert: bool = False, exec_v2: bool = False,
                        hold_rand: float = 0.0, hold_cost_w: float = 1.0, credit_press: float = 0.0,
-                       work_w: float = 3.0) -> ManagerBasedRlEnvCfg:
+                       work_w: float = 3.0, effort: bool = False, over_push_w: float = 1.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -200,6 +202,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     for shortening the route, bump_cost per second for touching the object off the contact;
     disturb_frac: share of episodes with scripted object motion (training; an eval may set it too).
     push_sensors: add the robot-object contact sensors even when no reward uses them (evals).
+    effort (force_track, needs push_cmd and rmin): each robot also observes its absolute push target, the
+    contact force it applies and the object motion the planner wants (8 inputs, last); rmin's contact_work
+    becomes effort_work (paid up to the target only), plus over_push (weight over_push_w) past 1.5 x target.
     push_cmd (Stage 4e, needs guide): a push direction per robot recomputed every step from the
     remaining error (4 more inputs: direction, share, pair residual), on-contact judged against
     it, pose_progress (distance + radius of gyration x angle) replaces box / yaw progress,
@@ -236,6 +241,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
     assert not exec_v2 or push_cmd, "exec_v2 builds on push_cmd (Stage 4e)"
     assert reward_set != "rmin" or (push_cmd and contacts and off_contact == "soft"), "rmin builds on Stage 4e (push_cmd)"
+    assert not effort or (push_cmd and contacts and reward_set == "rmin"), \
+        "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
     if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
@@ -277,17 +284,19 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         wrench=wrench, push_cmd=push_cmd and contacts, reselect_min_dist=reselect_min_dist,
         expert=expert, turn_full_dist=1.0 if expert else 0.0, finish_dist=0.5 if expert else 0.0,
         exec_v2=exec_v2 and push_cmd and contacts, hold_rand=hold_rand if exec_v2 else 0.0,
-        tol_levels=tuple(tuple(x) for x in tol_levels))
+        effort=effort and push_cmd and contacts, tol_levels=tuple(tuple(x) for x in tol_levels))
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
     obs = {}
     for a, o in PARTNER.items():
         obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide,
-                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts),
+                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
+                                                                   effort=effort),
                                                 concatenate_terms=True, enable_corruption=not play)
         obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide,
-                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts),
+                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
+                                                                   effort=effort),
                                                 concatenate_terms=True, enable_corruption=False)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
@@ -403,7 +412,12 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                [f"{x}_{a}" for a in AGENTS for x in ("own_fall", "contact_approach")]
         rewards = {k: rewards[k] for k in keep}
         for a in AGENTS:
-            rewards[f"contact_work_{a}"] = R(func=mdp.contact_work, weight=work_w, params={"robot": a})
+            if effort:  # force_track: work capped at the push target, and a cost for pushing far past it
+                rewards[f"effort_work_{a}"] = R(func=mdp.effort_work, weight=work_w, params={"robot": a})
+                if over_push_w > 0:
+                    rewards[f"over_push_{a}"] = R(func=mdp.over_push, weight=-over_push_w, params={"robot": a})
+            else:
+                rewards[f"contact_work_{a}"] = R(func=mdp.contact_work, weight=work_w, params={"robot": a})
     cfg.rewards = rewards
 
     # -- terminations ----------------------------------------------------------------------------------

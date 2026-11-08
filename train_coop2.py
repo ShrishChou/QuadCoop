@@ -156,6 +156,12 @@ def main() -> int:
                          "full beyond 3 m (partner-aware anchor: stay 2b alone, free to change together)")
     ap.add_argument("--start-around", action="store_true",
                     help="robots start anywhere around the object (>= 60 deg apart) instead of behind it")
+    ap.add_argument("--effort", action="store_true",
+                    help="force_track: each robot observes an absolute push target (its share of what slides the object) "
+                         "and the contact force it applies; the minimal reward's contact work is paid only up to the "
+                         "target (needs --reward rmin --push-cmd --contacts)")
+    ap.add_argument("--over-push-w", type=float, default=1.0,
+                    help="--effort: weight of the cost for pushing past 1.5 x the push target (per second, per robot)")
     ap.add_argument("--turn-frac", type=float, default=0.0,
                     help="turn practice: share of training episodes that are a turn in place (the goal within 0.3 m, "
                          "heading off 15-90 deg either way, capped by symmetry); evaluations unchanged")
@@ -259,6 +265,8 @@ def main() -> int:
         raise SystemExit("--push-cmd builds on --guide (Stage 4d)")
     if a.exec_v2 and not a.push_cmd:
         raise SystemExit("--exec-v2 builds on --push-cmd (Stage 4e)")
+    if a.effort and a.reward != "rmin":
+        raise SystemExit("--effort needs --reward rmin (with --push-cmd --contacts)")
     if a.reward == "rmin" and not (a.push_cmd and a.contacts):
         raise SystemExit("--reward rmin builds on Stage 4e (--contacts --guide --push-cmd)")
     if a.critic_warmup is None:
@@ -289,6 +297,8 @@ def main() -> int:
             soft_txt += f", MINIMAL REWARD (progress, success, failure, falls, contact approach, contact work x{a.work_w:g})"
         if a.turn_frac > 0:
             soft_txt += f", TURN PRACTICE ({a.turn_frac:g} of episodes turn in place)"
+        if a.effort:
+            soft_txt += f", PUSH EFFORT (absolute push targets + force feedback; work paid up to the target, over-push cost {a.over_push_w:g})"
         if a.reselect_min_dist != 0.15:
             soft_txt += f", re-choice down to {a.reselect_min_dist:g} m from the goal"
         contact_txt = (f"CONTACTS (mix {contact_mix}, start at {a.contact_start_at:g}, on contact = {a.drift_dist:g} m / "
@@ -324,7 +334,8 @@ def main() -> int:
                                  guide=a.guide, bump_cost=a.bump_cost, disturb_frac=a.disturb_frac,
                                  push_cmd=a.push_cmd, walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                                  exec_v2=a.exec_v2, hold_rand=a.hold_rand, hold_cost_w=a.hold_cost,
-                                 credit_press=a.credit_press, work_w=a.work_w)
+                                 credit_press=a.credit_press, work_w=a.work_w, effort=a.effort,
+                                 over_push_w=a.over_push_w)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -346,7 +357,8 @@ def main() -> int:
                   disturb_frac=a.disturb_frac, init_from=a.init_from or "", push_cmd=a.push_cmd,
                   walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                   exec_v2=a.exec_v2, hold_rand=a.hold_rand if a.exec_v2 else 0.0, hold_cost_w=a.hold_cost,
-                  credit_press=a.credit_press, work_w=a.work_w, turn_frac=a.turn_frac,
+                  credit_press=a.credit_press, work_w=a.work_w, turn_frac=a.turn_frac, effort=a.effort,
+                  over_push_w=a.over_push_w if a.effort else 0.0,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])

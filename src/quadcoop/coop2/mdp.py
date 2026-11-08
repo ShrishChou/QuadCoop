@@ -1488,7 +1488,7 @@ class CoopPush2Command(Push2Command):
             gdir_now = torch.atan2((goal_xy - obj_xy)[:, 1], (goal_xy - obj_xy)[:, 0])
             v_o = wz = None
             e0 = fold(wrap(goal_yaw - obj_heading), self.sym[shape])
-            if c.expert:  # (before the pick: the expert's split knows the mass)
+            if c.expert or c.effort:  # (before the pick: the expert's split and the push targets know the mass)
                 body = torch.tensor([o.indexing.body_ids[0] for o in self.objs], device=dev)[shape]
                 self.c_mass[env_ids] = self._env.sim.model.body_mass[env_ids, body]
             if c.wrench:
@@ -1741,6 +1741,10 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     finish_resid: float = 0.5  # ... stalls not penalised, the pair changed only if its residual is above this
     turn_full_dist: float = 0.0  # > 0: beyond this distance (m) the wanted turn shrinks as 1 / distance
     robot_push_force: float = 250.0  # N one robot can push with (assumed; to be measured): heavier -> push together
+    # push effort (force_track): each robot gets an absolute push target - its share of what slides the object,
+    # effort_margin x mu m g, at most robot_push_force - and feedback of the force it actually applies
+    effort: bool = False
+    effort_margin: float = 1.2
     solo_wait_s: float = 2.0  # push alone only if the partner is further than this from its contact
     expert_dt: float = 0.1  # s between expert updates (priorities, arrivals, go / hold, no-progress windows)
     # success-tolerance curriculum: ((pos tol m, yaw tol deg), ...) loose -> fine; () = fixed
@@ -1852,6 +1856,60 @@ def contact_work(env, robot: str, f_ref: float = 200.0, max_ratio: float = 2.0, 
     f = (object_force_from(env, robot) * g.push_dir_world(k)).sum(-1)
     push = (f / f_ref).clamp(0.0, max_ratio)
     return torch.where(norm > 1e-3, push * proj.clamp(0.0, max_speed), torch.zeros_like(proj))
+
+
+def push_effort(env, k: int) -> torch.Tensor:
+    """force_track: robot k's push target (N) - its share of the pair's push times what slides the object
+    (effort_margin x mu m g), at most robot_push_force; 0 with no push wanted."""
+    g = _g(env)
+    sh = g.push_share
+    tot = sh.sum(-1)
+    share = sh[:, k] / tot.clamp(min=1e-6)
+    need = g.cfg.effort_margin * g.c_mu * g.c_mass * 9.81
+    return torch.where(tot > 1e-6, (share * need).clamp(max=g.cfg.robot_push_force), torch.zeros_like(tot))
+
+
+def effort_obs(env, robot: str, f_ref: float = 200.0) -> torch.Tensor:
+    """force_track, this robot's frame (8): the contact force it applies to the object (x, y / f_ref), that
+    force along its commanded push direction (/ f_ref), touching (> 5 N), its push target (/ f_ref), and the
+    object motion the planner wants (velocity x, y / push_vmax, yaw rate / push_wmax)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    yaw = yaw_of(env.scene[robot].data.root_link_quat_w)
+    c, s = torch.cos(yaw), torch.sin(yaw)
+    to_robot = lambda v: torch.stack([c * v[:, 0] + s * v[:, 1], -s * v[:, 0] + c * v[:, 1]], -1)  # noqa: E731
+    f = object_force_from(env, robot)
+    along = (f * g.push_dir_world(k)).sum(-1)
+    touch = (torch.linalg.norm(f, dim=-1) > 5.0).float()
+    fr = (to_robot(f) / f_ref).clamp(-2.0, 2.0)
+    vd = to_robot(g.c_vdes) / g.cfg.push_vmax
+    wd = (g.c_wdes / g.cfg.push_wmax).unsqueeze(-1)
+    return torch.cat([fr, (along / f_ref).clamp(-1.0, 2.0).unsqueeze(-1), touch.unsqueeze(-1),
+                      (push_effort(env, k) / f_ref).unsqueeze(-1), vd.clamp(-1.5, 1.5), wd.clamp(-1.5, 1.5)], -1)
+
+
+def effort_work(env, robot: str, max_speed: float = 1.0) -> torch.Tensor:
+    """force_track, per robot (replaces contact_work): its push along the commanded direction as a fraction
+    of its push target (0..1: pushing past the target earns nothing more) x the object's motion along the
+    wanted motion (m/s, turning as rho_g x yaw rate). Pressing pays only while the object moves usefully."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    rg2 = g.c_rg.square()
+    norm = torch.sqrt(g.c_vdes.square().sum(-1) + rg2 * g.c_wdes.square())
+    proj = ((g.box_vel()[:, :2] * g.c_vdes).sum(-1) + rg2 * g.box_ang_vel()[:, 2] * g.c_wdes) / norm.clamp(min=1e-6)
+    f = (object_force_from(env, robot) * g.push_dir_world(k)).sum(-1)
+    tgt = push_effort(env, k)
+    frac = torch.where(tgt > 10.0, (f / tgt.clamp(min=10.0)).clamp(0.0, 1.0), torch.zeros_like(f))
+    return torch.where(norm > 1e-3, frac * proj.clamp(0.0, max_speed), torch.zeros_like(proj))
+
+
+def over_push(env, robot: str, over: float = 1.5, f_ref: float = 200.0) -> torch.Tensor:
+    """force_track, per robot, a cost per second: contact force beyond `over` x its push target (/ f_ref, at
+    most 2) - pushing much harder than asked (light objects skidding off, a robot told to stay soft)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    f = torch.linalg.norm(object_force_from(env, robot), dim=-1)
+    return ((f - over * push_effort(env, k)) / f_ref).clamp(0.0, 2.0)
 
 
 def cmd_obs(env, robot: str) -> torch.Tensor:

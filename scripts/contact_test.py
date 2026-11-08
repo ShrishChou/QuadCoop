@@ -143,6 +143,9 @@ def main() -> int:
     ap.add_argument("--set", default="",
                     help="planner settings to override, comma list key=value on the goal command's config, e.g. "
                          "'finish_dist=0' or 'robot_push_force=320'")
+    ap.add_argument("--swap-actors", action="store_true",
+                    help="stage4: robot 1 runs the network trained as robot 2 and vice versa (does a failure follow the "
+                         "learned network or the robot's place?)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -266,7 +269,8 @@ def main() -> int:
             off_contact=ck_cfg.get("off_contact", "soft") if ck_cfg.get("guide") else "soft",
             disturb_frac=a.disturb_frac, push_sensors=True, push_cmd=bool(ck_cfg.get("push_cmd", False)),
             wrench="wrench" in rules or "expert" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)),
-            reselect_min_dist=min_dist, expert="expert" in rules, exec_v2=bool(ck_cfg.get("exec_v2", False)))
+            reselect_min_dist=min_dist, expert="expert" in rules, exec_v2=bool(ck_cfg.get("exec_v2", False)),
+            effort=bool(ck_cfg.get("effort", False)))
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -327,6 +331,13 @@ def main() -> int:
         obs = TensorDict({k: v for k, v in obs.items() if not k.startswith("walker_")}, batch_size=[n])
         policy = PairPolicy(obs, device, "b", singles=models["policy"]) if use_policy else \
             PairPolicy(obs, device, "b", checkpoint=a.checkpoint) if stage4 else None
+        if stage4 and a.swap_actors:  # each robot gets the other's trained network (names in the weights swapped)
+            ck_sw = torch.load(a.checkpoint, map_location=device, weights_only=False)["actors"]
+            x_, y_ = AGENTS
+            ren = lambda d: {k.replace(x_, "@@").replace(y_, x_).replace("@@", y_): v for k, v in d.items()}  # noqa: E731
+            policy.actors[x_].load_state_dict(ren(ck_sw[y_]))
+            policy.actors[y_].load_state_dict(ren(ck_sw[x_]))
+            print(f"[swap] {x_} runs the network trained as {y_}, and vice versa", flush=True)
         robots = [base.scene[ag] for ag in AGENTS]
         handed = [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]  # under the push policy
         present = [torch.ones(n, dtype=torch.bool, device=dev), ~solo]  # robot 2 not parked
@@ -476,6 +487,12 @@ def main() -> int:
         sh_err = torch.zeros(n, device=dev)
         sh_bt = torch.zeros(n, SHARE_BINS, device=dev)
         sh_bm = torch.zeros(n, SHARE_BINS, device=dev)
+        # push effort (force_track models): while a robot presses its contact with a target of 10 N+, its target
+        # against the force it applies along its commanded direction (robot-seconds, sums)
+        ef_t = torch.zeros(n, device=dev)
+        ef_cmd = torch.zeros(n, device=dev)
+        ef_meas = torch.zeros(n, device=dev)
+        ef_err = torch.zeros(n, device=dev)
         # executor v2: time every robot of the push group is told to hold, the object's speed then (sum, and
         # time above 2 cm/s), each robot's contact force while told to hold, and the delay from team ready to
         # both robots pressing
@@ -651,6 +668,15 @@ def main() -> int:
                         bi = (s_cmd * SHARE_BINS).long().clamp(0, SHARE_BINS - 1).view(-1, 1)
                         sh_bt.scatter_add_(1, bi, w_s.view(-1, 1))
                         sh_bm.scatter_add_(1, bi, (w_s * s_meas).view(-1, 1))
+                    if getattr(g.cfg, "effort", False):
+                        for k in range(2):
+                            tg = cm.push_effort(base, k)
+                            fk = (cm.object_force_from(base, AGENTS[k]) * g.push_dir_world(k)).sum(-1).clamp(min=0.0)
+                            w_e = (pr[k] & (tg > 10.0)).float() * dt
+                            ef_t += w_e
+                            ef_cmd += w_e * tg
+                            ef_meas += w_e * fk
+                            ef_err += w_e * (fk - tg).abs()
                     solo_far += sum((pr[k] & far[1 - k]).float() for k in range(2)) * dt
                     press_any += (pr[0] | pr[1]).float()
                     press_both += (pr[0] & pr[1]).float()
@@ -809,6 +835,10 @@ def main() -> int:
                     "ready_to_push_s": round(float(tr_sum[j] / tr_n[j]), 2) if float(tr_n[j]) > 0 else ""}
                    if stage4 and getattr(g.cfg, "exec_v2", False) else {}),
                 "push_force_p90": hist_q(fb_all[j], 0.9) if stage4 else "",
+                "effort_s": round(float(ef_t[j]), 2) if stage4 else "",
+                "effort_target": round(float(ef_cmd[j] / ef_t[j]), 1) if stage4 and float(ef_t[j]) > 0 else "",
+                "effort_applied": round(float(ef_meas[j] / ef_t[j]), 1) if stage4 and float(ef_t[j]) > 0 else "",
+                "effort_abs_err": round(float(ef_err[j] / ef_t[j]), 1) if stage4 and float(ef_t[j]) > 0 else "",
                 "share_s": round(float(sh_t[j]), 2) if stage4 else "",
                 "share_err": round(float(sh_err[j] / sh_t[j]), 3) if stage4 and float(sh_t[j]) > 0 else "",
                 **({f"share_b{b_}_s": round(float(sh_bt[j, b_]), 3) for b_ in range(SHARE_BINS)} if stage4 else {}),
@@ -1054,7 +1084,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
-            old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "")
+            old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
+            bool(old_meta.get("swap_actors", False)) == bool(getattr(a, "swap_actors", False))
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
         old = []
@@ -1123,11 +1154,14 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
         what += "; TASKS: turn in place (object at the goal position, heading off 15/30/60/90 deg, capped by symmetry)"
     if getattr(a, "set", ""):
         what += f"; planner settings changed: {a.set}"
+    if getattr(a, "swap_actors", False):
+        what += "; ACTORS SWAPPED (each robot runs the other's trained network)"
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
+               "swap_actors": bool(getattr(a, "swap_actors", False)),
                "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
@@ -1241,6 +1275,21 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                 share_sum[f"{m:g}"] = {"seconds": tt, "mean_abs_error": err, "bins": bins}
                 md.append(f"| {m:g} kg | {tt:.0f} | {'' if err is None else f'{err:.2f}'} | " + " | ".join(cells) + " |")
             summary["share_following"] = share_sum
+        if any(r.get("effort_s") not in ("", None, 0, 0.0) for r in rows):
+            md += ["", "## push effort (force_track: while pressing with a target of 10 N+, the robot's push target against "
+                   "the force it applies along its commanded direction; pooled robot-seconds)", "",
+                   "| mass | robot-seconds | mean target (N) | mean applied (N) | mean abs error (N) |", "|---|---|---|---|---|"]
+            eff_sum = {}
+            for m in masses:
+                sel = [r for r in rows if r["mass"] == m and r.get("effort_s") not in ("", None) and r.get("effort_target") != ""]
+                tt = sum(r["effort_s"] for r in sel)
+                wm_ = lambda key: sum(r[key] * r["effort_s"] for r in sel) / tt if tt > 0 else None  # noqa: E731
+                eff_sum[f"{m:g}"] = {"seconds": tt, "target": wm_("effort_target"), "applied": wm_("effort_applied"),
+                                     "abs_err": wm_("effort_abs_err")}
+                e_ = eff_sum[f"{m:g}"]
+                md.append(f"| {m:g} kg | {tt:.0f} | " + " | ".join("" if e_[x] is None else f"{e_[x]:.0f}"
+                                                                   for x in ("target", "applied", "abs_err")) + " |")
+            summary["effort_tracking"] = eff_sum
         if any(summary["by_mass"][f"{m:g}"].get("all_hold_s") is not None for m in masses):
             md += ["", "## executor v2: holding and the team-ready barrier (time every robot of the push group is told to "
                    "hold; the object's mean speed then and the share of it above 2 cm/s (gate: under 2 cm/s); each robot's "

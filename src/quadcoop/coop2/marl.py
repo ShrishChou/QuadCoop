@@ -114,6 +114,8 @@ class MarlCfg:
     start_mode: str = "behind"  # env option (recorded): robots' start, "behind" or "around"
     need_frac: float = 0.0  # env option (recorded): share of episodes that need both robots
     turn_frac: float = 0.0  # env option (recorded): share of episodes that are a turn in place (turn practice)
+    effort: bool = False  # env option (recorded): push targets + force feedback (force_track)
+    over_push_w: float = 0.0  # env option (recorded): over-push cost weight (force_track)
     contacts: bool = False  # env option (recorded): Stage 4 contact mode (assigned contacts as inputs)
     contact_mix: tuple = (1.0, 1.0, 1.0)  # env option (recorded): spread / adjacent / random[ / wrench] pairs
     contact_start_at: float = 0.7  # env option (recorded)

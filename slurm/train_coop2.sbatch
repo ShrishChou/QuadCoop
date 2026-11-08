@@ -60,6 +60,13 @@
 #     --contact-mix wrench:2,spread:1,random:1 --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 --disturb-frac 0.2 \
 #     --reselect-s 3,6 --random-start 0.5 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 --reward rmin \
 #     --turn-frac 0.3 --init-from logs/keep/marl2/hvB_aa_s0/model_13500.pt" sbatch -p mit_normal_gpu -t 06:00:00 slurm/train_coop2.sbatch
+#   force_track: turn_debug + push effort - each robot observes an absolute push target (its share of what slides
+#   the object) and the contact force it applies; contact work is paid only up to the target, with a cost for
+#   pushing past 1.5 x target. 1500 more iterations from turn_debug's kept model (8 new inputs per robot at zero weight).
+#   ALGO=mappo SEED=0 RUN_NAME=force_track ITERS=16500 EXTRA="--pair anymal --partner-map --contacts --guide --push-cmd \
+#     --contact-mix wrench:2,spread:1,random:1 --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 --disturb-frac 0.2 \
+#     --reselect-s 3,6 --random-start 0.5 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 --reward rmin \
+#     --turn-frac 0.3 --effort --init-from logs/keep/marl2/turn_debug/model_15000.pt" sbatch -p mit_normal_gpu -G l40s:1 -t 06:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
 #SBATCH -J qc-coop2
