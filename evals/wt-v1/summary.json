@@ -1,0 +1,28 @@
+{
+ "walkers": [
+  "v1"
+ ],
+ "stiffness": 1000.0,
+ "verdicts": {
+  "v1": {
+   "free": {
+    "small_ok": 0.0,
+    "normal_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   },
+   "wall": {
+    "within_25pct": 0.0,
+    "rising": true,
+    "steady": 0.8333333333333334,
+    "touching": 0.12541666666666665,
+    "pass": false
+   },
+   "objects": {
+    "speed_ok": 0.5833333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   }
+  }
+ }
+}
