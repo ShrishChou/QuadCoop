@@ -11,6 +11,10 @@
 #   V2=$(ls $(ls -d $E/*_compliant | tail -1)/model_*.pt | sort -V | tail -1)
 #   V21=$(ls $(ls -d $E/*_v21 | tail -1)/model_*.pt | sort -V | tail -1)
 #   WALKERS="v2=$V2,v21=$V21" NAME=wt-v21 ARGS="--videos fwd,side,yaw,wall,objects" sbatch slurm/walker_test.sbatch
+#
+# Walker v2.2 (k = 500) against v2.1 (k = 1000), each judged by its own k:
+#   V22=$(ls $(ls -d $E/*_v22 | tail -1)/model_*.pt | sort -V | tail -1)
+#   WALKERS="v21=$V21,v22=$V22" NAME=wt-v22 ARGS="--k v22=500 --videos side,back,yaw,wall" sbatch slurm/walker_test.sbatch
 #SBATCH -J qc-wtest
 #SBATCH -p mit_normal_gpu
 #SBATCH -G l40s:1

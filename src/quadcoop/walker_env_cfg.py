@@ -76,6 +76,21 @@ curves showed missing, no new reward terms. Defaults (each overridable):
   20% of free-walk segments turn on the spot at 0.05-0.6 rad/s (``QUADCOOP_TURN_IN_PLACE``,
   ``QUADCOOP_TURN_MAX``)
 * turn tracking tolerance 0.4 rad/s instead of 0.71 (``QUADCOOP_YAW_STD``)
+
+Walker v2.2 (``v22=True``, task ``QuadCoop-Walker-AnymalC-Compliant-v22``; same network, resumed
+from v2.1; same log folder). v2.1's commands, curriculum and force filter, but:
+
+* no synthetic bumper load: v2.1's field pushed against *any* commanded direction at the nose
+  (sideways -> a twist, backward -> a pull), and sideways / slow-backward walking regressed. Real
+  objects (masses up to immovable) are the front-contact practice; the stock random kicks are the
+  disturbances. ``QUADCOOP_PUSH_FORCE=1`` brings the field back as an unfelt disturbance only
+* k = 500 N per m/s (``QUADCOOP_STIFFNESS``): 0.1 m/s -> 50 N, 0.3 m/s -> 150 N, inside the
+  speeds the walker can walk at and under its measured ~150-180 N plateau
+* retreat bounded along the force (at most 0.1 m/s), not just the speed
+* fine tracking planar-only and yaw-only, on the velocity smoothed over ~0.4 s
+  (``QUADCOOP_TRACK_TAU``; restarted at each new command): ``track_fine`` (std 0.1 m/s, weight 1.5)
+  and ``track_yaw_fine`` (std 0.15 rad/s, ``QUADCOOP_FINE_YAW_STD``, weight 1.0,
+  ``QUADCOOP_FINE_YAW_W``); the stock turn term goes back to its own tolerance (0.71)
 """
 
 from __future__ import annotations
@@ -110,6 +125,8 @@ from quadcoop.mdp.compliance import (
     ComplianceTargetCommandCfg,
     bumper_force_obs,
     force_rate_penalty,
+    track_planar_fine,
+    track_yaw_fine,
     velocity_progress_target,
 )
 from quadcoop.mdp.metrics import object_contact, velocity_error_xy
@@ -139,7 +156,8 @@ def _mass_alpha(kg: tuple[float, float]) -> tuple[float, float]:
 
 
 def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | None = None,
-                        compliant: bool = False, v21: bool = False) -> ManagerBasedRlEnvCfg:
+                        compliant: bool = False, v21: bool = False, v22: bool = False) -> ManagerBasedRlEnvCfg:
+    v21 = v21 or v22  # v2.2 keeps v2.1's commands, curriculum and filter; differences marked v22
     compliant = compliant or v21
     cfg = make_velocity_env_cfg()
     warmup = int(_env_float("QUADCOOP_WARMUP_ITERS", 50 if compliant else 1000))
@@ -308,7 +326,7 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
 
     # -- sustained push resistance at the bumper (privileged) --------------------
     # (walker v2.1: on by default, and felt by the walker - mdp/compliance.applied_force_b)
-    if push_force_enabled(default=v21):
+    if push_force_enabled(default=v21 and not v22):
         cfg.commands["push_force"] = PushForceCommandCfg(
             resampling_time_range=(1e9, 1e9),  # Schedule is internal.
             body_name=robot.base_body,
@@ -386,18 +404,20 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
 
     # -- walker v2: compliant target, force sensing, steady pressing -----------------------------
     if compliant:
-        k = _env_float("QUADCOOP_STIFFNESS", 1000.0)
+        k = _env_float("QUADCOOP_STIFFNESS", 500.0 if v22 else 1000.0)
+        felt = None if v22 else "push_force"  # v2.2: only real contact is felt (the field, if on, is a disturbance)
         cfg.commands["compliance"] = ComplianceTargetCommandCfg(
             twist_name="twist", sensor_name="bumper_force", stiffness=k,
             # v2.1: slower force filter (~0.2 s) and little back-off, so an impact spike does not
             # tell the robot to retreat (the source of v2's tapping)
             filter_alpha=_env_float("QUADCOOP_FORCE_FILTER", 0.1 if v21 else 0.3),
             max_backoff=_env_float("QUADCOOP_MAX_BACKOFF", 0.1 if v21 else 0.3),
+            directional_backoff=v22, felt_load_term=felt,
         )
         # the robot feels the contact force (last input: a v1 walker is widened at the end)
         for group in ("actor", "critic"):
             cfg.observations[group].terms["bumper_force"] = ObservationTermCfg(
-                func=bumper_force_obs, params={"sensor_name": "bumper_force"},
+                func=bumper_force_obs, params={"sensor_name": "bumper_force", "felt_load_term": felt},
                 noise=Unoise(n_min=-0.02, n_max=0.02) if group == "actor" else None,
             )
         # every command-following reward follows the compliant target instead of the raw command
@@ -414,11 +434,23 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
             func=mdp.track_linear_velocity, weight=_env_float("QUADCOOP_FINE_TRACK_W", 1.5),
             params={"command_name": "compliance", "std": 0.1},
         )
+        if v22:  # planar-only on a 0.4 s smoothed velocity (the stock function also counts vertical
+            # velocity: at std 0.1, stepping with 0.1 m/s of bounce scored below standing still), and
+            # the same for yaw (the stock turn term also counts roll / pitch rate)
+            tau = _env_float("QUADCOOP_TRACK_TAU", 0.4)
+            cfg.rewards["track_fine"] = RewardTermCfg(
+                func=track_planar_fine, weight=_env_float("QUADCOOP_FINE_TRACK_W", 1.5),
+                params={"command_name": "compliance", "std": 0.1, "tau": tau},
+            )
+            cfg.rewards["track_yaw_fine"] = RewardTermCfg(
+                func=track_yaw_fine, weight=_env_float("QUADCOOP_FINE_YAW_W", 1.0),
+                params={"command_name": "compliance", "std": _env_float("QUADCOOP_FINE_YAW_STD", 0.15), "tau": tau},
+            )
         cfg.rewards["force_rate"] = RewardTermCfg(
             func=force_rate_penalty, weight=-_env_float("QUADCOOP_FORCE_RATE_W", 1.0),
             params={"command_name": "compliance"},
         )
-        if v21:  # turning: the stock tolerance (std 0.71 rad/s) pays 92% for standing still at 0.2 rad/s
+        if v21 and not v22:  # turning: the stock tolerance (std 0.71 rad/s) pays 92% for standing still at 0.2 rad/s
             cfg.rewards["track_angular_velocity"].params["std"] = _env_float("QUADCOOP_YAW_STD", 0.4)
 
     cfg.viewer.body_name = robot.base_body

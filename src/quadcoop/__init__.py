@@ -7,6 +7,8 @@
                                         logs/rsl_rl/walker_anymal_c_compliant/
     QuadCoop-Walker-AnymalC-Compliant-v21  walker v2.1 (walker_env_cfg.py): v2 plus felt force field,
                                         unstuck mass curriculum, pure turns, slower force filter
+    QuadCoop-Walker-AnymalC-Compliant-v22  walker v2.2: v2.1 without the field, k = 500, directional
+                                        back-off, planar / yaw fine tracking on smoothed velocity
 """
 
 from mjlab.tasks.registry import register_mjlab_task
@@ -44,6 +46,15 @@ register_mjlab_task(
     task_id="QuadCoop-Walker-AnymalC-Compliant-v21",
     env_cfg=make_walker_env_cfg(ANYMAL_C, v21=True),
     play_env_cfg=make_walker_env_cfg(ANYMAL_C, play=True, v21=True),
+    rl_cfg=walker_ppo_cfg(f"{ANYMAL_C.name}_compliant"),
+    runner_cls=VelocityOnPolicyRunner,
+)
+
+# walker v2.2: same network (resumed from v2.1), same log folder
+register_mjlab_task(
+    task_id="QuadCoop-Walker-AnymalC-Compliant-v22",
+    env_cfg=make_walker_env_cfg(ANYMAL_C, v22=True),
+    play_env_cfg=make_walker_env_cfg(ANYMAL_C, play=True, v22=True),
     rl_cfg=walker_ppo_cfg(f"{ANYMAL_C.name}_compliant"),
     runner_cls=VelocityOnPolicyRunner,
 )

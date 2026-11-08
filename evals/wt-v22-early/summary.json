@@ -1,0 +1,19 @@
+{
+ "walkers": [
+  "v22"
+ ],
+ "stiffness": 1000.0,
+ "k": {
+  "v22": 500.0
+ },
+ "verdicts": {
+  "v22": {
+   "free": {
+    "small_ok": 0.6153846153846154,
+    "normal_ok": 1.0,
+    "max_fall_rate": 0.0,
+    "pass": false
+   }
+  }
+ }
+}

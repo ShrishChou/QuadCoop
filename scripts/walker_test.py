@@ -21,6 +21,17 @@ The verdicts are computed for every walker, so the v1 walker shows what it fails
     python scripts/walker_test.py --walkers v1=logs/evals/walker-anymal-v1/model.pt,v2=logs/rsl_rl/walker_anymal_c_compliant/<run>/model_3000.pt
     python scripts/walker_test.py --walkers v1=logs/evals/walker-anymal-v1/model.pt --groups free --reps 1 --name wt-quick
 
+Each walker is judged against its own compliance gain: --k v22=500 (others use --stiffness,
+1000); the force tables also keep the common k = --stiffness targets. Added alongside the original
+(unchanged) verdicts, as separate questions:
+  - force swing after a fixed 0.4 s moving average (one stride), next to the raw swing;
+  - response: time until the 0.4 s average velocity reaches 63% of a free-walk command, and the
+    instantaneous sway (std of the commanded-axis velocity) over the measured half;
+  - force-ceiling diagnostics when pressing: joint-torque saturation (any joint >= 95% of its 80 Nm
+    limit), foot slip (speed of feet on the ground), body pitch, contact duty;
+  - objects: the law checked against the force actually measured, v - (F - 5 N) / k, next to the
+    nominal mu m g expectation.
+
 Output: evals/<name>/ (summary.md, summary.json, cases.csv).
 
 Videos (optional, first repeat of each chosen case, with the command / achieved velocity / force
@@ -48,6 +59,27 @@ sys.path.insert(0, str(ROOT / "src"))
 FRICTION = 0.45  # objects: the middle of the training range (0.3-0.6)
 GAP = 0.10  # m from the nose to the object face at the start of a push
 TOUCH_N = 5.0
+DEADBAND_N = 5.0  # the compliance law's force deadband
+SMOOTH_S = 0.4  # moving-average window for the filtered force swing and the response time
+EFFORT_NM = 80.0  # ANYmal C joint torque limit (robots/anymal_c.py)
+
+
+def k_of(a, label):
+    for item in (x for x in a.k.split(",") if x.strip()):
+        lbl, val = item.split("=", 1)
+        if lbl.strip() == label:
+            return float(val)
+    return a.stiffness
+
+
+def moving_average(x, n):
+    """x: (T, ...) tensor -> (T - n + 1, ...) means over n consecutive rows."""
+    import torch
+
+    if x.shape[0] < n:
+        return x.mean(0, keepdim=True)
+    c = torch.cumsum(torch.cat([torch.zeros_like(x[:1]), x], 0), 0)
+    return (c[n:] - c[:-n]) / n
 
 
 def free_cases(quick):
@@ -67,6 +99,7 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=2)
     ap.add_argument("--duration", type=float, default=8.0, help="s per case (measured over the second half)")
     ap.add_argument("--stiffness", type=float, default=1000.0, help="k of the compliant walker (N per m/s)")
+    ap.add_argument("--k", default="", help="per-walker k, e.g. v22=500 (others: --stiffness)")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--device", default=None)
     ap.add_argument("--videos", default="", help="'all' or groups / case names to film (see above)")
@@ -164,6 +197,10 @@ def main() -> int:
         rec = {"q": [], "pts": [], "v": [], "f": []}
         fell = torch.zeros(n, dtype=torch.bool, device=dev)
         acc = defaultdict(lambda: torch.zeros(n, device=dev))
+        axis = torch.tensor([2 if c[0] == "yaw" else (1 if c[0] == "side" else 0) for c in cases for _ in range(a.reps)],
+                            device=dev)
+        ser_v, ser_f = [], []  # per step: velocity along the commanded axis; push force (measured half)
+        foot_ids = robot.find_sites(ROBOT.foot_sites)[0] if group != "free" else None
         fwd0 = torch.stack([torch.cos(yaw()), torch.sin(yaw())], -1)
         p_obj0 = env.scene[cube.name].data.root_link_pos_w[:, :2].clone()
         p_rob = None
@@ -193,11 +230,13 @@ def main() -> int:
             if i == w0:
                 p_rob = robot.data.root_link_pos_w[:, :2].clone()
                 p_obj0 = env.scene[cube.name].data.root_link_pos_w[:, :2].clone()
+            y = yaw()
+            c, s = torch.cos(y), torch.sin(y)
+            vw = robot.data.root_link_lin_vel_w[:, :2]
+            vb = torch.stack([c * vw[:, 0] + s * vw[:, 1], -s * vw[:, 0] + c * vw[:, 1]], -1)
+            v3 = torch.cat([vb, robot.data.root_link_ang_vel_w[:, 2:3]], -1)
+            ser_v.append(v3.gather(1, axis.unsqueeze(1)).squeeze(1))
             if i >= w0:
-                y = yaw()
-                c, s = torch.cos(y), torch.sin(y)
-                vw = robot.data.root_link_lin_vel_w[:, :2]
-                vb = torch.stack([c * vw[:, 0] + s * vw[:, 1], -s * vw[:, 0] + c * vw[:, 1]], -1)
                 acc["vx"] += vb[:, 0]
                 acc["vy"] += vb[:, 1]
                 acc["wz"] += robot.data.root_link_ang_vel_w[:, 2]
@@ -206,8 +245,28 @@ def main() -> int:
                 acc["fn"] += fn
                 acc["fn2"] += fn * fn
                 acc["touch"] += (torch.linalg.norm(f, dim=-1) > TOUCH_N).float()
+                ser_f.append(fn)
+                if foot_ids is not None:  # why the force stops where it does
+                    tau = robot.data.actuator_force.abs()
+                    acc["tau_sat"] += (tau >= 0.95 * EFFORT_NM).any(-1).float()
+                    acc["tau_max"] += tau.max(-1).values / EFFORT_NM
+                    q = robot.data.root_link_quat_w
+                    acc["pitch"] += torch.rad2deg(torch.asin((2 * (q[:, 0] * q[:, 2] - q[:, 3] * q[:, 1])).clamp(-1, 1)))
+                    fc = env.scene["feet_ground_contact"].data.found
+                    on = (fc > 0).float().reshape(n, -1)[:, :len(ROBOT.foot_sites)]
+                    fv = torch.linalg.norm(robot.data.site_lin_vel_w[:, foot_ids, :2], dim=-1)
+                    acc["slip"] += (fv * on).sum(-1) / on.sum(-1).clamp(min=1.0)
         k = max(1, steps - w0)
         T = (steps - 1 - w0) * dt
+        nw = max(1, int(round(SMOOTH_S / dt)))
+        sv = torch.stack(ser_v)  # (steps, n)
+        sf = torch.stack(ser_f) if ser_f else torch.zeros(1, n, device=dev)
+        f_swing_s = moving_average(sf, nw).std(0, unbiased=False)
+        sway = sv[w0:].std(0, unbiased=False)
+        want_ax = cmd.gather(1, axis.unsqueeze(1)).squeeze(1)
+        reached = moving_average(sv * torch.sign(want_ax), nw) >= 0.63 * want_ax.abs()  # (steps - nw + 1, n)
+        first = torch.where(reached.any(0), reached.float().argmax(0).float(), torch.full_like(want_ax, float("nan")))
+        t63 = (first + nw) * dt
         obj_v = torch.linalg.norm(env.scene[cube.name].data.root_link_pos_w[:, :2] - p_obj0, dim=-1) / max(T, 1e-6)
         for e in range(n):
             case = cases[e // a.reps]
@@ -219,7 +278,14 @@ def main() -> int:
                          "vx": round(float(acc["vx"][e]) / k, 4), "vy": round(float(acc["vy"][e]) / k, 4),
                          "wz": round(float(acc["wz"][e]) / k, 4), "force": round(mean_f, 1), "force_swing": round(sd_f, 1),
                          "touching": round(float(acc["touch"][e]) / k, 3), "object_speed": round(float(obj_v[e]), 4),
-                         "fell": int(fell[e])})
+                         "fell": int(fell[e]),
+                         "force_swing_04s": round(float(f_swing_s[e]), 1) if ser_f else "",
+                         "sway": round(float(sway[e]), 4),
+                         "t63_s": "" if math.isnan(float(t63[e])) or abs(float(want_ax[e])) < 1e-9 else round(float(t63[e]), 2),
+                         "tau_sat": round(float(acc["tau_sat"][e]) / k, 3) if foot_ids is not None else "",
+                         "tau_max": round(float(acc["tau_max"][e]) / k, 3) if foot_ids is not None else "",
+                         "pitch_deg": round(float(acc["pitch"][e]) / k, 1) if foot_ids is not None else "",
+                         "foot_slip": round(float(acc["slip"][e]) / k, 4) if foot_ids is not None else ""})
         print(f"[{label}] {group}{'' if mass is None else f' {mass:g} kg'}: {n} runs ({time.time() - t0:.0f} s)", flush=True)
         if film:
             render_videos(env, label, group, cases, film, rec, stride * dt, mass)
@@ -243,7 +309,7 @@ def main() -> int:
         for j, e in enumerate(film):
             case = cases[e // a.reps]
             if group == "wall":
-                tag, what = f"{case[1]:g}ms_{case[2]:g}deg", f"wall {case[2]:g} deg, {case[1]:g} m/s (target {a.stiffness * case[1]:.0f} N)"
+                tag, what = f"{case[1]:g}ms_{case[2]:g}deg", f"wall {case[2]:g} deg, {case[1]:g} m/s (target {k_of(a, label) * case[1]:.0f} N)"
             elif group == "objects":
                 tag, what = f"{mass:g}kg_{case[1]:g}ms", f"{mass:g} kg cube, {case[1]:g} m/s"
             else:
@@ -311,8 +377,10 @@ def summarise(rows, labels, a):
     mean = lambda xs: sum(xs) / len(xs) if xs else float("nan")  # noqa: E731
     md = [f"# Walker acceptance test: {a.name}", "",
           f"Walkers: {', '.join(labels)}. Each case {a.duration:g} s, measured over the second half, {a.reps} repeats. "
-          f"Compliant-walker expectations use k = {k:g} N per m/s and object friction {FRICTION}.", ""]
-    summary = {"walkers": labels, "stiffness": k, "verdicts": {}}
+          f"Compliant-walker expectations use each walker's own k ("
+          + ", ".join(f"{l}: {k_of(a, l):g}" for l in labels) + f" N per m/s; common reference k = {k:g}) "
+          f"and object friction {FRICTION}.", ""]
+    summary = {"walkers": labels, "stiffness": k, "k": {l: k_of(a, l) for l in labels}, "verdicts": {}}
     cells = defaultdict(list)
     for r in rows:
         cells[(r["walker"], r["group"], r["case"], r["mass"], r["vx_cmd"], r["vy_cmd"], r["wz_cmd"], r["offset_deg"])].append(r)
@@ -360,19 +428,51 @@ def summarise(rows, labels, a):
             md.append(f"**{l}, free walking: {'PASS' if v['pass'] else 'FAIL'}** - small commands moved as asked "
                       f"{s:.0%}, normal commands within 0.1 m/s {nrm:.0%}, worst fall rate {fl:.2f}.")
         md.append("")
+        md += [f"### Response: time until the {SMOOTH_S:g} s average reaches 63% of the command (s, includes ~{SMOOTH_S / 2:g} s "
+               "of averaging lag; - = never) / "
+               "instantaneous sway along the command (std over the measured half)", "",
+               "| case | command | " + " | ".join(f"{l}: t63 / sway" for l in labels) + " |", "|---|---|" + "---|" * len(labels)]
+        for case, vx, vy, wz in keys:
+            if case in ("stand",):
+                continue
+            ax = 2 if case == "yaw" else (1 if case == "side" else 0)
+            cs = []
+            for l in labels:
+                rs = cells.get((l, "free", case, "", vx, vy, wz, 0.0), [])
+                ts = [r["t63_s"] for r in rs if r.get("t63_s", "") != ""]
+                t = f"{mean(ts):.2f}" if len(ts) == len(rs) and ts else ("-" if not ts else f"{mean(ts):.2f} ({len(ts)}/{len(rs)})")
+                cs.append(f"{t} / {mean([r.get('sway', float('nan')) for r in rs]):.3f}")
+            md.append(f"| {case} | {(vx, vy, wz)[ax]:+g} | " + " | ".join(cs) + " |")
+        md.append("")
     if "wall" in groups:
-        md += [f"## Pressing an immovable cube (force on it along the heading, N; swing = std over time; target k x speed)", ""]
+        md += ["## Pressing an immovable cube (force on it along the heading, N; swing = std over time, raw / after a "
+               f"{SMOOTH_S:g} s moving average; target k x speed)", ""]
+        ks = sorted({k_of(a, l) for l in labels} | {k})
         for off in sorted({r["offset_deg"] for r in rows if r["group"] == "wall"}):
-            md += [f"### {off:g} deg", "", "| speed (m/s) | target (N) | " +
-                   " | ".join(f"{l}: force (swing), touching" for l in labels) + " |", "|---|---|" + "---|" * len(labels)]
+            md += [f"### {off:g} deg", "", "| speed (m/s) | " + " | ".join(f"target k={kk:g} (N)" for kk in ks) + " | " +
+                   " | ".join(f"{l}: force (swing raw / {SMOOTH_S:g} s), touching" for l in labels) + " |",
+                   "|---|" + "---|" * len(ks) + "---|" * len(labels)]
             speeds = sorted({r["vx_cmd"] for r in rows if r["group"] == "wall" and r["offset_deg"] == off})
             for v in speeds:
-                md.append(f"| {v:g} | {k * v:.0f} | " + " | ".join(
+                md.append(f"| {v:g} | " + " | ".join(f"{kk * v:.0f}" for kk in ks) + " | " + " | ".join(
                     f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, off, 'force'):.0f} "
-                    f"({agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, off, 'force_swing'):.0f}), "
+                    f"({agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, off, 'force_swing'):.0f} / "
+                    f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, off, 'force_swing_04s'):.0f}), "
                     f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, off, 'touching'):.2f}" for l in labels) + " |")
             md.append("")
+        md += ["### Why the force stops where it does (square on): share of time any joint is at >= 95% of its 80 Nm "
+               "limit, mean peak joint torque / limit, foot slip (m/s, feet on the ground), body pitch (deg, + = nose down)", "",
+               "| speed (m/s) | " + " | ".join(f"{l}: torque-sat, peak torque, slip, pitch" for l in labels) + " |",
+               "|---|" + "---|" * len(labels)]
+        for v in sorted({r["vx_cmd"] for r in rows if r["group"] == "wall"}):
+            md.append(f"| {v:g} | " + " | ".join(
+                f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, 0.0, 'tau_sat'):.2f}, "
+                f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, 0.0, 'tau_max'):.2f}, "
+                f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, 0.0, 'foot_slip'):.3f}, "
+                f"{agg(l, 'wall', 'wall', 3000.0, v, 0.0, 0.0, 0.0, 'pitch_deg'):+.1f}" for l in labels) + " |")
+        md.append("")
         for l in labels:
+            k = k_of(a, l)
             sp = [v for v in sorted({r["vx_cmd"] for r in rows if r["group"] == "wall"}) if 0.05 - 1e-9 <= v <= 0.3 + 1e-9]
             fs = [agg(l, "wall", "wall", 3000.0, v, 0.0, 0.0, 0.0, "force") for v in sp]
             sw = [agg(l, "wall", "wall", 3000.0, v, 0.0, 0.0, 0.0, "force_swing") for v in sp]
@@ -381,39 +481,52 @@ def summarise(rows, labels, a):
             rising = all(fs[i + 1] >= fs[i] - 10 for i in range(len(fs) - 1))
             steady = mean([float(s <= 0.25 * max(f, 1.0)) for s, f in zip(sw, fs)])
             touch = mean(tc)
-            v = {"within_25pct": within, "rising": rising, "steady": steady, "touching": touch,
-                 "pass": within >= 0.99 and rising and steady >= 0.99 and touch >= 0.95}
+            sw_s = [agg(l, "wall", "wall", 3000.0, v, 0.0, 0.0, 0.0, "force_swing_04s") for v in sp]
+            steady_s = mean([float(s_ <= 0.25 * max(f, 1.0)) for s_, f in zip(sw_s, fs)])
+            v = {"k": k, "within_25pct": within, "rising": rising, "steady": steady, "touching": touch,
+                 "pass": within >= 0.99 and rising and steady >= 0.99 and touch >= 0.95,
+                 "steady_after_04s_average": steady_s}
             verdicts[l]["wall"] = v
-            md.append(f"**{l}, force control (square on, 0.05-0.3 m/s): {'PASS' if v['pass'] else 'FAIL'}** - within 25% "
-                      f"of k x speed {within:.0%}, {'rising' if rising else 'not rising'}, steady {steady:.0%}, "
-                      f"touching {touch:.0%}.")
+            md.append(f"**{l}, force control (square on, 0.05-0.3 m/s, k = {k:g}): {'PASS' if v['pass'] else 'FAIL'}** - "
+                      f"within 25% of k x speed {within:.0%}, {'rising' if rising else 'not rising'}, steady {steady:.0%}, "
+                      f"touching {touch:.0%}. (Separate question, not part of the verdict: steady after a {SMOOTH_S:g} s "
+                      f"average {steady_s:.0%}.)")
         md.append("")
     if "objects" in groups:
-        md += ["## Pushing movable cubes (robot speed; a compliant walker should go at max(0, v - mu m g / k))", "",
-               "| mass | speed cmd | expected (m/s) | " + " | ".join(f"{l}: robot speed, object speed, force (N), fell" for l in labels) + " |",
-               "|---|---|---|" + "---|" * len(labels)]
+        md += ["## Pushing movable cubes (robot speed; a compliant walker should go at max(0, v - mu m g / k), its own k; "
+               "'law' = the same with the force actually measured, max(0, v - (F - 5 N) / k))", "",
+               "| mass | speed cmd | " + " | ".join(f"{l}: expected (k={k_of(a, l):g}), law" for l in labels) + " | "
+               + " | ".join(f"{l}: robot speed, object speed, force (N), fell" for l in labels) + " |",
+               "|---|---|" + "---|" * (2 * len(labels))]
         oks = {l: [] for l in labels}
+        law_ok = {l: [] for l in labels}
         fl = {l: [] for l in labels}
         for m in sorted({r["mass"] for r in rows if r["group"] == "objects"}):
             for v in sorted({r["vx_cmd"] for r in rows if r["group"] == "objects"}):
-                exp = max(0.0, v - FRICTION * m * 9.81 / k)
-                cells_ = []
+                cells_, exps = [], []
                 for l in labels:
+                    kl = k_of(a, l)
+                    exp = max(0.0, v - FRICTION * m * 9.81 / kl)
                     rv = agg(l, "objects", "push", m, v, 0.0, 0.0, 0.0, "vx")
                     ov = agg(l, "objects", "push", m, v, 0.0, 0.0, 0.0, "object_speed")
                     f = agg(l, "objects", "push", m, v, 0.0, 0.0, 0.0, "force")
                     fe = agg(l, "objects", "push", m, v, 0.0, 0.0, 0.0, "fell")
+                    law = max(0.0, v - max(0.0, f - DEADBAND_N) / kl)
                     oks[l].append(abs(rv - exp) <= 0.05)
+                    law_ok[l].append(abs(rv - law) <= 0.05)
                     fl[l].append(fe)
+                    exps.append(f"{exp:.2f}, {law:.2f}")
                     cells_.append(f"{rv:.2f}, {ov:.2f}, {f:.0f}, {fe:.2f}")
-                md.append(f"| {m:g} kg | {v:g} | {exp:.2f} | " + " | ".join(cells_) + " |")
+                md.append(f"| {m:g} kg | {v:g} | " + " | ".join(exps) + " | " + " | ".join(cells_) + " |")
         md.append("")
         for l in labels:
-            v = {"speed_ok": mean([float(x) for x in oks[l]]), "max_fall_rate": max(fl[l]),
-                 "pass": mean([float(x) for x in oks[l]]) >= 0.9 and max(fl[l]) == 0}
+            v = {"k": k_of(a, l), "speed_ok": mean([float(x) for x in oks[l]]), "max_fall_rate": max(fl[l]),
+                 "pass": mean([float(x) for x in oks[l]]) >= 0.9 and max(fl[l]) == 0,
+                 "law_with_measured_force_ok": mean([float(x) for x in law_ok[l]])}
             verdicts[l]["objects"] = v
-            md.append(f"**{l}, pushing objects: {'PASS' if v['pass'] else 'FAIL'}** - speed within 0.05 m/s of the "
-                      f"compliant expectation {v['speed_ok']:.0%}, worst fall rate {v['max_fall_rate']:.2f}.")
+            md.append(f"**{l}, pushing objects (k = {v['k']:g}): {'PASS' if v['pass'] else 'FAIL'}** - speed within 0.05 m/s "
+                      f"of the compliant expectation {v['speed_ok']:.0%}, worst fall rate {v['max_fall_rate']:.2f}. "
+                      f"(Separate question: consistent with its own measured force {v['law_with_measured_force_ok']:.0%}.)")
         md.append("")
     summary["verdicts"] = verdicts
     md += ["## Verdicts", "", "| walker | " + " | ".join(sorted(groups)) + " |", "|---|" + "---|" * len(groups)]
