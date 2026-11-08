@@ -265,7 +265,10 @@ def main() -> int:
         sway = sv[w0:].std(0, unbiased=False)
         want_ax = cmd.gather(1, axis.unsqueeze(1)).squeeze(1)
         reached = moving_average(sv * torch.sign(want_ax), nw) >= 0.63 * want_ax.abs()  # (steps - nw + 1, n)
-        first = torch.where(reached.any(0), reached.float().argmax(0).float(), torch.full_like(want_ax, float("nan")))
+        # the first moment from which it *stays* at >= 63% to the end of the run (a start-up wobble that
+        # crosses the line once does not count; fix49 - fix48 took the first crossing)
+        stays = torch.flip(torch.cummin(torch.flip(reached.float(), [0]), 0).values, [0]) > 0
+        first = torch.where(stays.any(0), stays.float().argmax(0).float(), torch.full_like(want_ax, float("nan")))
         t63 = (first + nw) * dt
         obj_v = torch.linalg.norm(env.scene[cube.name].data.root_link_pos_w[:, :2] - p_obj0, dim=-1) / max(T, 1e-6)
         for e in range(n):
@@ -379,8 +382,10 @@ def summarise(rows, labels, a):
           f"Walkers: {', '.join(labels)}. Each case {a.duration:g} s, measured over the second half, {a.reps} repeats. "
           f"Compliant-walker expectations use each walker's own k ("
           + ", ".join(f"{l}: {k_of(a, l):g}" for l in labels) + f" N per m/s; common reference k = {k:g}) "
-          f"and object friction {FRICTION}.", ""]
-    summary = {"walkers": labels, "stiffness": k, "k": {l: k_of(a, l) for l in labels}, "verdicts": {}}
+          f"and object friction {FRICTION}.", "",
+          "Checkpoints: " + "; ".join(f"{l} = `{p}`" for l, p in (w.split("=", 1) for w in a.walkers.split(","))), ""]
+    summary = {"walkers": labels, "stiffness": k, "k": {l: k_of(a, l) for l in labels}, "verdicts": {},
+               "checkpoints": dict(w.split("=", 1) for w in a.walkers.split(","))}
     cells = defaultdict(list)
     for r in rows:
         cells[(r["walker"], r["group"], r["case"], r["mass"], r["vx_cmd"], r["vy_cmd"], r["wz_cmd"], r["offset_deg"])].append(r)
