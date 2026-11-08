@@ -137,6 +137,8 @@ def object_curriculum(
     retreat_fall: float = 0.25,
     min_contact_frac: float = 0.02,
     ema: float = 0.05,
+    err_metric: str = "vel_error_xy",
+    mass_growth: float = 1.0,
 ) -> dict[str, torch.Tensor]:
     """Runs at every reset (before the episode stats are cleared)."""
     st = _state(env, {"max_mass": mass_start})
@@ -147,7 +149,7 @@ def object_curriculum(
         mm = env.metrics_manager
         steps = mm._step_count[env_ids].float().clamp(min=1)  # noqa: SLF001
         contact = mm._episode_sums["object_contact"][env_ids] / steps  # noqa: SLF001
-        err = mm._episode_sums["vel_error_xy"][env_ids] / steps  # noqa: SLF001
+        err = mm._episode_sums[err_metric][env_ids] / steps  # noqa: SLF001
         fell = env.termination_manager.terminated[env_ids].float()
         engaged = contact > min_contact_frac
         n_eng = int(engaged.sum())
@@ -160,9 +162,11 @@ def object_curriculum(
             # fresh engaged episodes; each decision consumes the evidence it used.
             if it - st["last_change"] >= dwell_iters and st["n_engaged"] >= 200:
                 if st["ema_fall"] < advance_fall and st["ema_err"] < advance_err:
-                    st["max_mass"] = min(mass_final, st["max_mass"] + mass_step)
+                    st["max_mass"] = min(mass_final, st["max_mass"] * mass_growth if mass_growth > 1.0
+                                         else st["max_mass"] + mass_step)
                 elif st["ema_fall"] > retreat_fall:
-                    st["max_mass"] = max(mass_start, st["max_mass"] - mass_step)
+                    st["max_mass"] = max(mass_start, st["max_mass"] / mass_growth if mass_growth > 1.0
+                                         else st["max_mass"] - mass_step)
                 st["last_change"] = it
                 st["n_engaged"] = 0
 

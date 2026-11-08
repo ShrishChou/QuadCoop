@@ -89,6 +89,9 @@ class PushTaskCommand(UniformVelocityCommand):
         free = env_ids[~self.push_mode[env_ids]]
         m = len(env_ids)
         speed = torch.empty(m, device=dev).uniform_(*c.speed_range)
+        if c.small_speed_prob > 0:  # walker v2: slow, precise commands too (no dead zone)
+            small = torch.rand(m, device=dev) < c.small_speed_prob
+            speed = torch.where(small, torch.empty(m, device=dev).uniform_(*c.small_speed_range), speed)
         bearing = self._sample_bearing(m)
 
         # Free walk: constant speed per segment, sometimes turning, no objects.
@@ -154,6 +157,8 @@ class PushTaskCommandCfg(UniformVelocityCommandCfg):
     robot_half_length: float = 0.55
     p_free_walk: float = 0.25  # share of episodes with changing commands and no objects
     speed_range: tuple[float, float] = (0.3, 0.7)  # m/s
+    small_speed_prob: float = 0.0  # walker v2: share of segments at a small speed instead
+    small_speed_range: tuple[float, float] = (0.02, 0.25)  # m/s
     p_forward: float = 0.25  # share of directions drawn near straight ahead; rest: full circle
     angle_jitter: float = 0.2  # rad, around straight ahead
     fixed_bearing: float | None = None  # rad; eval only: every push goes this way

@@ -2,6 +2,9 @@
 
     QuadCoop-Walker-AnymalC
     QuadCoop-Walker-Spot
+    QuadCoop-Walker-AnymalC-Compliant   walker v2 (mdp/compliance.py): force sensing, compliant
+                                        velocity target, small commands; logs under
+                                        logs/rsl_rl/walker_anymal_c_compliant/
 """
 
 from mjlab.tasks.registry import register_mjlab_task
@@ -25,3 +28,11 @@ for _task_id, _robot in TASKS.items():
         rl_cfg=walker_ppo_cfg(_robot.name),
         runner_cls=VelocityOnPolicyRunner,
     )
+
+register_mjlab_task(
+    task_id="QuadCoop-Walker-AnymalC-Compliant",
+    env_cfg=make_walker_env_cfg(ANYMAL_C, compliant=True),
+    play_env_cfg=make_walker_env_cfg(ANYMAL_C, play=True, compliant=True),
+    rl_cfg=walker_ppo_cfg(f"{ANYMAL_C.name}_compliant"),
+    runner_cls=VelocityOnPolicyRunner,
+)
