@@ -1,0 +1,49 @@
+{
+ "walkers": [
+  "v1",
+  "v2"
+ ],
+ "stiffness": 1000.0,
+ "verdicts": {
+  "v1": {
+   "free": {
+    "small_ok": 0.0,
+    "normal_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   },
+   "wall": {
+    "within_25pct": 0.0,
+    "rising": true,
+    "steady": 0.8333333333333334,
+    "touching": 0.12583333333333332,
+    "pass": false
+   },
+   "objects": {
+    "speed_ok": 0.6666666666666666,
+    "max_fall_rate": 0.0,
+    "pass": false
+   }
+  },
+  "v2": {
+   "free": {
+    "small_ok": 0.3076923076923077,
+    "normal_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   },
+   "wall": {
+    "within_25pct": 0.0,
+    "rising": true,
+    "steady": 0.0,
+    "touching": 0.5712499999999999,
+    "pass": false
+   },
+   "objects": {
+    "speed_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   }
+  }
+ }
+}
