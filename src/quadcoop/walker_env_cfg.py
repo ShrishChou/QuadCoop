@@ -59,6 +59,23 @@ immovable (log-uniform masses up to 3000 kg). Its knobs:
   QUADCOOP_WARMUP_ITERS 50, QUADCOOP_OBJ_RAMP 300 - it is warm-started from v1)
 * ``QUADCOOP_PUSH_MAX_FRAC`` / ``_START`` / ``_ITERS``  force field peak (0.4 x weight),
   starting intensity (0.2), iterations to full (2000)
+
+Walker v2.1 (``v21=True``, task ``QuadCoop-Walker-AnymalC-Compliant-v21``; same network as v2,
+resumed from it; logs in the same experiment folder): what v2's acceptance test and training
+curves showed missing, no new reward terms. Defaults (each overridable):
+
+* force field on (``QUADCOOP_PUSH_FORCE``), ramp-hold-ramp loads up to 0.5 x weight
+  (``QUADCOOP_PUSH_MAX_FRAC``), 70% against the command; the walker *feels* it (it is added to the
+  contact force in its force input and in the compliant target), so it practises every force
+  level on smooth loads (Portela et al. 2024; arXiv 2505.20829)
+* mass curriculum from 35 kg (where v2 stopped; ``QUADCOOP_OBJ_MASS``), gate: falls < 0.25 (``QUADCOOP_CURR_FALL``), back off > 0.40
+  (``QUADCOOP_CURR_RETREAT``), a decision every 30 iterations (``QUADCOOP_CURR_DWELL``)
+* force filter 0.1 per step (``QUADCOOP_FORCE_FILTER``), back-off at most 0.1 m/s
+  (``QUADCOOP_MAX_BACKOFF``)
+* free walk 40% of episodes; slow speeds log-uniform 0.02-0.3 m/s (``QUADCOOP_SMALL_SPEED_MAX``);
+  20% of free-walk segments turn on the spot at 0.05-0.6 rad/s (``QUADCOOP_TURN_IN_PLACE``,
+  ``QUADCOOP_TURN_MAX``)
+* turn tracking tolerance 0.4 rad/s instead of 0.71 (``QUADCOOP_YAW_STD``)
 """
 
 from __future__ import annotations
@@ -122,7 +139,8 @@ def _mass_alpha(kg: tuple[float, float]) -> tuple[float, float]:
 
 
 def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | None = None,
-                        compliant: bool = False) -> ManagerBasedRlEnvCfg:
+                        compliant: bool = False, v21: bool = False) -> ManagerBasedRlEnvCfg:
+    compliant = compliant or v21
     cfg = make_velocity_env_cfg()
     warmup = int(_env_float("QUADCOOP_WARMUP_ITERS", 50 if compliant else 1000))
 
@@ -289,22 +307,24 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
     )
 
     # -- sustained push resistance at the bumper (privileged) --------------------
-    if push_force_enabled():
+    # (walker v2.1: on by default, and felt by the walker - mdp/compliance.applied_force_b)
+    if push_force_enabled(default=v21):
         cfg.commands["push_force"] = PushForceCommandCfg(
             resampling_time_range=(1e9, 1e9),  # Schedule is internal.
             body_name=robot.base_body,
             push_point_b=robot.push_point_b,
-            max_frac_of_weight=_env_float("QUADCOOP_PUSH_MAX_FRAC", 0.4),
-            curriculum_start_scale=_env_float("QUADCOOP_PUSH_START", 0.2),
-            curriculum_env_steps=_env_float("QUADCOOP_PUSH_ITERS", 2000) * STEPS_PER_ITER,
-            warmup_env_steps=warmup * STEPS_PER_ITER,
+            max_frac_of_weight=_env_float("QUADCOOP_PUSH_MAX_FRAC", 0.5 if v21 else 0.4),
+            curriculum_start_scale=_env_float("QUADCOOP_PUSH_START", 0.3 if v21 else 0.2),
+            curriculum_env_steps=_env_float("QUADCOOP_PUSH_ITERS", 1000 if v21 else 2000) * STEPS_PER_ITER,
+            warmup_env_steps=(0 if v21 else warmup) * STEPS_PER_ITER,
             # QUADCOOP_PUSH_ADAPTIVE=1: FALCON-style curriculum, the force scale grows only
             # while velocity tracking stays good (and shrinks when it degrades)
             adaptive=os.environ.get("QUADCOOP_PUSH_ADAPTIVE", "0") == "1",
         )
-        cfg.observations["critic"].terms["push_force"] = ObservationTermCfg(
-            func=envs_mdp.generated_commands, params={"command_name": "push_force"}
-        )
+        if not compliant:  # the compliant walker's force input (actor and critic) already includes it
+            cfg.observations["critic"].terms["push_force"] = ObservationTermCfg(
+                func=envs_mdp.generated_commands, params={"command_name": "push_force"}
+            )
 
     # -- objects ------------------------------------------------------------------
     mass_range = OBJECT_MASS_RANGE
@@ -328,9 +348,14 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
     twist = cfg.commands["twist"] = PushTaskCommandCfg(
         **{f.name: getattr(twist, f.name) for f in dataclasses.fields(twist) if f.init},
         robot_half_length=robot.half_length,
-        p_free_walk=_env_float("QUADCOOP_FREE_WALK", 0.25),
+        p_free_walk=_env_float("QUADCOOP_FREE_WALK", 0.4 if v21 else 0.25),
         small_speed_prob=_env_float("QUADCOOP_SMALL_SPEED_PROB", 0.35) if compliant else 0.0,
     )
+    if v21:  # slow speeds log-uniform 0.02-0.3 m/s in every direction, and pure turns on the spot
+        twist.small_speed_range = (0.02, _env_float("QUADCOOP_SMALL_SPEED_MAX", 0.3))
+        twist.small_speed_log = True
+        twist.turn_in_place_prob = _env_float("QUADCOOP_TURN_IN_PLACE", 0.2)
+        twist.turn_in_place_range = (0.05, _env_float("QUADCOOP_TURN_MAX", 0.6))
     # Pays for moving the touched object along the commanded direction, so going around
     # it (which still tracks velocity well enough) is worse than pushing it.
     cfg.rewards["object_push"] = RewardTermCfg(
@@ -340,7 +365,7 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
                 "sensor_names": tuple(contact_sensors)},
     )
     mass_start, mass_final = (
-        float(x) for x in os.environ.get("QUADCOOP_OBJ_MASS", "20,3000" if compliant else "5,30").split(",")
+        float(x) for x in os.environ.get("QUADCOOP_OBJ_MASS", ("35,3000" if v21 else "20,3000") if compliant else "5,30").split(",")
     )
     cfg.curriculum["objects"] = CurriculumTermCfg(
         func=object_curriculum,
@@ -351,14 +376,24 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
             "mass_start": mass_start,
             "mass_final": mass_final,
             **({"err_metric": "vel_error_target", "mass_growth": 1.15} if compliant else {}),
+            # v2.1: v2's curriculum stalled at 35-40 kg because training falls (with exploration
+            # noise) sat at 0.15-0.2 against a 0.10 gate; the test walker never fell
+            **({"advance_fall": _env_float("QUADCOOP_CURR_FALL", 0.25),
+                "retreat_fall": _env_float("QUADCOOP_CURR_RETREAT", 0.40),
+                "dwell_iters": int(_env_float("QUADCOOP_CURR_DWELL", 30))} if v21 else {}),
         },
     )
 
     # -- walker v2: compliant target, force sensing, steady pressing -----------------------------
     if compliant:
         k = _env_float("QUADCOOP_STIFFNESS", 1000.0)
-        cfg.commands["compliance"] = ComplianceTargetCommandCfg(twist_name="twist", sensor_name="bumper_force",
-                                                                stiffness=k)
+        cfg.commands["compliance"] = ComplianceTargetCommandCfg(
+            twist_name="twist", sensor_name="bumper_force", stiffness=k,
+            # v2.1: slower force filter (~0.2 s) and little back-off, so an impact spike does not
+            # tell the robot to retreat (the source of v2's tapping)
+            filter_alpha=_env_float("QUADCOOP_FORCE_FILTER", 0.1 if v21 else 0.3),
+            max_backoff=_env_float("QUADCOOP_MAX_BACKOFF", 0.1 if v21 else 0.3),
+        )
         # the robot feels the contact force (last input: a v1 walker is widened at the end)
         for group in ("actor", "critic"):
             cfg.observations[group].terms["bumper_force"] = ObservationTermCfg(
@@ -383,6 +418,8 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
             func=force_rate_penalty, weight=-_env_float("QUADCOOP_FORCE_RATE_W", 1.0),
             params={"command_name": "compliance"},
         )
+        if v21:  # turning: the stock tolerance (std 0.71 rad/s) pays 92% for standing still at 0.2 rad/s
+            cfg.rewards["track_angular_velocity"].params["std"] = _env_float("QUADCOOP_YAW_STD", 0.4)
 
     cfg.viewer.body_name = robot.base_body
     cfg.viewer.distance = robot.viewer_distance

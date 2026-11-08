@@ -5,6 +5,12 @@
 #
 #   V2=$(ls -t logs/rsl_rl/walker_anymal_c_compliant/*/model_*.pt | head -1)
 #   WALKERS="v1=logs/evals/walker-anymal-v1/model.pt,v2=$V2" sbatch slurm/walker_test.sbatch
+#
+# Walker v2.1 against v2, with videos of the cases v2 failed (eval_videos/<NAME>/<walker>/, git-ignored):
+#   E=logs/rsl_rl/walker_anymal_c_compliant
+#   V2=$(ls $(ls -d $E/*_compliant | tail -1)/model_*.pt | sort -V | tail -1)
+#   V21=$(ls $(ls -d $E/*_v21 | tail -1)/model_*.pt | sort -V | tail -1)
+#   WALKERS="v2=$V2,v21=$V21" NAME=wt-v21 ARGS="--videos fwd,side,yaw,wall,objects" sbatch slurm/walker_test.sbatch
 #SBATCH -J qc-wtest
 #SBATCH -p mit_normal_gpu
 #SBATCH -G l40s:1

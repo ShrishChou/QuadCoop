@@ -22,6 +22,12 @@ The verdicts are computed for every walker, so the v1 walker shows what it fails
     python scripts/walker_test.py --walkers v1=logs/evals/walker-anymal-v1/model.pt --groups free --reps 1 --name wt-quick
 
 Output: evals/<name>/ (summary.md, summary.json, cases.csv).
+
+Videos (optional, first repeat of each chosen case, with the command / achieved velocity / force
+written on top): --videos all, or a list of groups and case names, e.g.
+    --videos yaw,side,wall          (free-walk turns and sideways steps, and every wall case)
+    --videos fwd,objects
+-> eval_videos/<name>/<walker>/<group>_<case>_<command>[...].mp4 (git-ignored; needs MUJOCO_GL=egl on the cluster).
 """
 
 from __future__ import annotations
@@ -63,6 +69,8 @@ def main() -> int:
     ap.add_argument("--stiffness", type=float, default=1000.0, help="k of the compliant walker (N per m/s)")
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--videos", default="", help="'all' or groups / case names to film (see above)")
+    ap.add_argument("--video-dir", default="eval_videos")
     ap.add_argument("--_task", default="", help=argparse.SUPPRESS)  # internal: one (walker, group, mass) in this process
     a = ap.parse_args()
 
@@ -149,6 +157,11 @@ def main() -> int:
             ob.write_root_state_to_sim(st)
         steps = int(a.duration / dt)
         w0 = steps // 2
+        want = {x.strip() for x in a.videos.split(",") if x.strip()}
+        film = [e for e in range(0, n, a.reps)
+                if want and ("all" in want or group in want or cases[e // a.reps][0] in want)]
+        stride = 2
+        rec = {"q": [], "pts": [], "v": [], "f": []}
         fell = torch.zeros(n, dtype=torch.bool, device=dev)
         acc = defaultdict(lambda: torch.zeros(n, device=dev))
         fwd0 = torch.stack([torch.cos(yaw()), torch.sin(yaw())], -1)
@@ -164,6 +177,19 @@ def main() -> int:
                 imp = ((torch.rand(n, 2, generator=gen) - 0.5) * 1.2).to(dev)
                 v[:, :2] += torch.where(kicked.unsqueeze(-1), imp, torch.zeros_like(imp))
                 robot.write_root_link_velocity_to_sim(v)
+            if film and i % stride == 0:
+                y = yaw()
+                c, s = torch.cos(y), torch.sin(y)
+                vw = robot.data.root_link_lin_vel_w[:, :2]
+                vb = torch.stack([c * vw[:, 0] + s * vw[:, 1], -s * vw[:, 0] + c * vw[:, 1],
+                                  robot.data.root_link_ang_vel_w[:, 2]], -1)
+                f = contact_force_on_robot_w(env, "bumper_force")
+                idx = torch.tensor(film, device=dev)
+                rec["q"].append(env.sim.data.qpos[idx].cpu().numpy().copy())
+                rec["pts"].append(torch.stack([robot.data.root_link_pos_w[idx, :2],
+                                               env.scene[cube.name].data.root_link_pos_w[idx, :2]], 1).cpu().numpy())
+                rec["v"].append(vb[idx].cpu().numpy())
+                rec["f"].append((-(f * torch.stack([c, s], -1)).sum(-1))[idx].cpu().numpy())
             if i == w0:
                 p_rob = robot.data.root_link_pos_w[:, :2].clone()
                 p_obj0 = env.scene[cube.name].data.root_link_pos_w[:, :2].clone()
@@ -195,10 +221,49 @@ def main() -> int:
                          "touching": round(float(acc["touch"][e]) / k, 3), "object_speed": round(float(obj_v[e]), 4),
                          "fell": int(fell[e])})
         print(f"[{label}] {group}{'' if mass is None else f' {mass:g} kg'}: {n} runs ({time.time() - t0:.0f} s)", flush=True)
+        if film:
+            render_videos(env, label, group, cases, film, rec, stride * dt, mass)
         env.close() if hasattr(env, "close") else None
         del env
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def render_videos(env, label, group, cases, film, rec, frame_dt, mass):
+        import numpy as np
+
+        try:
+            from quadcoop.coop2.video import Camera, render_episode
+
+            cam = Camera(env)
+        except Exception as e:  # noqa: BLE001
+            print(f"videos off: cannot render ({e}); set MUJOCO_GL=egl on a GPU node")
+            return
+        q, pts, v, f = (np.stack(rec[k]) for k in ("q", "pts", "v", "f"))  # (F, len(film), ...)
+        out = ROOT / a.video_dir / a.name / label
+        for j, e in enumerate(film):
+            case = cases[e // a.reps]
+            if group == "wall":
+                tag, what = f"{case[1]:g}ms_{case[2]:g}deg", f"wall {case[2]:g} deg, {case[1]:g} m/s (target {a.stiffness * case[1]:.0f} N)"
+            elif group == "objects":
+                tag, what = f"{mass:g}kg_{case[1]:g}ms", f"{mass:g} kg cube, {case[1]:g} m/s"
+            else:
+                tag = f"{case[1]:g}_{case[2]:g}_{case[3]:g}"
+                what = f"{case[0]}: vx {case[1]:g} vy {case[2]:g} m/s, wz {case[3]:g} rad/s"
+            last = max(1, int(1.0 / frame_dt))
+
+            def caption(fr, j=j, what=what):
+                lo = max(0, fr - last + 1)
+                vm = v[lo:fr + 1, j].mean(0)
+                return (f"{label} | {what}\n"
+                        f"t {fr * frame_dt:4.1f} s  achieved (1 s mean) vx {vm[0]:+.3f} vy {vm[1]:+.3f} m/s  wz {vm[2]:+.3f} rad/s"
+                        f"  push {f[lo:fr + 1, j].mean():5.0f} N")
+            # the camera frames the robot (and the cube when there is one in view)
+            pp = pts[:, j].copy()  # robot, cube; the camera follows the robot and takes in the cube when it is close
+            far = np.linalg.norm(pp[:, 1] - pp[:, 0], axis=-1) > 3.0
+            pp[far, 1] = pp[far, 0]
+            path = render_episode(cam, e, q[:, j], None, None, pp, out / f"{group}_{case[0]}_{tag}.mp4",
+                                  fps=1.0 / frame_dt, caption=caption)
+            print(f"  video {path.relative_to(ROOT)}", flush=True)
 
     wall_speeds = (0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4)
     wall = [("wall", v, off, 0.0) for off in (0.0, 20.0) for v in wall_speeds]

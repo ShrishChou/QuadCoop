@@ -43,9 +43,10 @@ if TYPE_CHECKING:
 GRAVITY = 9.81
 
 
-def push_force_enabled() -> bool:
-    """Off by default (objects are the disturbance); ``QUADCOOP_PUSH_FORCE=1`` turns it on."""
-    return os.environ.get("QUADCOOP_PUSH_FORCE", "0") not in ("0", "false", "False")
+def push_force_enabled(default: bool = False) -> bool:
+    """Off by default (objects are the disturbance; walker v2.1 passes default=True);
+    ``QUADCOOP_PUSH_FORCE=1`` / ``0`` overrides."""
+    return os.environ.get("QUADCOOP_PUSH_FORCE", "1" if default else "0") not in ("0", "false", "False")
 
 
 class PushForceCommand(CommandTerm):

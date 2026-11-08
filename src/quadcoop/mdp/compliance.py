@@ -20,6 +20,10 @@ The robot observes the contact force (``bumper_force_obs``, body frame, last in 
 input) so the law is learnable; ``ComplianceTargetCommand`` computes the target every step and
 the stock tracking / gait / posture rewards read it as their command. Added rewards:
 ``force_rate_penalty`` (steady pressing instead of taps) and ``velocity_progress_target``.
+
+Walker v2.1 (same network): the force F also includes the smooth training force field when the
+env has one (``applied_force_b``), the force is filtered more slowly and the target never asks
+for more than 0.1 m/s of back-off (both set in walker_env_cfg.py).
 """
 
 from __future__ import annotations
@@ -52,6 +56,26 @@ def contact_force_on_robot_w(env: ManagerBasedRlEnv, sensor_name: str) -> torch.
     return f.sum(1)[:, :2]
 
 
+def applied_force_b(env: ManagerBasedRlEnv, term_name: str = "push_force") -> torch.Tensor | None:
+    """(n, 2) the smooth training force field on the robot (mdp/push_force.py), robot yaw frame, N;
+    None when the env has no such field. Walker v2.1 treats it as one more contact force: it
+    enters the compliant target and the force input exactly like a push from an object, so the
+    walker practises the whole force range on clean ramp-hold-ramp loads, not only on rigid
+    impacts (as in Portela et al. 2024 and the unified position/force policy, arXiv 2505.20829)."""
+    term = getattr(env.command_manager, "_terms", {}).get(term_name)
+    if term is None or not hasattr(term, "applied_force_yaw"):
+        return None
+    return term.applied_force_yaw[:, :2]
+
+
+def sensed_force_b(env: ManagerBasedRlEnv, sensor_name: str, entity: str = "robot") -> torch.Tensor:
+    """(n, 2) everything the walker should feel at its front, robot yaw frame, N: contact from
+    objects plus the training force field (if any)."""
+    f = to_body(env, contact_force_on_robot_w(env, sensor_name), entity)
+    extra = applied_force_b(env)
+    return f if extra is None else f + extra
+
+
 def to_body(env: ManagerBasedRlEnv, v_w: torch.Tensor, entity: str = "robot") -> torch.Tensor:
     yaw = _yaw(env.scene[entity].data.root_link_quat_w)
     c, s = torch.cos(yaw), torch.sin(yaw)
@@ -70,8 +94,9 @@ class ComplianceTargetCommand(CommandTerm):
         n, dev = self.num_envs, self.device
         self.target = torch.zeros(n, 3, device=dev)
         self.force_b = torch.zeros(n, 2, device=dev)  # filtered contact force on the robot, body frame (N)
-        self.prev_force_b = torch.zeros(n, 2, device=dev)  # raw, previous step (force_rate_penalty)
-        self.raw_force_b = torch.zeros(n, 2, device=dev)
+        self.contact_b = torch.zeros(n, 2, device=dev)  # contact from objects only (force_rate_penalty)
+        self.prev_force_b = torch.zeros(n, 2, device=dev)  # contact_b, previous step
+        self.raw_force_b = torch.zeros(n, 2, device=dev)  # contact + training force field, unfiltered
         self._steps = torch.zeros(n, device=dev)
         self._sums = {k: torch.zeros(n, device=dev) for k in ("force_n", "target_speed", "target_err", "pressing")}
         for k in self._sums:
@@ -86,8 +111,10 @@ class ComplianceTargetCommand(CommandTerm):
 
     def _update_command(self) -> None:
         c = self.cfg
-        self.prev_force_b[:] = self.raw_force_b
-        f_b = to_body(self._env, contact_force_on_robot_w(self._env, c.sensor_name))
+        self.prev_force_b[:] = self.contact_b
+        self.contact_b[:] = to_body(self._env, contact_force_on_robot_w(self._env, c.sensor_name))
+        extra = applied_force_b(self._env)
+        f_b = self.contact_b if extra is None else self.contact_b + extra
         self.raw_force_b[:] = f_b
         a = c.filter_alpha
         self.force_b[:] = (1.0 - a) * self.force_b + a * f_b
@@ -106,6 +133,7 @@ class ComplianceTargetCommand(CommandTerm):
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         self.force_b[env_ids] = 0.0
         self.raw_force_b[env_ids] = 0.0
+        self.contact_b[env_ids] = 0.0
         self.prev_force_b[env_ids] = 0.0
         self.target[env_ids] = self._twist()[env_ids]
 
@@ -136,8 +164,9 @@ class ComplianceTargetCommandCfg(CommandTermCfg):
     sensor_name: str = "bumper_force"
     stiffness: float = 1000.0  # N per m/s: against a wall, push force = stiffness x commanded speed
     force_deadband: float = 5.0  # N: contact below this is not a push
-    filter_alpha: float = 0.3  # low-pass on the force (per 50 Hz step)
-    max_backoff: float = 0.3  # m/s: fastest the target ever asks the robot to give way
+    filter_alpha: float = 0.3  # low-pass on the force (per 50 Hz step); v2.1 uses 0.1 (~0.2 s), so an
+    #                            impact spike barely moves the target while a sustained push does
+    max_backoff: float = 0.3  # m/s: fastest the target ever asks the robot to give way (v2.1: 0.1)
 
     def build(self, env: ManagerBasedRlEnv) -> ComplianceTargetCommand:
         return ComplianceTargetCommand(self, env)
@@ -148,16 +177,17 @@ def bumper_force_obs(env: ManagerBasedRlEnv, sensor_name: str = "bumper_force", 
                      entity: str = "robot") -> torch.Tensor:
     """(n, 2): the horizontal contact force on the robot from objects, robot frame, / f_ref
     (clipped to +-2.5). Walker v2's last actor input."""
-    f_b = to_body(env, contact_force_on_robot_w(env, sensor_name), entity)
+    f_b = sensed_force_b(env, sensor_name, entity)
     return (f_b / f_ref).clamp(-2.5, 2.5)
 
 
 # -- rewards ---------------------------------------------------------------------------------
 def force_rate_penalty(env: ManagerBasedRlEnv, command_name: str = "compliance", f_ref: float = 200.0) -> torch.Tensor:
     """Change of the contact force from the last step (/ f_ref, at most 2): taps and bumps cost,
-    a steady press does not."""
+    a steady press does not. Contact with objects only: the training force field's ramps are not
+    the robot's doing."""
     term: ComplianceTargetCommand = env.command_manager.get_term(command_name)  # type: ignore[assignment]
-    d = torch.linalg.norm(term.raw_force_b - term.prev_force_b, dim=-1)
+    d = torch.linalg.norm(term.contact_b - term.prev_force_b, dim=-1)
     return (d / f_ref).clamp(max=2.0)
 
 
@@ -180,4 +210,4 @@ def stiffness_check(k: float, speeds=(0.05, 0.1, 0.25)) -> str:
 
 
 __all__ = ["ComplianceTargetCommand", "ComplianceTargetCommandCfg", "bumper_force_obs", "force_rate_penalty",
-           "velocity_progress_target", "contact_force_on_robot_w", "stiffness_check", "math"]
+           "velocity_progress_target", "contact_force_on_robot_w", "applied_force_b", "sensed_force_b", "stiffness_check", "math"]

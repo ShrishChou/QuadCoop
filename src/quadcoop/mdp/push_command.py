@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import math
+
 import torch
 from mjlab.tasks.velocity.mdp.velocity_command import (
     UniformVelocityCommand,
@@ -91,7 +93,12 @@ class PushTaskCommand(UniformVelocityCommand):
         speed = torch.empty(m, device=dev).uniform_(*c.speed_range)
         if c.small_speed_prob > 0:  # walker v2: slow, precise commands too (no dead zone)
             small = torch.rand(m, device=dev) < c.small_speed_prob
-            speed = torch.where(small, torch.empty(m, device=dev).uniform_(*c.small_speed_range), speed)
+            lo, hi = c.small_speed_range
+            if c.small_speed_log:  # walker v2.1: log-uniform, so 0.02-0.1 m/s gets as much practice as 0.1-0.3
+                slow = torch.exp(torch.empty(m, device=dev).uniform_(math.log(lo), math.log(hi)))
+            else:
+                slow = torch.empty(m, device=dev).uniform_(lo, hi)
+            speed = torch.where(small, slow, speed)
         bearing = self._sample_bearing(m)
 
         # Free walk: constant speed per segment, sometimes turning, no objects.
@@ -100,8 +107,15 @@ class PushTaskCommand(UniformVelocityCommand):
             turn = torch.rand(len(free), device=dev) >= c.p_yaw_zero
             wz = torch.where(turn, torch.empty(len(free), device=dev).uniform_(-c.yaw_max, c.yaw_max),
                              torch.zeros(len(free), device=dev))
-            self.vel_command_b[free, 0] = speed[sel] * torch.cos(bearing[sel])
-            self.vel_command_b[free, 1] = speed[sel] * torch.sin(bearing[sel])
+            sp = speed[sel]
+            if c.turn_in_place_prob > 0:  # walker v2.1: pure turns on the spot (vx = vy = 0)
+                spin = torch.rand(len(free), device=dev) < c.turn_in_place_prob
+                rate = torch.empty(len(free), device=dev).uniform_(*c.turn_in_place_range)
+                sign = torch.where(torch.rand(len(free), device=dev) < 0.5, -1.0, 1.0)
+                wz = torch.where(spin, sign * rate, wz)
+                sp = torch.where(spin, torch.zeros_like(sp), sp)
+            self.vel_command_b[free, 0] = sp * torch.cos(bearing[sel])
+            self.vel_command_b[free, 1] = sp * torch.sin(bearing[sel])
             self.vel_command_b[free, 2] = wz
             self.vel_command_w[free] = self.vel_command_b[free]
             if self._resetting:  # park everything once per episode
@@ -159,6 +173,9 @@ class PushTaskCommandCfg(UniformVelocityCommandCfg):
     speed_range: tuple[float, float] = (0.3, 0.7)  # m/s
     small_speed_prob: float = 0.0  # walker v2: share of segments at a small speed instead
     small_speed_range: tuple[float, float] = (0.02, 0.25)  # m/s
+    small_speed_log: bool = False  # walker v2.1: sample the small speeds log-uniformly
+    turn_in_place_prob: float = 0.0  # walker v2.1: share of free-walk segments that only turn
+    turn_in_place_range: tuple[float, float] = (0.05, 0.6)  # rad/s (either sign)
     p_forward: float = 0.25  # share of directions drawn near straight ahead; rest: full circle
     angle_jitter: float = 0.2  # rad, around straight ahead
     fixed_bearing: float | None = None  # rad; eval only: every push goes this way
