@@ -11,6 +11,8 @@
 #   QUADCOOP_OBJ_MASS=<v2.1's final max_mass>,3000 sbatch slurm/train_walker_v22.sbatch   # resume the mass curriculum
 #   RESUME=1 ITERS=<left> sbatch slurm/train_walker_v22.sbatch   # continue the newest v2.2 run
 #   FROM=compliant sbatch slurm/train_walker_v22.sbatch    # start from v2 instead of v2.1
+#   FROM=v22 RUN_NAME=v22_k1000 QUADCOOP_STIFFNESS=1000 ITERS=1500 sbatch slurm/train_walker_v22.sbatch
+#                                                         # v2.2's recipe at k = 1000, from v2.2's final checkpoint
 #
 # Early gate (do not wait for the end): after ~500 iterations (about an hour; checkpoints every 100), test the
 # newest checkpoint on free walking only:
@@ -18,7 +20,8 @@
 #   WALKERS="v22=$C" NAME=wt-v22-early ARGS="--groups free --k v22=500 --videos side,back,yaw" sbatch slurm/walker_test.sbatch
 # Continue only if sideways / slow-backward walking is back and turning on the spot clearly responds.
 #
-# Optional: FROM (v21 | compliant: which earlier run to start from; default v21), FROM_RUN / FROM_CKPT (explicit
+# Optional: RUN_NAME (log folder suffix, default v22; RESUME=1 continues the newest run with this suffix),
+# FROM (v21 | v22 | compliant | any run suffix: which earlier run to start from; default v21), FROM_RUN / FROM_CKPT (explicit
 # folder / checkpoint), ITERS, NUM_ENVS (4096), SEED (0), LOGGER (wandb|tensorboard), VIDEO (1|0), any QUADCOOP_* knob.
 #SBATCH -J qc-walker22
 #SBATCH -p mit_normal_gpu
@@ -46,21 +49,21 @@ newest_run_with_ckpt() {  # $1 = folder suffix
 ARGS=(--env.scene.num-envs "${NUM_ENVS:-4096}"
       --agent.seed "${SEED:-0}"
       --agent.max-iterations "${ITERS:-3000}"
-      --agent.run-name v22
+      --agent.run-name "${RUN_NAME:-v22}"
       --agent.logger "${LOGGER:-wandb}")
 [[ -n "${EXTRA_ARGS:-}" ]] && ARGS+=(${EXTRA_ARGS})
 if [[ "${VIDEO:-1}" == "1" ]]; then
   ARGS+=(--video True --video-length 300 --video-interval "${VIDEO_INTERVAL:-5000}")
 fi
 if [[ "${RESUME:-0}" == "1" ]]; then
-  RUN=$(newest_run_with_ckpt v22)
+  RUN=$(newest_run_with_ckpt "${RUN_NAME:-v22}")
   CKPT=$(newest_ckpt "$EXP/$RUN")
 else
   RUN=${FROM_RUN:-$(newest_run_with_ckpt "${FROM:-v21}")}
   CKPT=${FROM_CKPT:-$(newest_ckpt "$EXP/$RUN")}
 fi
 [[ -n "$RUN" && -n "$CKPT" && -f "$EXP/$RUN/$CKPT" ]] || { echo "no checkpoint to start from (RUN=$RUN CKPT=$CKPT) in $EXP"; exit 1; }
-echo "starting from $EXP/$RUN/$CKPT"
+echo "starting from $EXP/$RUN/$CKPT (new run: <date>_${RUN_NAME:-v22}, k = ${QUADCOOP_STIFFNESS:-500})"
 ARGS+=(--agent.resume True --agent.load-run "^${RUN}\$" --agent.load-checkpoint "^${CKPT}\$")
 echo "task=$TASK args=${ARGS[*]}"
 python train.py "$TASK" "${ARGS[@]}"

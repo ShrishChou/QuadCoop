@@ -1,0 +1,444 @@
+{
+ "walker": "/orcd/home/002/shrishc/quadcoop/logs/rsl_rl/walker_anymal_c_compliant/2026-11-08_11-35-10_v22/model_8997.pt",
+ "kind": "compliant",
+ "walker_env": {
+  "state_fields_not_copied": [],
+  "order": [
+   "base_lin_vel",
+   "base_ang_vel",
+   "projected_gravity",
+   "joint_pos",
+   "joint_vel",
+   "actions",
+   "command",
+   "bumper_force"
+  ],
+  "dims": [
+   3,
+   3,
+   3,
+   12,
+   12,
+   12,
+   3,
+   2
+  ],
+  "agreement": {
+   "samples": 723,
+   "agree_frac": 0.5255878284923928,
+   "median_diff_N": 19.230450915641462,
+   "p90_diff_N": 151.32224982362425,
+   "median_force_N": 74.54069159419572,
+   "median_cos": 0.9976299034474638,
+   "min_cos": 0.0,
+   "median_scale": 0.9846584609723595,
+   "median_angle_deg": 3.945540116728679,
+   "mean_input_x_N": -127.88795471191406,
+   "mean_recomputed_x_N": -126.91602502583814,
+   "examples": [
+    [
+     -419.6,
+     34.7,
+     0.0,
+     0.0
+    ],
+    [
+     -85.2,
+     18.1,
+     -86.4,
+     18.8
+    ],
+    [
+     -129.4,
+     -1.0,
+     -181.3,
+     -24.5
+    ],
+    [
+     -129.5,
+     6.6,
+     -130.7,
+     6.2
+    ],
+    [
+     0.0,
+     0.0,
+     -59.0,
+     3.6
+    ]
+   ]
+  },
+  "agreement_window": {
+   "samples": 96,
+   "agree_frac": 0.4895833333333333,
+   "median_diff_N": 20.314823422529287,
+   "p90_diff_N": 75.74962956486667,
+   "median_force_N": 70.65912090523639,
+   "median_cos": 0.9978897175963642,
+   "min_cos": -0.1435818702546445,
+   "median_scale": 0.8848971401039198,
+   "median_angle_deg": 3.7223446688028496,
+   "mean_input_x_N": -94.3067626953125,
+   "mean_recomputed_x_N": -92.91249706415044,
+   "examples": [
+    [
+     -142.8,
+     -0.6,
+     0.0,
+     0.0
+    ],
+    [
+     -199.0,
+     217.3,
+     -223.0,
+     185.7
+    ],
+    [
+     -146.2,
+     4.2,
+     -167.1,
+     -8.3
+    ],
+    [
+     -80.9,
+     4.5,
+     -81.8,
+     4.5
+    ],
+    [
+     -50.5,
+     5.1,
+     -56.7,
+     5.9
+    ]
+   ]
+  },
+  "fell": 0
+ },
+ "inputs": {
+  "anymal1": {
+   "order_coop": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "dims_coop": [
+    3,
+    3,
+    3,
+    12,
+    12,
+    12,
+    3,
+    2
+   ],
+   "order_training": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "same_order": true,
+   "size": 50,
+   "checkpoint_inputs": 50,
+   "size_ok": true,
+   "normalizer_finite": true,
+   "normalizer_std_positive": true,
+   "force_normalizer_mean": [
+    -0.0151,
+    -0.0002
+   ],
+   "force_normalizer_std": [
+    0.6668,
+    0.6588
+   ],
+   "force_params": {
+    "sensor_name": "push_anymal1",
+    "felt_load_term": null,
+    "entity": "anymal1"
+   }
+  },
+  "anymal2": {
+   "order_coop": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "dims_coop": [
+    3,
+    3,
+    3,
+    12,
+    12,
+    12,
+    3,
+    2
+   ],
+   "order_training": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "same_order": true,
+   "size": 50,
+   "checkpoint_inputs": 50,
+   "size_ok": true,
+   "normalizer_finite": true,
+   "normalizer_std_positive": true,
+   "force_normalizer_mean": [
+    -0.0151,
+    -0.0002
+   ],
+   "force_normalizer_std": [
+    0.6668,
+    0.6588
+   ],
+   "force_params": {
+    "sensor_name": "push_anymal2",
+    "felt_load_term": null,
+    "entity": "anymal2"
+   }
+  }
+ },
+ "agreement": {
+  "press": {
+   "samples": 920,
+   "agree_frac": 0.508695652173913,
+   "median_diff_N": 11.094995556004243,
+   "p90_diff_N": 121.10175001650678,
+   "median_force_N": 78.82199724008244,
+   "median_cos": 0.9967855421609317,
+   "min_cos": 0.0,
+   "median_scale": 0.9857396207250988,
+   "median_angle_deg": 4.595164110043945,
+   "mean_input_x_N": -84.61357116699219,
+   "mean_recomputed_x_N": -46.00250930488302,
+   "examples": [
+    [
+     -500.0,
+     262.1,
+     0.0,
+     0.0
+    ],
+    [
+     -85.0,
+     -21.6,
+     0.0,
+     0.0
+    ],
+    [
+     -89.9,
+     -20.6,
+     -92.2,
+     -21.5
+    ],
+    [
+     -33.0,
+     0.1,
+     -33.0,
+     0.1
+    ],
+    [
+     -137.4,
+     13.7,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "pushed": {
+   "samples": 258,
+   "agree_frac": 0.34108527131782945,
+   "median_diff_N": 59.88529028327568,
+   "p90_diff_N": 402.1532196242731,
+   "median_force_N": 252.4514128270706,
+   "median_cos": 0.9957063549503786,
+   "min_cos": 0.0,
+   "median_scale": 0.9735755723377792,
+   "median_angle_deg": 5.311345591039024,
+   "mean_input_x_N": -187.34710693359375,
+   "mean_recomputed_x_N": -95.29332956978396,
+   "examples": [
+    [
+     -500.0,
+     -13.5,
+     0.0,
+     0.0
+    ],
+    [
+     -154.5,
+     164.4,
+     -158.6,
+     168.7
+    ],
+    [
+     -76.7,
+     186.3,
+     -50.7,
+     164.9
+    ],
+    [
+     -15.9,
+     -1.1,
+     -439.6,
+     -13.7
+    ],
+    [
+     -426.9,
+     -22.6,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "partner": {
+   "samples": 0
+  },
+  "alone": {
+   "samples": 0
+  }
+ },
+ "agreement_window": {
+  "press": {
+   "samples": 157,
+   "agree_frac": 0.5095541401273885,
+   "median_diff_N": 9.083489692806573,
+   "p90_diff_N": 72.70550278615771,
+   "median_force_N": 51.77840357155471,
+   "median_cos": 0.9986216638312031,
+   "min_cos": 0.0,
+   "median_scale": 0.9765492489239145,
+   "median_angle_deg": 3.0086045141618274,
+   "mean_input_x_N": -49.52117156982422,
+   "mean_recomputed_x_N": -26.938365043934194,
+   "examples": [
+    [
+     -87.1,
+     33.6,
+     0.0,
+     0.0
+    ],
+    [
+     -46.1,
+     -1.7,
+     0.0,
+     0.0
+    ],
+    [
+     -12.8,
+     -3.0,
+     -21.4,
+     -3.6
+    ],
+    [
+     -59.5,
+     2.4,
+     -70.1,
+     6.0
+    ],
+    [
+     -97.7,
+     4.7,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "pushed": {
+   "samples": 50,
+   "agree_frac": 0.46,
+   "median_diff_N": 26.51879981859345,
+   "p90_diff_N": 152.0674336263445,
+   "median_force_N": 139.8727731161573,
+   "median_cos": 0.9976834044701988,
+   "min_cos": 0.0,
+   "median_scale": 0.9951599164073858,
+   "median_angle_deg": 3.9002876594078244,
+   "mean_input_x_N": -96.67110443115234,
+   "mean_recomputed_x_N": -49.171358058008515,
+   "examples": [
+    [
+     -137.7,
+     -2.3,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     100.0,
+     0.0,
+     100.0
+    ],
+    [
+     -143.1,
+     198.2,
+     -120.8,
+     187.4
+    ],
+    [
+     -186.9,
+     33.9,
+     -238.3,
+     15.0
+    ],
+    [
+     -166.1,
+     7.4,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "partner": {
+   "samples": 0
+  },
+  "alone": {
+   "samples": 0
+  }
+ },
+ "state_fields_not_copied": [],
+ "exclusion": {
+  "partner_touching_steps": 1407,
+  "partner_max_input_N": 0.0,
+  "alone_max_input_N": 0.0
+ },
+ "group_noise_max_N": 3.999905288219452,
+ "smoke": {
+  "steps": 470,
+  "nonfinite": 0,
+  "clipped_frac": 0.0067819148936170215,
+  "max_abs_z": 3.795245885848999,
+  "touch": {
+   "press": 0.525,
+   "stop": 0.207,
+   "press_again": 0.648
+  },
+  "force": {
+   "press": 51.9,
+   "stop": 11.8,
+   "press_again": 52.6
+  },
+  "fell": 3,
+  "fell_press": 0
+ },
+ "envs_per_scenario": 4
+}

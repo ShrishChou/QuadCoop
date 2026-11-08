@@ -55,6 +55,22 @@ Tasks, placements and scoring are exactly scripts/eval_coop2.py's (12 objects x 
 within 80 s; a fall of either robot, the object tipping or being lost ends the episode), so the
 results sit in the same table as the trained pairs: stats in evals/<prefix>-<rule>/eval/pair/
 (summary.md/json, episodes.csv), videos in logs/evals/<prefix>-<rule>/pair/videos/.
+
+Walker comparisons: QUADCOOP_WALKER_OVERRIDE_ANYMAL_C=<model.pt> runs the ANYmals on another walker (a
+compliant one gets its contact-force input wired automatically; run scripts/walker_coop_check.py on it
+first). The walkers used are recorded in summary.json ("walkers") and results from different walkers are
+never merged. Use a different --prefix per walker. The two controlled comparisons:
+
+    # the existing (v1-trained) executor, zero-shot on the new walker vs on v1: does swapping help as is?
+    python scripts/contact_test.py --executor stage4 --checkpoint <exec.pt> --prefix ex-v1 ...
+    QUADCOOP_WALKER_OVERRIDE_ANYMAL_C=<v22k.pt> python scripts/contact_test.py --executor stage4 \
+        --checkpoint <exec.pt> --prefix ex-v22k ...
+    # the same scripted executor on both walkers: which walker better supports a fixed controller?
+    python scripts/contact_test.py --executor script --prefix sc-v1 ...
+    QUADCOOP_WALKER_OVERRIDE_ANYMAL_C=<v22k.pt> python scripts/contact_test.py --executor script --prefix sc-v22k ...
+
+(The third, matched fine-tuning of the executor on each walker, is a train_coop2.py run with the same
+override; train_coop2.py reads it too.)
 """
 
 from __future__ import annotations
@@ -942,6 +958,22 @@ def main() -> int:
     return 0
 
 
+def walker_record() -> dict:
+    """Which walker each robot type ran on (and its kind), for the summary and for keeping results of
+    different walkers apart."""
+    import os
+
+    from quadcoop.coop2.env_cfg import walker_kind
+
+    out = {}
+    for robot in ("anymal_c", "spot"):
+        p = os.environ.get(f"QUADCOOP_WALKER_CKPT_{robot.upper()}", "")
+        if p:
+            out[robot] = {"checkpoint": p, "kind": walker_kind(robot),
+                          "override": bool(os.environ.get(f"QUADCOOP_WALKER_OVERRIDE_{robot.upper()}", ""))}
+    return out
+
+
 def _num(v):
     if v == "":
         return v
@@ -1085,7 +1117,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
             old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
-            bool(old_meta.get("swap_actors", False)) == bool(getattr(a, "swap_actors", False))
+            bool(old_meta.get("swap_actors", False)) == bool(getattr(a, "swap_actors", False)) and \
+            old_meta.get("walkers", walker_record()) == walker_record()
         old = [{k: _num(v) for k, v in r.items()} for r in csv.DictReader(open(out / "episodes.csv"))] if same else []
     except (OSError, ValueError):
         old = []
@@ -1156,12 +1189,16 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
         what += f"; planner settings changed: {a.set}"
     if getattr(a, "swap_actors", False):
         what += "; ACTORS SWAPPED (each robot runs the other's trained network)"
+    ov = {r: v for r, v in walker_record().items() if v["override"]}
+    if ov:
+        what += "; WALKER OVERRIDE: " + ", ".join(f"{r} = {v['checkpoint']} ({v['kind']})" for r, v in ov.items())
     summary = {"policy": what, "name": name, "agents": list(agents), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon, "rule": rule, "reassign_s": a.reassign_s, "executor": a.executor,
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
                "swap_actors": bool(getattr(a, "swap_actors", False)),
+               "walkers": walker_record(),
                "overall": agg(rows),
                "by_mass": {f"{m:g}": agg(by[("mass", m)]) for m in masses},
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])

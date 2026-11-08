@@ -1,0 +1,135 @@
+{
+ "walkers": [
+  "v1",
+  "v21",
+  "v22"
+ ],
+ "checkpoints": {
+  "v1": "logs/evals/walker-anymal-v1/model.pt",
+  "v21": "logs/rsl_rl/walker_anymal_c_compliant/2026-11-08_03-50-04_v21/model_5998.pt",
+  "v22": "logs/rsl_rl/walker_anymal_c_compliant/2026-11-08_11-35-10_v22/model_8997.pt"
+ },
+ "transitions": {
+  "v1": {
+   "start_failures": 12,
+   "reverse_failures": 11,
+   "stop_failures": 0,
+   "stop_not_measured": 12,
+   "trials": 12,
+   "falls": 0
+  },
+  "v21": {
+   "start_failures": 7,
+   "reverse_failures": 7,
+   "stop_failures": 0,
+   "stop_not_measured": 7,
+   "trials": 12,
+   "falls": 0
+  },
+  "v22": {
+   "start_failures": 0,
+   "reverse_failures": 3,
+   "stop_failures": 0,
+   "stop_not_measured": 0,
+   "trials": 12,
+   "falls": 0
+  }
+ },
+ "corrections": {
+  "v1": {
+   "fwd": {
+    "moves": 16,
+    "not_initiated": 4,
+    "not_settled": 11
+   },
+   "side": {
+    "moves": 16,
+    "not_initiated": 2,
+    "not_settled": 12
+   },
+   "yaw": {
+    "moves": 16,
+    "not_initiated": 1,
+    "not_settled": 15
+   }
+  },
+  "v21": {
+   "fwd": {
+    "moves": 16,
+    "not_initiated": 0,
+    "not_settled": 7
+   },
+   "side": {
+    "moves": 16,
+    "not_initiated": 0,
+    "not_settled": 4
+   },
+   "yaw": {
+    "moves": 16,
+    "not_initiated": 0,
+    "not_settled": 8
+   }
+  },
+  "v22": {
+   "fwd": {
+    "moves": 16,
+    "not_initiated": 0,
+    "not_settled": 2
+   },
+   "side": {
+    "moves": 16,
+    "not_initiated": 0,
+    "not_settled": 0
+   },
+   "yaw": {
+    "moves": 16,
+    "not_initiated": 0,
+    "not_settled": 7
+   }
+  }
+ },
+ "loaded": {
+  "v1": {
+   "movable_20": {
+    "falls": 0,
+    "trials": 2
+   },
+   "movable_40": {
+    "falls": 0,
+    "trials": 2
+   },
+   "wall_3000": {
+    "falls": 0,
+    "trials": 2
+   }
+  },
+  "v21": {
+   "movable_20": {
+    "falls": 0,
+    "trials": 2
+   },
+   "movable_40": {
+    "falls": 0,
+    "trials": 2
+   },
+   "wall_3000": {
+    "falls": 0,
+    "trials": 2
+   }
+  },
+  "v22": {
+   "movable_20": {
+    "falls": 0,
+    "trials": 2
+   },
+   "movable_40": {
+    "falls": 0,
+    "trials": 2
+   },
+   "wall_3000": {
+    "falls": 0,
+    "trials": 2
+   }
+  }
+ }
+}

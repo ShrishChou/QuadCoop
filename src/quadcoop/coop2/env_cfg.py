@@ -36,7 +36,10 @@ terms), so the warm-started policies (and IPPO's warm-started critics) start in 
 
 Walker checkpoints: QUADCOOP_WALKER_CKPT_ANYMAL_C / QUADCOOP_WALKER_CKPT_SPOT; their history
 lengths: QUADCOOP_WALKER_HISTORY_ANYMAL_C / _SPOT (train_coop2.py sets all four from
-evals/models.yaml). Spot's joint gains follow QUADCOOP_SPOT_PROFILE (set before import).
+evals/models.yaml; QUADCOOP_WALKER_OVERRIDE_<ROBOT>=<model.pt> replaces the walker for a test).
+Spot's joint gains follow QUADCOOP_SPOT_PROFILE (set before import). Each walker's kind (see
+walker_kind): 'v1' (velocity walker) or 'compliant' (walker v2 / v2.1 / v2.2: two more inputs, the
+contact force from objects, wired to this robot's push_<robot> sensor).
 """
 
 from __future__ import annotations
@@ -105,6 +108,11 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
                                               flatten_history_dim=old.flatten_history_dim)
     grp.terms["command"] = ObservationTermCfg(func=envs_mdp.generated_commands,
                                               params={"command_name": f"twist_{name}"})
+    if "bumper_force" in grp.terms:  # compliant walker: the contact force from objects on this robot,
+        # robot yaw frame, / 200 N, from its push_<robot> sensor (objects only: the partner and the
+        # ground are not in it, as in training), nothing synthetic added
+        t = grp.terms["bumper_force"]
+        t.params = {**t.params, "sensor_name": f"push_{name}", "entity": name, "felt_load_term": None}
     return grp
 
 
@@ -139,6 +147,29 @@ def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, gui
 
 def walker_history(robot_name: str) -> int:
     return int(float(os.environ.get(f"QUADCOOP_WALKER_HISTORY_{robot_name.upper()}", "0")))
+
+
+def walker_kind(robot_name: str) -> str:
+    """'v1' or 'compliant'. QUADCOOP_WALKER_KIND_<ROBOT> = v1 | compliant | auto (default). auto: the
+    walker's training config (params/env.yaml next to the checkpoint) has the contact-force input
+    (bumper_force) -> compliant; without that file, a first layer with 50 inputs on ANYmal C ->
+    compliant (v1 has 48)."""
+    kind = os.environ.get(f"QUADCOOP_WALKER_KIND_{robot_name.upper()}", "auto")
+    if kind in ("v1", "compliant"):
+        return kind
+    assert kind == "auto", f"QUADCOOP_WALKER_KIND_{robot_name.upper()}={kind}: use v1, compliant or auto"
+    path = os.environ.get(f"QUADCOOP_WALKER_CKPT_{robot_name.upper()}", "")
+    if not path or not os.path.exists(path):
+        return "v1"
+    yml = os.path.join(os.path.dirname(os.path.abspath(path)), "params", "env.yaml")
+    if os.path.exists(yml):
+        return "compliant" if "bumper_force" in open(yml).read() else "v1"
+    import torch
+
+    sd = torch.load(path, map_location="cpu", weights_only=False)
+    sd = sd.get("actor_state_dict", sd.get("model_state_dict", {}))
+    w = sd.get("mlp.0.weight")
+    return "compliant" if (w is not None and robot_name == "anymal_c" and w.shape[1] == 50) else "v1"
 
 
 REWARD_SETS = ("r3", "r4", "r5", "r7", "r8", "rmin")
@@ -219,7 +250,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
     assert not (partner_map and variant != "b"), "the partner map needs variant b (maps)"
-    wcfg = {a: make_walker_env_cfg(SPECS[a], history=walker_history(SPECS[a].name)) for a in AGENTS}
+    kinds = {a: walker_kind(SPECS[a].name) for a in AGENTS}
+    wcfg = {a: make_walker_env_cfg(SPECS[a], history=walker_history(SPECS[a].name), compliant=kinds[a] == "compliant")
+            for a in AGENTS}
     cfg = wcfg[AGENTS[0]]  # sim, terrain and viewer settings; everything task-related is replaced
 
     # -- scene: two robots, the Stage 2 objects and goal markers, a robot-robot contact sensor --
@@ -245,7 +278,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
-    if reward_set == "r8" or guide or push_sensors:  # contact between each robot and the object (work_credit, bump cost)
+    if reward_set == "r8" or guide or push_sensors or "compliant" in kinds.values():
+        # contact between each robot and the object (work_credit, bump cost; a compliant walker's force input)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
             primary=ContactMatch(mode="body", pattern=tuple(f"{o}/body" for o in OBJ_NAMES2)),

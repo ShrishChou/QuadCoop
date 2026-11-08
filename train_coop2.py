@@ -110,6 +110,17 @@ def set_env(models: dict) -> None:
         os.environ[f"QUADCOOP_WALKER_HISTORY_{robot.upper()}"] = str(env.get("QUADCOOP_WALKER_HISTORY", "0"))
         if robot == "spot":
             os.environ["QUADCOOP_SPOT_PROFILE"] = env.get("QUADCOOP_SPOT_PROFILE", "v1")
+        override = os.environ.get(f"QUADCOOP_WALKER_OVERRIDE_{robot.upper()}", "")
+        if override:  # a different walker for a test (e.g. a compliant walker under a v1-trained executor)
+            if not Path(override).exists():
+                raise SystemExit(f"QUADCOOP_WALKER_OVERRIDE_{robot.upper()}={override}: not found")
+            os.environ[f"QUADCOOP_WALKER_CKPT_{robot.upper()}"] = str(Path(override).resolve())
+            os.environ[f"QUADCOOP_WALKER_HISTORY_{robot.upper()}"] = os.environ.get(
+                f"QUADCOOP_WALKER_OVERRIDE_HISTORY_{robot.upper()}", "0")
+            models["walker_ckpt"][robot] = str(Path(override).resolve())
+            models.setdefault("walker_override", {})[robot] = str(Path(override).resolve())
+            print(f"[walker] {robot}: OVERRIDE {override} (the policies above it were trained on "
+                  f"{models['selection'].get('walker_' + ('anymal' if robot == 'anymal_c' else robot), '?')})")
 
 
 RULES = ("spread", "adjacent", "random", "wrench", "expert")
