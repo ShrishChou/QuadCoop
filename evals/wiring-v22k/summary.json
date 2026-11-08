@@ -1,0 +1,444 @@
+{
+ "walker": "/orcd/home/002/shrishc/quadcoop/logs/rsl_rl/walker_anymal_c_compliant/2026-11-08_14-39-28_v22_k1000/model_10496.pt",
+ "kind": "compliant",
+ "walker_env": {
+  "state_fields_not_copied": [],
+  "order": [
+   "base_lin_vel",
+   "base_ang_vel",
+   "projected_gravity",
+   "joint_pos",
+   "joint_vel",
+   "actions",
+   "command",
+   "bumper_force"
+  ],
+  "dims": [
+   3,
+   3,
+   3,
+   12,
+   12,
+   12,
+   3,
+   2
+  ],
+  "agreement": {
+   "samples": 703,
+   "agree_frac": 0.5035561877667141,
+   "median_diff_N": 36.57921470104514,
+   "p90_diff_N": 230.6615200378378,
+   "median_force_N": 148.69381564534498,
+   "median_cos": 0.9984231709839418,
+   "min_cos": 0.0,
+   "median_scale": 0.9802500245654151,
+   "median_angle_deg": 3.218007230711788,
+   "mean_input_x_N": -168.63006591796875,
+   "mean_recomputed_x_N": -155.90548212803085,
+   "examples": [
+    [
+     -345.8,
+     74.8,
+     0.0,
+     0.0
+    ],
+    [
+     -459.5,
+     -23.3,
+     -266.7,
+     207.5
+    ],
+    [
+     -461.9,
+     48.5,
+     -345.6,
+     23.9
+    ],
+    [
+     -66.8,
+     -6.2,
+     -68.0,
+     -6.4
+    ],
+    [
+     -64.4,
+     27.6,
+     -65.6,
+     28.6
+    ]
+   ]
+  },
+  "agreement_window": {
+   "samples": 96,
+   "agree_frac": 0.4791666666666667,
+   "median_diff_N": 22.176001427184403,
+   "p90_diff_N": 113.51718272660759,
+   "median_force_N": 118.50832603370495,
+   "median_cos": 0.9986862250612127,
+   "min_cos": 0.0,
+   "median_scale": 0.9080085210283463,
+   "median_angle_deg": 2.936258180313879,
+   "mean_input_x_N": -121.00920867919922,
+   "mean_recomputed_x_N": -111.20750861645847,
+   "examples": [
+    [
+     -87.1,
+     9.7,
+     0.0,
+     0.0
+    ],
+    [
+     -203.2,
+     -42.0,
+     -10.5,
+     -63.4
+    ],
+    [
+     -10.6,
+     2.5,
+     -10.8,
+     2.7
+    ],
+    [
+     -58.6,
+     -8.7,
+     -59.7,
+     -9.3
+    ],
+    [
+     -105.1,
+     -34.7,
+     -119.1,
+     -46.1
+    ]
+   ]
+  },
+  "fell": 0
+ },
+ "inputs": {
+  "anymal1": {
+   "order_coop": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "dims_coop": [
+    3,
+    3,
+    3,
+    12,
+    12,
+    12,
+    3,
+    2
+   ],
+   "order_training": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "same_order": true,
+   "size": 50,
+   "checkpoint_inputs": 50,
+   "size_ok": true,
+   "normalizer_finite": true,
+   "normalizer_std_positive": true,
+   "force_normalizer_mean": [
+    -0.0156,
+    -0.0004
+   ],
+   "force_normalizer_std": [
+    0.6401,
+    0.631
+   ],
+   "force_params": {
+    "sensor_name": "push_anymal1",
+    "felt_load_term": null,
+    "entity": "anymal1"
+   }
+  },
+  "anymal2": {
+   "order_coop": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "dims_coop": [
+    3,
+    3,
+    3,
+    12,
+    12,
+    12,
+    3,
+    2
+   ],
+   "order_training": [
+    "base_lin_vel",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "actions",
+    "command",
+    "bumper_force"
+   ],
+   "same_order": true,
+   "size": 50,
+   "checkpoint_inputs": 50,
+   "size_ok": true,
+   "normalizer_finite": true,
+   "normalizer_std_positive": true,
+   "force_normalizer_mean": [
+    -0.0156,
+    -0.0004
+   ],
+   "force_normalizer_std": [
+    0.6401,
+    0.631
+   ],
+   "force_params": {
+    "sensor_name": "push_anymal2",
+    "felt_load_term": null,
+    "entity": "anymal2"
+   }
+  }
+ },
+ "agreement": {
+  "press": {
+   "samples": 828,
+   "agree_frac": 0.4855072463768116,
+   "median_diff_N": 27.63292054468092,
+   "p90_diff_N": 199.7095790229405,
+   "median_force_N": 102.8757095336914,
+   "median_cos": 0.9917059427640267,
+   "min_cos": 0.0,
+   "median_scale": 0.9806360389188804,
+   "median_angle_deg": 7.384460552867046,
+   "mean_input_x_N": -122.8216781616211,
+   "mean_recomputed_x_N": -65.5187229827493,
+   "examples": [
+    [
+     -401.7,
+     64.1,
+     0.0,
+     0.0
+    ],
+    [
+     -151.2,
+     -2.4,
+     0.0,
+     0.0
+    ],
+    [
+     -110.8,
+     -21.0,
+     -113.1,
+     -21.6
+    ],
+    [
+     -102.9,
+     -13.8,
+     -105.8,
+     -8.5
+    ],
+    [
+     -425.9,
+     -22.1,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "pushed": {
+   "samples": 263,
+   "agree_frac": 0.33079847908745247,
+   "median_diff_N": 71.9734663669497,
+   "p90_diff_N": 396.56135396002406,
+   "median_force_N": 304.70916748046875,
+   "median_cos": 0.9893287428664368,
+   "min_cos": 0.0,
+   "median_scale": 1.0085470786844046,
+   "median_angle_deg": 8.377846252952569,
+   "mean_input_x_N": -198.86062622070312,
+   "mean_recomputed_x_N": -116.87951095118143,
+   "examples": [
+    [
+     -500.0,
+     15.6,
+     0.0,
+     0.0
+    ],
+    [
+     -249.2,
+     158.7,
+     -237.8,
+     182.2
+    ],
+    [
+     -433.8,
+     103.4,
+     0.0,
+     0.0
+    ],
+    [
+     -41.5,
+     -2.0,
+     -115.9,
+     -5.7
+    ],
+    [
+     -294.0,
+     -15.0,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "partner": {
+   "samples": 0
+  },
+  "alone": {
+   "samples": 0
+  }
+ },
+ "agreement_window": {
+  "press": {
+   "samples": 158,
+   "agree_frac": 0.5189873417721519,
+   "median_diff_N": 10.924955867911468,
+   "p90_diff_N": 107.08797092195528,
+   "median_force_N": 57.73091653728008,
+   "median_cos": 0.9983230696456398,
+   "min_cos": 0.0,
+   "median_scale": 0.9776351934805285,
+   "median_angle_deg": 3.3180013262177837,
+   "mean_input_x_N": -64.3681869506836,
+   "mean_recomputed_x_N": -34.33887439001523,
+   "examples": [
+    [
+     -144.8,
+     36.3,
+     0.0,
+     0.0
+    ],
+    [
+     -82.0,
+     -7.6,
+     0.0,
+     0.0
+    ],
+    [
+     -27.2,
+     4.4,
+     -27.8,
+     4.5
+    ],
+    [
+     -63.4,
+     -10.4,
+     -83.8,
+     -12.0
+    ],
+    [
+     -26.7,
+     -3.9,
+     0.0,
+     0.0
+    ]
+   ]
+  },
+  "pushed": {
+   "samples": 50,
+   "agree_frac": 0.5,
+   "median_diff_N": 26.19054394009826,
+   "p90_diff_N": 138.41008526243067,
+   "median_force_N": 137.11157989501953,
+   "median_cos": 0.9962784154069884,
+   "min_cos": -0.4377267763304742,
+   "median_scale": 1.0035523608885788,
+   "median_angle_deg": 4.944345874441064,
+   "mean_input_x_N": -104.60306549072266,
+   "mean_recomputed_x_N": -61.47862276032143,
+   "examples": [
+    [
+     -118.8,
+     5.6,
+     0.0,
+     0.0
+    ],
+    [
+     -39.4,
+     21.4,
+     -50.7,
+     30.9
+    ],
+    [
+     -200.8,
+     41.8,
+     -109.9,
+     49.2
+    ],
+    [
+     -236.8,
+     -0.9,
+     -250.7,
+     9.9
+    ],
+    [
+     -136.8,
+     -10.6,
+     -36.7,
+     -11.0
+    ]
+   ]
+  },
+  "partner": {
+   "samples": 0
+  },
+  "alone": {
+   "samples": 0
+  }
+ },
+ "state_fields_not_copied": [],
+ "exclusion": {
+  "partner_touching_steps": 1447,
+  "partner_max_input_N": 0.0,
+  "alone_max_input_N": 0.0
+ },
+ "group_noise_max_N": 3.999905288219452,
+ "smoke": {
+  "steps": 470,
+  "nonfinite": 0,
+  "clipped_frac": 0.009574468085106383,
+  "max_abs_z": 3.9627301692962646,
+  "touch": {
+   "press": 0.399,
+   "stop": 0.36,
+   "press_again": 0.56
+  },
+  "force": {
+   "press": 60.3,
+   "stop": 22.5,
+   "press_again": 74.1
+  },
+  "fell": 1,
+  "fell_press": 0
+ },
+ "envs_per_scenario": 4
+}
