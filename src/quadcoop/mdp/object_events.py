@@ -139,9 +139,13 @@ def object_curriculum(
     ema: float = 0.05,
     err_metric: str = "vel_error_xy",
     mass_growth: float = 1.0,
+    mass_init: float | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Runs at every reset (before the episode stats are cleared)."""
-    st = _state(env, {"max_mass": mass_start})
+    """Runs at every reset (before the episode stats are cleared).
+
+    The state is not saved in checkpoints. ``mass_init`` restores max_mass when a fine-tune resumes
+    from a run whose curriculum had already advanced (the rules still apply, so it can retreat)."""
+    st = _state(env, {"max_mass": mass_start if mass_init is None else min(mass_final, max(mass_start, mass_init))})
     it = env.common_step_counter / STEPS_PER_ITER
     st["p_place"] = p_max * min(1.0, max(0.0, (it - warmup_iters) / max(ramp_iters, 1)))
 

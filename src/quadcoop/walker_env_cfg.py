@@ -32,6 +32,8 @@ Env-var knobs (read when the config is built, i.e. at ``train.py`` start):
 * ``QUADCOOP_WARMUP_ITERS``   plain-walking iterations before objects appear (1000)
 * ``QUADCOOP_OBJ_PMAX``       final chance an object is put in a clear path (0.8)
 * ``QUADCOOP_OBJ_RAMP``       iterations after warm-up to reach it (1500)
+* ``QUADCOOP_GAIT_CMD_MIN``   command speed above which stepping is rewarded (v1 0.2, compliant 0.05)
+* ``QUADCOOP_OBJ_MASS_INIT``  start max_mass here instead of at the curriculum start (fine-tunes)
 * ``QUADCOOP_OBJ_MASS``       "start,final" allowed object mass in kg ("5,30")
 * ``QUADCOOP_FREE_WALK``      share of episodes without objects, changing commands (0.25)
 * ``QUADCOOP_PUSH_REWARD``    weight of the object-push-progress reward (0.5)
@@ -292,7 +294,9 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
     # Gait: reward each foot's swing time (0.05-0.5 s) whenever the robot is told to
     # move, so it steps instead of shuffling or bracing in place.
     cfg.rewards["air_time"].weight = _env_float("QUADCOOP_GAIT_REWARD", 0.5)
-    cfg.rewards["air_time"].params["command_threshold"] = 0.05 if compliant else 0.2
+    # (v1 used 0.2: below that stepping earned nothing, and under the creeping contact v1 could
+    # slide there instead; with grippy feet a fine-tune learned to stand still. QUADCOOP_GAIT_CMD_MIN)
+    cfg.rewards["air_time"].params["command_threshold"] = _env_float("QUADCOOP_GAIT_CMD_MIN", 0.05 if compliant else 0.2)
     # Hold the body at its walking height (no sagging into the push).
     cfg.rewards["base_height"] = RewardTermCfg(
         func=base_height, weight=_env_float("QUADCOOP_HEIGHT_REWARD", 0.5),
@@ -378,8 +382,11 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
         **{f.name: getattr(twist, f.name) for f in dataclasses.fields(twist) if f.init},
         robot_half_length=robot.half_length,
         p_free_walk=_env_float("QUADCOOP_FREE_WALK", 0.4 if v21 else 0.25),
-        small_speed_prob=_env_float("QUADCOOP_SMALL_SPEED_PROB", 0.35) if compliant else 0.0,
+        # v1 default 0: its push episodes only ran at 0.3-0.7 m/s (speed_range)
+        small_speed_prob=_env_float("QUADCOOP_SMALL_SPEED_PROB", 0.35 if compliant else 0.0),
     )
+    if not v21 and os.environ.get("QUADCOOP_SMALL_SPEED_MAX"):
+        twist.small_speed_range = (0.02, _env_float("QUADCOOP_SMALL_SPEED_MAX", 0.25))
     if v21:  # slow speeds log-uniform 0.02-0.3 m/s in every direction, and pure turns on the spot
         twist.small_speed_range = (0.02, _env_float("QUADCOOP_SMALL_SPEED_MAX", 0.3))
         twist.small_speed_log = True
@@ -404,6 +411,8 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
             "p_max": _env_float("QUADCOOP_OBJ_PMAX", 0.8),
             "mass_start": mass_start,
             "mass_final": mass_final,
+            # restore an advanced curriculum on a fine-tune (state is not in the checkpoint)
+            **({"mass_init": _env_float("QUADCOOP_OBJ_MASS_INIT", 0.0)} if os.environ.get("QUADCOOP_OBJ_MASS_INIT") else {}),
             **({"err_metric": "vel_error_target", "mass_growth": 1.15} if compliant else {}),
             # v2.1: v2's curriculum stalled at 35-40 kg because training falls (with exploration
             # noise) sat at 0.15-0.2 against a 0.10 gate; the test walker never fell

@@ -1,0 +1,65 @@
+{
+ "walkers": [
+  "v1",
+  "v1_nocreep2"
+ ],
+ "stiffness": 1000.0,
+ "k": {
+  "v1": 1000.0,
+  "v1_nocreep2": 1000.0
+ },
+ "verdicts": {
+  "v1": {
+   "free": {
+    "small_ok": 0.07692307692307693,
+    "normal_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   },
+   "wall": {
+    "k": 1000.0,
+    "within_25pct": 0.16666666666666666,
+    "rising": false,
+    "steady": 0.3333333333333333,
+    "touching": 0.7341666666666667,
+    "pass": false,
+    "steady_after_04s_average": 1.0
+   },
+   "objects": {
+    "k": 1000.0,
+    "speed_ok": 0.4166666666666667,
+    "max_fall_rate": 0.0,
+    "pass": false,
+    "law_with_measured_force_ok": 0.25
+   }
+  },
+  "v1_nocreep2": {
+   "free": {
+    "small_ok": 0.15384615384615385,
+    "normal_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false
+   },
+   "wall": {
+    "k": 1000.0,
+    "within_25pct": 0.16666666666666666,
+    "rising": true,
+    "steady": 0.16666666666666666,
+    "touching": 0.6483333333333333,
+    "pass": false,
+    "steady_after_04s_average": 1.0
+   },
+   "objects": {
+    "k": 1000.0,
+    "speed_ok": 0.8333333333333334,
+    "max_fall_rate": 0.0,
+    "pass": false,
+    "law_with_measured_force_ok": 0.4166666666666667
+   }
+  }
+ },
+ "checkpoints": {
+  "v1": "logs/evals/walker-anymal-v1/model.pt",
+  "v1_nocreep2": "/home/shrishc/quadcoop/logs/rsl_rl/walker_anymal_c/2026-11-09_00-10-27_v1_nocreep2/model_7997.pt"
+ }
+}
