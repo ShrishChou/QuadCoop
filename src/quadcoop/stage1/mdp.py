@@ -144,6 +144,15 @@ class WalkerCommandAction(ActionTerm):
         self._lo = torch.tensor([cfg.vx_range[0], cfg.vy_range[0], cfg.wz_range[0]], device=self.device)
         self._hi = torch.tensor([cfg.vx_range[1], cfg.vy_range[1], cfg.wz_range[1]], device=self.device)
         self._checked = False
+        # command interface between the high-level policy and the walker (see interface_command)
+        assert cfg.interface in ("raw", "proj", "proj_rate"), f"interface {cfg.interface}: raw | proj | proj_rate"
+        self._prev_target = torch.zeros(n, 3, device=self.device)  # last interfaced target (rate limit)
+        self.applied_norm = torch.zeros(n, 3, device=self.device)  # interfaced target mapped back to [-1, 1]
+        if cfg.interface != "raw":
+            print(f"[stage1] {cfg.twist_name}: command interface {cfg.interface} (planar <= {cfg.if_vmax:g} m/s, "
+                  f"|wz| <= {cfg.if_wz_walk:g} walking / {cfg.if_wz_push:g} on its contact"
+                  + (f", accel <= {cfg.if_acc:g} m/s2, yaw accel <= {cfg.if_yaw_acc:g} rad/s2" if cfg.interface == "proj_rate" else "")
+                  + ")")
 
     @property
     def action_dim(self) -> int:
@@ -157,11 +166,50 @@ class WalkerCommandAction(ActionTerm):
         a = torch.clamp(a, -1.0, 1.0)
         return self._lo + (a + 1.0) * 0.5 * (self._hi - self._lo)
 
+    def _on_contact(self) -> torch.Tensor | None:
+        """Push regime: the robot is engaged on its assigned contact (coop2 goal term); None elsewhere."""
+        if self.cfg.agent_index < 0:
+            return None
+        try:
+            g = self._env.command_manager.get_term(self.cfg.goal_name)
+        except (KeyError, ValueError, AttributeError):
+            return None
+        eng = getattr(g, "c_engaged", None)
+        return None if eng is None else eng[:, self.cfg.agent_index]
+
+    def interface_command(self, target: torch.Tensor) -> torch.Tensor:
+        """Raw: the clamped target. proj: planar speed capped at if_vmax (direction kept, so the
+        combined speed is bounded, not each axis) and |wz| at if_wz_walk, or if_wz_push while on its
+        contact. proj_rate: the same, then slew-limited (planar acceleration if_acc, yaw if_yaw_acc),
+        including across contact changes. Limits are cfg fields, identical in training and evaluation."""
+        c = self.cfg
+        if c.interface == "raw":
+            return target
+        v = target[:, :2]
+        sp = torch.linalg.norm(v, dim=-1, keepdim=True)
+        v = v * torch.clamp(c.if_vmax / sp.clamp(min=1e-6), max=1.0)
+        on = self._on_contact()
+        wmax = torch.full_like(sp[:, 0], c.if_wz_walk) if on is None else torch.where(
+            on, torch.full_like(sp[:, 0], c.if_wz_push), torch.full_like(sp[:, 0], c.if_wz_walk))
+        wz = torch.maximum(torch.minimum(target[:, 2], wmax), -wmax)
+        out = torch.cat([v, wz.unsqueeze(-1)], -1)
+        if c.interface == "proj_rate":
+            dt = self._env.step_dt
+            dv = out[:, :2] - self._prev_target[:, :2]
+            n_ = torch.linalg.norm(dv, dim=-1, keepdim=True)
+            dv = dv * torch.clamp(c.if_acc * dt / n_.clamp(min=1e-6), max=1.0)
+            dw = torch.clamp(out[:, 2] - self._prev_target[:, 2], -c.if_yaw_acc * dt, c.if_yaw_acc * dt)
+            out = torch.cat([self._prev_target[:, :2] + dv, (self._prev_target[:, 2] + dw).unsqueeze(-1)], -1)
+        self._prev_target[:] = out
+        return out
+
     def process_actions(self, actions: torch.Tensor) -> None:
         self._raw[:] = actions
         twist = self._env.command_manager.get_term(self.cfg.twist_name)
         s = self.cfg.smoothing
-        twist.vel_command_b[:] = (1.0 - s) * twist.vel_command_b + s * self.target_command(actions)
+        target = self.interface_command(self.target_command(actions))
+        self.applied_norm[:] = (2.0 * (target - self._lo) / (self._hi - self._lo) - 1.0).clamp(-1.0, 1.0)
+        twist.vel_command_b[:] = (1.0 - s) * twist.vel_command_b + s * target
         obs = self._env.observation_manager.compute_group(self.cfg.walker_obs_group)
         if not self._checked:
             if obs.shape[-1] != self.walker.obs_dim:
@@ -179,6 +227,8 @@ class WalkerCommandAction(ActionTerm):
         self._joint.reset(env_ids)
         self._raw[env_ids] = 0.0
         self.walker_action[env_ids] = 0.0
+        self._prev_target[env_ids] = 0.0
+        self.applied_norm[env_ids] = 0.0
 
 
 @dataclass(kw_only=True)
@@ -193,6 +243,17 @@ class WalkerCommandActionCfg(ActionTermCfg):
     vy_range: tuple[float, float] = (-0.5, 0.5)
     wz_range: tuple[float, float] = (-0.7, 0.7)
     smoothing: float = 0.3  # share of the new target taken each step (50 Hz)
+    # Command interface (QUADCOOP_CMD_IF = raw | proj | proj_rate; read when the env config is built,
+    # so training and evaluation use the same limits). Defaults inside what walker v1 was trained on:
+    # 0.3-0.7 m/s in any direction, turning up to 0.4 rad/s walking and 0.3 rad/s while pushing.
+    interface: str = field(default_factory=lambda: os.environ.get("QUADCOOP_CMD_IF", "raw"))
+    if_vmax: float = field(default_factory=lambda: float(os.environ.get("QUADCOOP_IF_VMAX", "0.7")))
+    if_wz_walk: float = field(default_factory=lambda: float(os.environ.get("QUADCOOP_IF_WZ_WALK", "0.4")))
+    if_wz_push: float = field(default_factory=lambda: float(os.environ.get("QUADCOOP_IF_WZ_PUSH", "0.3")))
+    if_acc: float = field(default_factory=lambda: float(os.environ.get("QUADCOOP_IF_ACC", "1.5")))  # m/s2
+    if_yaw_acc: float = field(default_factory=lambda: float(os.environ.get("QUADCOOP_IF_YAW_ACC", "1.0")))  # rad/s2
+    agent_index: int = -1  # coop2: this robot's index in the goal term (push regime = engaged on its contact)
+    goal_name: str = "goal"
 
     def build(self, env: ManagerBasedRlEnv) -> WalkerCommandAction:
         return WalkerCommandAction(self, env)

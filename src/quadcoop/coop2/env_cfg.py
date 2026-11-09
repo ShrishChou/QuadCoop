@@ -300,7 +300,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         cfg.actions[f"walker_{a}"] = s1.WalkerCommandActionCfg(
             entity_name=a, joint_cfg=joint_cfgs[a],
             checkpoint_env=f"QUADCOOP_WALKER_CKPT_{SPECS[a].name.upper()}",
-            twist_name=f"twist_{a}", walker_obs_group=f"walker_{a}",
+            twist_name=f"twist_{a}", walker_obs_group=f"walker_{a}", agent_index=AGENTS.index(a),
         )
 
     # -- commands ---------------------------------------------------------------------------------

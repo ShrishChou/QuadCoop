@@ -151,6 +151,13 @@ def main() -> int:
     ap.add_argument("--cmd-mode", choices=("planner", "always_push"), default="planner",
                     help="executor v2 checkpoints: 'always_push' = a robot on its contact is told to push (no hold, no "
                          "team-ready wait), as Stage 4e; to tell the waiting rules from the push itself")
+    ap.add_argument("--replay", default="",
+                    help="open-loop replay diagnostic: a pair folder with trace_<mass>kg.csv.gz (from a --trace 1 run). Each "
+                         "episode starts from the same task reset and both walkers get the recorded walker commands (10 Hz, "
+                         "held) instead of the executor's, through the command interface QUADCOOP_CMD_IF (raw | proj | "
+                         "proj_rate). Only falls end an episode. Writes replay_<mass>kg.csv (falls, progress along the "
+                         "recorded command, yaw-rate error, heading drift, response delay). An approximation: the robots "
+                         "drift from the recorded run's states, and commands are 10 Hz samples of the smoothed command")
     ap.add_argument("--trace", type=int, default=0,
                     help="1 = per-step traces (10 Hz) of the rep-0 episodes in logs/evals/<prefix>-<rule>/pair/trace_<mass>kg.csv.gz")
     ap.add_argument("--tasks", choices=("standard", "turn"), default="standard",
@@ -177,6 +184,7 @@ def main() -> int:
 
     models = resolve_models("b", a.pair)
     set_env(models)
+    import os
     import numpy as np
     import torch
     from tensordict import TensorDict
@@ -408,6 +416,36 @@ def main() -> int:
         dg = dgm.ExecDiag(n, dev, dt) if stage4 and a.diag else None
         tr_ids = [j for j, cs in enumerate(cases) if cs[3] == 0] if (dg is not None and a.trace) else []
         tr_rows = []
+        rp = None
+        if a.replay:  # recorded walker commands per (object, scenario), rep 0 of the traced run
+            import gzip
+            rec = {}
+            pth_ = Path(a.replay) / f"trace_{mass:g}kg.csv.gz"
+            last_t, key_, rows_ = 1e9, None, []
+            for row_ in csv.DictReader(gzip.open(pth_, "rt")):
+                tt = float(row_["t"])
+                if tt < last_t and rows_:
+                    rec.setdefault(key_, rows_); rows_ = []  # noqa: E702
+                key_ = (row_["object"], row_["scenario"]); last_t = tt
+                rows_.append(row_)
+            if rows_:
+                rec.setdefault(key_, rows_)
+            tmax = max(len(v) for v in rec.values())
+            rcmd = torch.zeros(n, tmax, 2, 3, device=dev)
+            rlen = torch.zeros(n, device=dev)
+            rinfo = []
+            for j, (rule_, o_n, s_i, r_, _) in enumerate(cases):
+                rr = rec.get((str(o_n), SCENARIOS[s_i][0]), [])
+                for ti_, row_ in enumerate(rr):
+                    for k, ag in enumerate(AGENTS):
+                        rcmd[j, ti_, k] = torch.tensor([float(row_[f"wcmd_{x}_{ag}"]) for x in ("vx", "vy", "wz")])
+                rlen[j] = len(rr)
+                rinfo.append((rr[0]["outcome"] if rr else "", [max((float(x[f"fell_{ag}"]) for x in rr), default=0.0) for ag in AGENTS]))
+            print(f"replay: {pth_}: {int((rlen > 0).sum())}/{n} episodes, interface {os.environ.get('QUADCOOP_CMD_IF', 'raw')}", flush=True)
+            terms_ = [base.action_manager.get_term(f"walker_{ag}") for ag in AGENTS]
+            rp = dict(pn=torch.zeros(n, 2, device=dev), pd=torch.zeros(n, 2, device=dev), yerr=torch.zeros(n, 2, device=dev),
+                      ycum=torch.zeros(n, 2, device=dev), win=torch.zeros(n, 2, device=dev),
+                      tfall=torch.full((n, 2), -1.0, device=dev), seq_c=[], seq_v=[])
         steps = int(a.horizon / dt)
         reassign_every = int(round(a.reassign_s / dt)) if a.reassign_s > 0 else 0
         film_ids = [j for j, (rule, o, s, r, _) in enumerate(cases) if rule != "allpairs"
@@ -609,6 +647,13 @@ def main() -> int:
                     pushing.append(ph & active[k])
                     cdist.append(dk)
                     herr.append(hk)
+                if rp is not None:  # replay: the recorded command instead of the executor's
+                    ridx = min(int(i * dt / 0.1), rcmd.shape[1] - 1)
+                    rwin = (i * dt) < rlen * 0.1
+                    for k in range(2):
+                        tm = terms_[k]
+                        c_rec = torch.where(rwin.unsqueeze(-1), rcmd[:, ridx, k], torch.zeros_like(rcmd[:, ridx, k]))
+                        act[:, 3 * k:3 * k + 3] = 2.0 * (c_rec - tm._lo) / (tm._hi - tm._lo) - 1.0
                 sync(); t0 = time.time()  # noqa: E702
                 o_, _, _, _, _ = base.step(act)
                 sync(); t_env += time.time() - t0  # noqa: E702
@@ -749,6 +794,11 @@ def main() -> int:
                                      dgi["cdist"][ti, k], torch.rad2deg(dgi["herr"][ti, k]), dgi["touch"][ti, k].float(),
                                      fm[:, k], cosf[:, k], dgi["base_speed"][ti, k],
                                      g.push_share[ti, k] if has_sh else torch.full_like(hd, -1), fm[:, k] * cosf[:, k]]
+                        for k, ag in enumerate(AGENTS):  # the walker interface: what it is told vs what it does
+                            wc = base.command_manager.get_command(f"twist_{ag}")[ti]
+                            rd_ = robots[k].data
+                            cols += [wc[:, 0], wc[:, 1], wc[:, 2], rd_.root_link_lin_vel_b[ti, 0], rd_.root_link_lin_vel_b[ti, 1],
+                                     rd_.root_link_ang_vel_b[ti, 2], fell[k][ti].float()]
                         tr_rows.append(torch.stack(cols, -1).cpu().numpy())
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
@@ -765,6 +815,27 @@ def main() -> int:
                     how[j] = "lost"
                 for j in succ.nonzero().flatten().tolist():
                     how[j] = "success"
+                if rp is not None:
+                    tip = tip & False; lost = lost & False; succ = succ & False  # noqa: E702  (only falls end a replay)
+                    for k in range(2):
+                        rd_ = robots[k].data
+                        vb, wb = rd_.root_link_lin_vel_b[:, :2], rd_.root_link_ang_vel_b[:, 2]
+                        c_rec = rcmd[:, ridx, k]
+                        m_ = (rwin & live & ~fell[k]).float()
+                        sp_ = torch.linalg.norm(c_rec[:, :2], dim=-1)
+                        mv = m_ * (sp_ >= 0.1).float()
+                        rp["pn"][:, k] += mv * (vb * c_rec[:, :2]).sum(-1) / sp_.clamp(min=1e-6) * dt
+                        rp["pd"][:, k] += mv * sp_ * dt
+                        rp["yerr"][:, k] += m_ * (wb - c_rec[:, 2]).abs() * dt
+                        rp["ycum"][:, k] += m_ * (wb - c_rec[:, 2]) * dt
+                        rp["win"][:, k] += m_ * dt
+                        newf = fell[k] & (rp["tfall"][:, k] < 0)
+                        rp["tfall"][:, k] = torch.where(newf, torch.full_like(rp["tfall"][:, k], t), rp["tfall"][:, k])
+                    if i % 5 == 0:
+                        rp["seq_c"].append(torch.stack([rcmd[:, ridx, k, 0] for k in range(2)], -1).cpu())
+                        rp["seq_v"].append(torch.stack([robots[k].data.root_link_lin_vel_b[:, 0] for k in range(2)], -1).cpu())
+                    if i * dt > float(rlen.max()) * 0.1 + 0.5:
+                        break
                 ended = f_any | tip | lost | succ
                 t_end = torch.where(ended & ~done, torch.full_like(t_end, t), t_end)
                 done |= ended
@@ -775,6 +846,34 @@ def main() -> int:
                 if all_done_at is not None and i >= all_done_at + tail:
                     break
 
+        if rp is not None:
+            sc, sv = torch.stack(rp["seq_c"], 1).numpy(), torch.stack(rp["seq_v"], 1).numpy()  # (n, T, 2)
+            outp = ROOT / "logs" / "evals" / f"{prefix}-{cases[0][0]}" / "pair" / f"replay_{mass:g}kg.csv"
+            outp.parent.mkdir(parents=True, exist_ok=True)
+            with open(outp, "w", newline="") as fh:
+                wr = csv.writer(fh)
+                wr.writerow(["object", "scenario", "mass", "robot", "interface", "rec_s", "orig_outcome", "orig_fell", "fell", "t_fall",
+                             "window_s", "progress", "yaw_rate_err", "heading_drift_deg", "delay_s"])
+                for j, (rule_, o_n, s_i, r_, _) in enumerate(cases):
+                    L_ = int(rlen[j])
+                    if L_ == 0:
+                        continue
+                    for k, ag in enumerate(AGENTS):
+                        T_ = min(L_, sc.shape[1])
+                        tf = float(rp["tfall"][j, k])
+                        if tf > 0:
+                            T_ = min(T_, int(tf / 0.1))
+                        cx, vx_ = sc[j, :T_, k], sv[j, :T_, k]
+                        delay = ""
+                        if T_ > 30 and cx.std() > 0.05 and vx_.std() > 0.02:
+                            cc = [np.corrcoef(cx[:T_ - lg], vx_[lg:T_])[0, 1] for lg in range(16)]
+                            delay = f"{0.1 * int(np.nanargmax(cc)):.1f}"
+                        w_ = float(rp["win"][j, k])
+                        wr.writerow([o_n, SCENARIOS[s_i][0], f"{mass:g}", ag, os.environ.get("QUADCOOP_CMD_IF", "raw"),
+                                     f"{L_ * 0.1:.1f}", rinfo[j][0], int(rinfo[j][1][k] > 0.5), int(tf > 0), f"{tf:.2f}" if tf > 0 else "",
+                                     f"{w_:.1f}", f"{float(rp['pn'][j, k] / rp['pd'][j, k].clamp(min=1e-6)):.3f}",
+                                     f"{float(rp['yerr'][j, k]) / max(w_, 1e-6):.3f}", f"{math.degrees(float(rp['ycum'][j, k])):.1f}", delay])
+            print(f"replay: {outp}", flush=True)
         if tr_rows:  # per-step traces of the rep-0 episodes, one file per rule
             import gzip
             arr = np.stack(tr_rows, 1)  # (episodes, samples, fields)
@@ -782,7 +881,8 @@ def main() -> int:
                     "live", "team_pushing", "want_speed", "want_yaw_rate_deg", "pair_residual"] + [
                         f"{x}_{ag}" for ag in AGENTS for x in
                         ("cmd", "on", "engaged", "contact_dist", "heading_err_deg", "touching", "force",
-                         "force_align", "base_speed", "share_cmd", "force_along_cmd")]
+                         "force_align", "base_speed", "share_cmd", "force_along_cmd")] + [
+                        f"{x}_{ag}" for ag in AGENTS for x in ("wcmd_vx", "wcmd_vy", "wcmd_wz", "vx", "vy", "wz", "fell")]
             for rule_ in dict.fromkeys(cases[j][0] for j in tr_ids):
                 pth = ROOT / "logs" / "evals" / f"{prefix}-{rule_}" / "pair" / f"trace_{mass:g}kg.csv.gz"
                 pth.parent.mkdir(parents=True, exist_ok=True)

@@ -2117,7 +2117,9 @@ def partner_obs(env, robot: str, other: str, other_action: str) -> torch.Tensor:
     r, p = env.scene[robot], env.scene[other]
     pos = _to_frame(env, robot, p.data.root_link_pos_w - r.data.root_link_pos_w)
     rel = wrap(yaw_of(p.data.root_link_quat_w) - yaw_of(r.data.root_link_quat_w))
-    cmd = env.action_manager.get_term(other_action).raw_action.clamp(-1.0, 1.0)
+    term = env.action_manager.get_term(other_action)
+    # with a command interface the partner's applied (limited) command, so observations match what its walker gets
+    cmd = term.applied_norm if getattr(term.cfg, "interface", "raw") != "raw" else term.raw_action.clamp(-1.0, 1.0)
     return torch.cat([pos, torch.sin(rel).unsqueeze(-1), torch.cos(rel).unsqueeze(-1),
                       _to_frame(env, robot, p.data.root_link_lin_vel_w), cmd], dim=-1)
 
