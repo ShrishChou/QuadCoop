@@ -167,6 +167,17 @@ def make_walker_env_cfg(robot: RobotSpec, play: bool = False, history: int | Non
     cfg.sim.nconmax = None
     cfg.sim.mujoco.ccd_iterations = 50
     cfg.sim.contact_sensor_maxmatch = 64
+    # Contact model. Default "train" keeps mjlab's pyramidal cone / impratio 1, under which a loaded foot
+    # creeps (12 mm/s at 10% of the friction limit, ~200 mm/s at 75%: evals/contact-creep), so a planted
+    # robot cannot hold a sustained push (evals/brace-wbc). QUADCOOP_CONTACT=nocreep: elliptic cone,
+    # impratio 10 (creep 30-70x smaller; foot solimp unchanged). Changes the physics every walker so far
+    # was trained in: evaluate before training on it.
+    contact = os.environ.get("QUADCOOP_CONTACT", "train")
+    if contact == "nocreep":
+        cfg.sim.mujoco.cone = "elliptic"
+        cfg.sim.mujoco.impratio = _env_float("QUADCOOP_IMPRATIO", 10.0)
+    elif contact != "train":
+        raise ValueError(f"QUADCOOP_CONTACT={contact!r}: expected train or nocreep")
 
     assert cfg.scene.terrain is not None
     cfg.scene.terrain.terrain_type = "plane"

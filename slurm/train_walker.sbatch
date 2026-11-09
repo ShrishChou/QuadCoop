@@ -42,7 +42,14 @@ ARGS=(--env.scene.num-envs "${NUM_ENVS:-4096}"
 if [[ "${VIDEO:-1}" == "1" ]]; then
   ARGS+=(--video True --video-length 300 --video-interval "${VIDEO_INTERVAL:-5000}")
 fi
-if [[ "${RESUME:-0}" == "1" ]]; then
+if [[ -n "${LOAD_RUN:-}" ]]; then
+  # start from an exact checkpoint (a fine-tune), e.g. v1 under the no-creep contact model:
+  #   LOAD_RUN=2026-10-19_11-44-16_seed0 LOAD_CKPT=model_5999.pt RUN_NAME=v1_nocreep ITERS=1000 \
+  #   QUADCOOP_CONTACT=nocreep sbatch slurm/train_walker.sbatch
+  [[ -f "logs/rsl_rl/walker_$ROBOT/$LOAD_RUN/${LOAD_CKPT:?set LOAD_CKPT with LOAD_RUN}" ]] \
+    || { echo "checkpoint not found: logs/rsl_rl/walker_$ROBOT/$LOAD_RUN/$LOAD_CKPT"; exit 1; }
+  ARGS+=(--agent.resume True --agent.load-run "^${LOAD_RUN}\$" --agent.load-checkpoint "^${LOAD_CKPT}\$")
+elif [[ "${RESUME:-0}" == "1" ]]; then
   ARGS+=(--agent.resume True)   # newest run + newest model_*.pt under logs/rsl_rl/walker_$ROBOT
 fi
 
