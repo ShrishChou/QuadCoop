@@ -117,7 +117,8 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
 
 
 def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False,
-                 push_cmd: bool = False, exec_v2: bool = False, effort: bool = False) -> dict:
+                 push_cmd: bool = False, exec_v2: bool = False, effort: bool = False,
+                 contact_sense: bool = False) -> dict:
     """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
     (+ the assigned contacts in contact mode)."""
     def nz(lim):
@@ -141,6 +142,7 @@ def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, gui
         **({"push": T(func=mdp.push_obs, params={"robot": name}, noise=nz(0.02))} if push_cmd else {}),
         **({"cmd": T(func=mdp.cmd_obs, params={"robot": name})} if exec_v2 else {}),
         **({"effort": T(func=mdp.effort_obs, params={"robot": name}, noise=nz(0.02))} if effort else {}),
+        **({"contact_sense": T(func=mdp.contact_sense_obs, params={"robot": name}, noise=nz(0.02))} if contact_sense else {}),
         # new terms go last: init_from widens at the end
     }
 
@@ -187,7 +189,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        push_cmd: bool = False, wrench: bool = False, walk_cost: float = 0.3,
                        reselect_min_dist: float = 0.15, expert: bool = False, exec_v2: bool = False,
                        hold_rand: float = 0.0, hold_cost_w: float = 1.0, credit_press: float = 0.0,
-                       work_w: float = 3.0, effort: bool = False, over_push_w: float = 1.0) -> ManagerBasedRlEnvCfg:
+                       work_w: float = 3.0, effort: bool = False, over_push_w: float = 1.0,
+                       contact_sense: bool = False, acq_bonus: float = 0.0, time_cost: float = 0.0,
+                       touch_cost: float = 0.0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -326,11 +330,11 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     for a, o in PARTNER.items():
         obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide,
                                                                    push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
-                                                                   effort=effort),
+                                                                   effort=effort, contact_sense=contact_sense),
                                                 concatenate_terms=True, enable_corruption=not play)
         obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide,
                                                                    push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
-                                                                   effort=effort),
+                                                                   effort=effort, contact_sense=contact_sense),
                                                 concatenate_terms=True, enable_corruption=False)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
@@ -452,6 +456,13 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                     rewards[f"over_push_{a}"] = R(func=mdp.over_push, weight=-over_push_w, params={"robot": a})
             else:
                 rewards[f"contact_work_{a}"] = R(func=mdp.contact_work, weight=work_w, params={"robot": a})
+    if acq_bonus > 0:  # contact curriculum: a one-time bonus per assignment for reaching real contact (30 N+)
+        for a in AGENTS:
+            rewards[f"contact_acquired_{a}"] = R(func=mdp.contact_acquired, weight=acq_bonus / step_dt, params={"robot": a})
+    if time_cost > 0:
+        rewards["time_cost"] = R(func=mdp.time_cost, weight=-time_cost)
+    if touch_cost > 0:  # (the minimal reward drops robots_touch; this puts a contact cost back)
+        rewards["robots_touch"] = R(func=mdp.robots_touching, weight=-touch_cost)
     cfg.rewards = rewards
 
     # -- terminations ----------------------------------------------------------------------------------

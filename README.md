@@ -1,6 +1,16 @@
 # QuadCoop
 
-**Goal:** two quadrupeds cooperatively push heavy objects (20–80 kg, 12 shapes) to a goal position and heading, too heavy for one robot alone.
+## Goal
+
+A team of different legged robots (**ANYmal C** and **Spot**) that work on shared tasks and decide for themselves **when to help and when not to**:
+
+- **Help** when a job is too much for one robot, such as an object too heavy to push alone.
+- **Stay out** when one robot can manage, so the other is free for other work.
+- **Account for each robot's type:** size, strength and how hard it can push.
+
+The test task is pushing objects (20–80 kg, 12 shapes) to a goal position and heading.
+
+**Where we are:** two ANYmal C robots pushing together, with a planner that assigns where each one pushes. Next: mixed ANYmal + Spot teams, and learning when a second robot is needed.
 
 <p align="center"><img src="media/s4_pair_turn.gif" width="420"><br>
 <em>Current system: two ANYmal C push a 60 kg cube 3 m and turn it to the goal (green). 5× speed.</em></p>
@@ -21,6 +31,7 @@ Built on [mjlab](https://github.com/mujocolab/mjlab) (MuJoCo Warp) with PPO / MA
 | [3. Learned cooperation](#3-learned-cooperation-mappo--ippo) | Two robots, end-to-end MAPPO / IPPO | dropped |
 | [4. Contact planner + executor](#4-contact-planner--executor) | Assign contacts, then reach and press them | **current system** |
 | [5. Walker issues and fixes](#5-walker-issues-and-fixes) | Why heavy pushes fail, and what fixed it | in progress |
+| 6. Mixed teams: when to help | ANYmal + Spot, decide whether a second robot is needed | next |
 
 ---
 

@@ -69,6 +69,26 @@
 #     --turn-frac 0.3 --effort --init-from logs/keep/marl2/turn_debug/model_15000.pt" sbatch -p mit_normal_gpu -G l40s:1 -t 06:00:00 slurm/train_coop2.sbatch
 # Optional: VARIANT (b|ctrl), ITERS (3000), NUM_ENVS (4096), LOGGER (wandb|tensorboard), RUN_NAME,
 # EXTRA (more train_coop2.py args).
+#   Contact curriculum (original walker and physics, frozen), from turn_debug. The executor also observes its
+#   contact force / touching / the wanted object motion (--contact-sense, 7 inputs at zero weight) and gets a one-time
+#   bonus per assignment for reaching real contact (--acq-bonus) and a small time cost. Phase A: contacts fixed, starts
+#   near the contact; phase B (from A): re-planning every 3-6 s and turn_debug's far starts.
+#   CC="--pair anymal --partner-map --contacts --guide --push-cmd --contact-mix wrench:2,spread:1,random:1 \
+#     --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 --disturb-frac 0.2 --need-frac 0.5 --max-actor-lr 1e-4 \
+#     --critic-warmup-resume 300 --reward rmin --turn-frac 0.3 --contact-sense --acq-bonus 5 --time-cost 0.2"
+#   ALGO=mappo SEED=0 RUN_NAME=cc_a ITERS=16500 EXTRA="$CC --reselect-s 0 --contact-start-at 0.5 --random-start 0.15 \
+#     --init-from logs/keep/marl2/turn_debug/model_15000.pt" sbatch slurm/train_coop2.sbatch
+#   ALGO=mappo SEED=0 RUN_NAME=cc_b ITERS=18000 EXTRA="$CC --reselect-s 3,6 --random-start 0.5 \
+#     --init-from logs/marl2/cc_a/model_16500.pt" sbatch --dependency=afterok:<cc_a job> slurm/train_coop2.sbatch
+#   (cc_a went wrong: fixed contacts cannot finish turn tasks, robots jammed into each other, phase B cancelled.)
+#   Planner v2 (QUADCOOP_PLANNER=v2, now the default; v1 restores the old planner): face-end turning contacts,
+#   footprint-checked pairs, robots keep their order around the object. Train under the planner the evaluation
+#   uses (expert, re-planning on), with a robot-robot touch cost; from turn_debug, 2500 iterations (~5 h):
+#   ALGO=mappo SEED=0 RUN_NAME=pv2 ITERS=17500 EXTRA="--pair anymal --partner-map --contacts --guide --push-cmd \
+#     --contact-mix expert:2,wrench:1,random:1 --reselect-s 3,6 --reselect-min-dist 0 --drift-dist 0.25 --drift-heading 30 \
+#     --disturb-frac 0.2 --random-start 0.3 --need-frac 0.5 --max-actor-lr 1e-4 --critic-warmup-resume 300 --reward rmin \
+#     --turn-frac 0.3 --contact-sense --acq-bonus 5 --touch-cost 1 --init-from logs/keep/marl2/turn_debug/model_15000.pt" \
+#     sbatch slurm/train_coop2.sbatch
 #SBATCH -J qc-coop2
 #SBATCH -p mit_normal_gpu
 #SBATCH -G l40s:1

@@ -56,6 +56,7 @@ Entity names come from quadcoop.coop2.pairs (QUADCOOP_PAIR): "anymal" and "spot"
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 
 import torch
@@ -78,6 +79,39 @@ FOOTPRINT_HALF = {a: _FOOTPRINT_OF_TYPE[ROBOT_TYPE[a]] for a in AGENTS}  # partn
 SPREAD = 2  # level-table column 2: each robot's spread around "behind", +- deg
 BEHIND = 3  # level-table column 3: "behind" rotated away from straight behind the object, +- deg
 MASS_LO = 10  # extra column: lightest object at this level (kg)
+
+
+def footprints_clear(stand: torch.Tensor, facing: torch.Tensor, half: tuple[tuple[float, float], tuple[float, float]],
+                     margin: float) -> torch.Tensor:
+    """Planner v2: (..., K, K) True where robot 0 standing at stand[..., i] facing facing[..., i] and
+    robot 1 at stand[..., j] facing facing[..., j] keep their footprints (rectangles, half-length x
+    half-width from `half`, each grown by margin) apart: a separating-axis test (stand, facing:
+    (..., K, 2), facing unit)."""
+    f = facing / torch.linalg.norm(facing, dim=-1, keepdim=True).clamp(min=1e-9)
+    lat = torch.stack([-f[..., 1], f[..., 0]], -1)
+    (l0, w0), (l1, w1) = [(h[0] + margin, h[1] + margin) for h in half]
+    d = stand.unsqueeze(-2) - stand.unsqueeze(-3)  # (..., i, j, 2): j's centre minus i's
+    fi, li = f.unsqueeze(-2), lat.unsqueeze(-2)  # robot 0's axes (index i)
+    fj, lj = f.unsqueeze(-3), lat.unsqueeze(-3)  # robot 1's axes (index j)
+    sep = torch.zeros(d.shape[:-1], dtype=torch.bool, device=d.device)
+    for ax in (fi, li, fj, lj):
+        ax = ax.expand_as(d)
+        r0 = l0 * (fi * ax).sum(-1).abs() + w0 * (li * ax).sum(-1).abs()
+        r1 = l1 * (fj * ax).sum(-1).abs() + w1 * (lj * ax).sum(-1).abs()
+        sep |= (d * ax).sum(-1).abs() > r0 + r1
+    return sep
+
+
+def order_ok(theta0: torch.Tensor, theta1: torch.Tensor, phi: torch.Tensor, free_rad: float) -> torch.Tensor:
+    """Planner v2: (m, K, K) True where giving contact i to robot 0 and contact j to robot 1 keeps
+    the robots' order around the object: robot 1 lies counter-clockwise of robot 0 (theta: (m,),
+    their bearings from the object's centre) and contact j lies counter-clockwise of contact i
+    (phi: (m, K), the standing points' bearings), or the other way round for both. Robots (or
+    contacts) about opposite each other (more than free_rad apart) have no order to keep."""
+    dt = wrap(theta1 - theta0)  # (m,)
+    dp = wrap(phi.unsqueeze(1) - phi.unsqueeze(2))  # (m, i, j): phi_j - phi_i
+    same = (dp > 0) == (dt > 0).view(-1, 1, 1)
+    return same | (dt.abs() > free_rad).view(-1, 1, 1) | (dp.abs() > free_rad)
 
 
 class CoopPush2Command(Push2Command):
@@ -165,7 +199,7 @@ class CoopPush2Command(Push2Command):
 
         n, dev, S = self.num_envs, self.device, len(SHAPES2)
         kinds_np, nom_np, rest_np = self.kinds.cpu().numpy(), nom.cpu().numpy(), nom_rest.cpu().numpy()
-        lists = [C.candidates(nom_np[s], kinds_np[s], float(rest_np[s])) for s in range(S)]
+        lists = [C.candidates(nom_np[s], kinds_np[s], float(rest_np[s]), face_ends=self.cfg.face_ends) for s in range(S)]
         K = max(len(x) for x in lists)
         self.c_K = K
         self.c_lists = lists
@@ -785,7 +819,36 @@ class CoopPush2Command(Push2Command):
         p = self.c_p[shape] * f.unsqueeze(1)
         nn = self.c_n[shape] / f.unsqueeze(1)
         nn = nn / torch.linalg.norm(nn, dim=-1, keepdim=True).clamp(min=1e-6)
-        return p, nn, self.c_pre[shape] * f.unsqueeze(1), self.c_com[shape] * f, self.c_valid[shape], self.c_sep_ok[shape]
+        sep = self.c_sep_ok[shape]
+        if self.cfg.footprint_sep:  # planner v2: the robots' footprints at this env's object size
+            a0, a1 = AGENTS[0], AGENTS[1]
+            reach = max(self.reach[a0], self.reach[a1])
+            st = p + nn * (reach + 0.06)
+            K = p.shape[1]
+            far = torch.linalg.norm(st.unsqueeze(2) - st.unsqueeze(1), dim=-1) >= self.cfg.contact_min_sep
+            eye = torch.eye(K, dtype=torch.bool, device=p.device).unsqueeze(0)
+            sep = far & ~eye & footprints_clear(st, -nn, (FOOTPRINT_HALF[a0], FOOTPRINT_HALF[a1]), self.cfg.footprint_margin)
+        return p, nn, self.c_pre[shape] * f.unsqueeze(1), self.c_com[shape] * f, self.c_valid[shape], sep
+
+    def _order_mask(self, ids: torch.Tensor, p: torch.Tensor, nn: torch.Tensor) -> torch.Tensor:
+        """Planner v2 (keep_order): (m, K, K) usable assignments (robot 0 -> i, robot 1 -> j) that keep
+        the robots' order around the object (order_ok; bearings from the object's bounding-box centre).
+        All True without keep_order."""
+        m, K = p.shape[0], p.shape[1]
+        if not self.cfg.keep_order:
+            return torch.ones(m, K, K, dtype=torch.bool, device=p.device)
+        yaw = self.contact_frame_yaw()[ids]
+        cs, sn = torch.cos(yaw), torch.sin(yaw)
+        ctr = self.bbox_env[ids, self.shape[ids], :2]
+        obj = self.box_pos()[ids, :2]
+        th = []
+        for k in range(2):
+            d = self.robot_xy(k)[ids] - obj
+            q = torch.stack([cs * d[:, 0] + sn * d[:, 1], -sn * d[:, 0] + cs * d[:, 1]], -1) - ctr
+            th.append(torch.atan2(q[:, 1], q[:, 0]))
+        st = p + nn * 0.6 - ctr.unsqueeze(1)
+        phi = torch.atan2(st[..., 1], st[..., 0])
+        return order_ok(th[0], th[1], phi, math.radians(self.cfg.order_free_deg))
 
     def _pair_scores(self, p, nn, com, valid, sep, u, rule):
         """Score of every contact pair (i, j) for goal direction u (object frame) under each env's
@@ -890,7 +953,7 @@ class CoopPush2Command(Push2Command):
         v_w = self.c_vdes[ids]
         v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
         cur = self.c_idx[ids]
-        use = valid.unsqueeze(2) & valid.unsqueeze(1) & sep
+        use = valid.unsqueeze(2) & valid.unsqueeze(1) & sep & self._order_mask(ids, p, nn)
         res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use)
         kk = torch.arange(K, device=dev).unsqueeze(0)
         pos = [self.robot_xy(k)[ids] for k in range(len(AGENTS))]
@@ -959,7 +1022,7 @@ class CoopPush2Command(Push2Command):
         v_w = self.c_vdes[ids]
         v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
         cur = self.c_idx[ids]
-        use = valid.unsqueeze(2) & valid.unsqueeze(1) & sep
+        use = valid.unsqueeze(2) & valid.unsqueeze(1) & sep & self._order_mask(ids, p, nn)
         com = self.c_cof[ids]  # friction acts about the centre of friction
         res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use, cap=self.robot_cap(ids))
         kk = torch.arange(K, device=dev).unsqueeze(0)
@@ -1104,6 +1167,7 @@ class CoopPush2Command(Push2Command):
         rel = torch.atan2(tg[:, 1], tg[:, 0]) - yaw
         u = torch.stack([torch.cos(rel), torch.sin(rel)], -1)
         rule = self.c_rule[ids]
+        sep = sep & self._order_mask(ids, p, nn)  # (directed with keep_order: [robot 0's, robot 1's])
         score, use, align, raw = self._pair_scores(p, nn, com, valid, sep, u, rule)
         cur = self.c_idx[ids]
         # the current pair stays usable while both its contacts still push within 75 deg of the goal
@@ -1119,8 +1183,11 @@ class CoopPush2Command(Push2Command):
         new = cur.clone()
         chg = torch.zeros(m, 2, dtype=torch.bool, device=dev)
         # one of the current contacts is in the best pair: only the other robot moves
-        k0_in = (cur[:, 0] == bi) | (cur[:, 0] == bj)
-        k1_in = (cur[:, 1] == bi) | (cur[:, 1] == bj)
+        if c.keep_order:  # v2: the best pair is ordered (robot 0 -> bi, robot 1 -> bj); keep each robot's slot
+            k0_in, k1_in = cur[:, 0] == bi, cur[:, 1] == bj
+        else:
+            k0_in = (cur[:, 0] == bi) | (cur[:, 0] == bj)
+            k1_in = (cur[:, 1] == bi) | (cur[:, 1] == bj)
         other_of = lambda x: torch.where(x == bi, bj, bi)  # noqa: E731
         a = change & k0_in & ~k1_in
         new[:, 1] = torch.where(a, other_of(cur[:, 0]), new[:, 1])
@@ -1136,7 +1203,8 @@ class CoopPush2Command(Push2Command):
         keep_idx = cur[ar, keep]
         # pairs (x, partner's contact): any x pushing within 75 deg that stands far enough from the partner
         # (looser than the tiers above, so the partner keeps a contact that still pushes usefully)
-        ok_x = valid & (align >= lim) & sep[ar, :, keep_idx]
+        # (robot 0 moving: pair (x, keep); robot 1 moving: pair (keep, x))
+        ok_x = valid & (align >= lim) & torch.where((worst == 0).unsqueeze(-1), sep[ar, :, keep_idx], sep[ar, keep_idx, :])
         ok_x &= torch.arange(self.c_K, device=dev).unsqueeze(0) != keep_idx.unsqueeze(-1)
         ok_x &= (align[ar, keep_idx] >= lim).unsqueeze(-1)
         row = torch.where(ok_x, raw[ar, :, keep_idx], torch.full_like(raw[:, :, 0], -1e9))
@@ -1157,7 +1225,7 @@ class CoopPush2Command(Push2Command):
             f0, f1 = self.front_point(AGENTS[0])[ids], self.front_point(AGENTS[1])[ids]
             keep_d = torch.linalg.norm(f0 - pi, dim=-1) + torch.linalg.norm(f1 - pj, dim=-1)
             swap_d = torch.linalg.norm(f0 - pj, dim=-1) + torch.linalg.norm(f1 - pi, dim=-1)
-            sw = swap_d < keep_d
+            sw = (swap_d < keep_d) & ~torch.tensor(c.keep_order, device=dev)  # v2: (bi, bj) is already in order
             new[:, 0] = torch.where(both, torch.where(sw, bj, bi), new[:, 0])
             new[:, 1] = torch.where(both, torch.where(sw, bi, bj), new[:, 1])
             chg |= both.unsqueeze(-1) & (new != cur)
@@ -1583,6 +1651,12 @@ class CoopPush2Command(Push2Command):
                 bear = 2 * math.pi * torch.rand(m, device=dev)
                 around = obj_xy + (radius + self.reach[a] + U(0.3, 0.9)).unsqueeze(-1) * torch.stack([torch.cos(bear), torch.sin(bear)], -1)
                 rnd = (torch.rand(m, device=dev) < c.random_start) & (torch.linalg.norm(around - partner_at, dim=-1) > 1.2)
+                if c.keep_order:  # v2: only on its own side of the partner (it must not walk around it)
+                    brg = lambda v: torch.atan2((v - obj_xy)[:, 1], (v - obj_xy)[:, 0])  # noqa: E731
+                    free = math.radians(c.order_free_deg)
+                    dth = wrap(brg(partner_at) - bear)
+                    dph = wrap(brg(to_w(stands[o])) - brg(to_w(stands[k])))
+                    rnd &= ((dth > 0) == (dph > 0)) | (dth.abs() > free) | (dph.abs() > free)
                 pos = torch.where(rnd.unsqueeze(-1), around, pos)
                 yaw = torch.where(rnd, bear + math.pi + sym_u(torch.full((m,), 20.0, device=dev)), yaw)
                 cpose.append((pos, yaw))
@@ -1619,6 +1693,31 @@ class CoopPush2Command(Push2Command):
             dxy = obj_xy - pos
             rel[a] = (torch.stack([cs * dxy[:, 0] + sn * dxy[:, 1], -sn * dxy[:, 0] + cs * dxy[:, 1]], -1),
                       zeros if self.heading_zero_map else wrap(obj_heading - yaw))
+        sb = sc.get("start_behind") if (sc is not None and cpose is not None) else None
+        if c.keep_order and sb is not None:
+            # v2: robots placed away from their contacts (eval "start behind") take them in their own order
+            # (the pair was drawn without knowing where the robots stand; an evaluation's forced pair is kept)
+            ch, sh = torch.cos(obj_heading), torch.sin(obj_heading)
+            brg = lambda v: torch.atan2(v[:, 1], v[:, 0])  # noqa: E731
+            st_w = [torch.stack([ch * v[:, 0] - sh * v[:, 1], sh * v[:, 0] + ch * v[:, 1]], -1)
+                    for v in (self.c_pobj[env_ids, k] + self.c_nobj[env_ids, k] * 0.6 for k in range(2))]
+            dth = wrap(brg(poses[AGENTS[1]][0] - obj_xy) - brg(poses[AGENTS[0]][0] - obj_xy))
+            dph = wrap(brg(st_w[1]) - brg(st_w[0]))
+            free = math.radians(c.order_free_deg)
+            crossed = ((dth > 0) != (dph > 0)) & (dth.abs() <= free) & (dph.abs() <= free) & sb & ~park[0] & ~park[1]
+            if forced is not None:
+                crossed &= forced[:, 0].to(dev) < 0
+            if bool(crossed.any()):
+                e = env_ids[crossed]
+                for t in (self.c_idx, self.c_pobj, self.c_nobj, self.c_preobj, self.push_dir_obj):
+                    t[e] = t[e].flip(1)
+                for k, a in enumerate(AGENTS):
+                    v = self.c_pobj[e, k]
+                    hc, hs = ch[crossed], sh[crossed]
+                    pw = obj_xy[crossed] + torch.stack([hc * v[:, 0] - hs * v[:, 1], hs * v[:, 0] + hc * v[:, 1]], -1)
+                    pos, yaw = poses[a][0][crossed], poses[a][1][crossed]
+                    front = pos + self.reach[a] * torch.stack([torch.cos(yaw), torch.sin(yaw)], -1)
+                    self.c_reach_lim[e, k] = self.reach_limit(torch.linalg.norm(front - pw, dim=-1))
 
         obj_quat = quat_from_euler_xyz(zeros, zeros, obj_heading)
         for k, o in enumerate(self.objs):
@@ -1678,6 +1777,20 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     contact_mix: tuple[float, ...] = (1.0, 1.0, 1.0)  # spread, adjacent, random[, wrench[, expert]] pair
     contact_start_at: float = 0.7  # share of robots starting at the contact (the rest at its approach point)
     contact_min_sep: float = 0.85  # m between the two robots' standing points
+    # planner v2 (QUADCOOP_PLANNER=v2, the default; v1 = the planner every result before 2026-11-09 used):
+    #   face_ends   turning contacts at the two ends of every short face (a cube had none: all its
+    #               contacts pushed through its centre)
+    #   footprint   a pair is usable only if the two standing robots' footprints (+ margin) do not
+    #               overlap, at the env's object size (v1: standing-point distance at nominal size only)
+    #   keep_order  the robots keep their order around the object: an assignment is usable only if
+    #               the contacts are in the same order (counter-clockwise) as the robots, so the planner
+    #               re-assigns instead of sending one robot around the other (unless they are about
+    #               opposite each other, where either order is free); also applied at the episode start
+    face_ends: bool = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"  # (= contacts.PLANNER_V2)
+    footprint_sep: bool = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"
+    keep_order: bool = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"
+    footprint_margin: float = 0.08  # m added around each robot's footprint (FOOTPRINT_HALF)
+    order_free_deg: float = 150.0  # robots this far apart around the object: either order
     drift_dist: float = 0.35  # m from the front to the contact point
     drift_heading_deg: float = 45.0  # and facing the push direction within this
     drift_s: float = 1.0
@@ -1886,6 +1999,46 @@ def effort_obs(env, robot: str, f_ref: float = 200.0) -> torch.Tensor:
     wd = (g.c_wdes / g.cfg.push_wmax).unsqueeze(-1)
     return torch.cat([fr, (along / f_ref).clamp(-1.0, 2.0).unsqueeze(-1), touch.unsqueeze(-1),
                       (push_effort(env, k) / f_ref).unsqueeze(-1), vd.clamp(-1.5, 1.5), wd.clamp(-1.5, 1.5)], -1)
+
+
+def contact_sense_obs(env, robot: str, f_ref: float = 200.0) -> torch.Tensor:
+    """contact sense (7), this robot's frame: the contact force it applies to the object (x, y / f_ref),
+    that force along its commanded push direction (/ f_ref), touching (> 5 N), and the object motion the
+    planner wants (velocity x, y / push_vmax, yaw rate / push_wmax). effort_obs without the push target:
+    lets the executor tell 'near the contact' from 'actually pressing it'."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    yaw = yaw_of(env.scene[robot].data.root_link_quat_w)
+    c, s = torch.cos(yaw), torch.sin(yaw)
+    to_robot = lambda v: torch.stack([c * v[:, 0] + s * v[:, 1], -s * v[:, 0] + c * v[:, 1]], -1)  # noqa: E731
+    f = object_force_from(env, robot)
+    along = (f * g.push_dir_world(k)).sum(-1)
+    touch = (torch.linalg.norm(f, dim=-1) > 5.0).float()
+    vd = to_robot(g.c_vdes) / g.cfg.push_vmax
+    wd = (g.c_wdes / g.cfg.push_wmax).unsqueeze(-1)
+    return torch.cat([(to_robot(f) / f_ref).clamp(-2.0, 2.0), (along / f_ref).clamp(-1.0, 2.0).unsqueeze(-1),
+                      touch.unsqueeze(-1), vd.clamp(-1.5, 1.5), wd.clamp(-1.5, 1.5)], -1)
+
+
+def contact_acquired(env, robot: str, press_n: float = 30.0) -> torch.Tensor:
+    """One-time event per contact assignment: 1 on the first step the robot is on its assigned contact and
+    pushes it with press_n N or more along its push direction; re-armed when its contact changes or the
+    episode restarts. Weighted by bonus / step_dt, so each acquisition pays the bonus once."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    n = env.num_envs
+    key = f"_qc_acq_{robot}"
+    if not hasattr(env, key):
+        setattr(env, key, (torch.zeros(n, dtype=torch.bool, device=env.device),
+                           torch.full((n,), -1, dtype=torch.long, device=env.device)))
+    done, last_idx = getattr(env, key)
+    rearm = (env.episode_length_buf <= 1) | (g.c_idx[:, k] != last_idx)
+    done &= ~rearm
+    last_idx[:] = g.c_idx[:, k]
+    f = (object_force_from(env, robot) * g.push_dir_world(k)).sum(-1)
+    hit = g.on_contact(k) & (f >= press_n) & ~done
+    done |= hit
+    return hit.float()
 
 
 def effort_work(env, robot: str, max_speed: float = 1.0) -> torch.Tensor:

@@ -19,6 +19,9 @@ How candidates are found (``candidates``):
 * with ``corners``, every exposed convex corner of a box adds a contact pushed along the diagonal
   (normal = the bisector of its two faces): two robots can push a small box together from its two
   back corners, where its back face only has room for one;
+* with ``face_ends``, a face short enough to get a single (centre) segment also gets one contact
+  near each of its ends, pushing along the face normal: the only contacts with a turning arm on a
+  cube, whose face centres and diagonal corners all push through the centre;
 * a candidate is kept only if a robot fits in front of it, facing it, with its front a few cm
   from the surface (its whole footprint clear of the object): the arch's inner pillar faces count
   if the doorway is wide enough, the inside corner of an L counts, a slot too narrow does not;
@@ -33,12 +36,16 @@ face by its normal (+x / -x / +y / -y, or the sector angle) and the segment.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
 
 BAND = (0.12, 0.70)  # m above the ground: what a robot body can touch (profiles.TOP_BAND-like)
 KIND_NONE, KIND_BOX, KIND_SPHERE, KIND_CYL_Y = -1, 0, 1, 2
+# planner v2 (default) adds the face-end turning contacts; QUADCOOP_PLANNER=v1 = the candidate sets of
+# every result before 2026-11-09. Every caller follows it, so contact indices agree with the env's.
+PLANNER_V2 = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"
 
 
 @dataclass
@@ -154,12 +161,14 @@ def approach_point(c: Contact, sdf, reach: float, half_w: float, min_clearance: 
 
 def candidates(parts: np.ndarray, kinds: np.ndarray, rest: float, seg_len: float = 0.5, min_width: float = 0.2,
                sphere_sectors: int = 8, reach: float = 0.55, standoff: float = 0.06, half_w: float = 0.30,
-               min_clearance: float = 0.02, keep_unreachable: bool = False, corners: bool = True) -> list[Contact]:
+               min_clearance: float = 0.02, keep_unreachable: bool = False, corners: bool = True,
+               face_ends: bool | None = None, end_inset: float = 0.12, end_min_len: float = 0.5) -> list[Contact]:
     """Candidate contacts of one object (nominal or randomized parts; see the module docstring).
 
     parts (P, 6) = (cx, cy, cz, hx, hy, hz) object frame; kinds (P,); rest = height of the object
     origin above the ground. reach / half_w: the robot's half-length (front at reach from its
     centre) and half-width, used for the clearance test."""
+    face_ends = PLANNER_V2 if face_ends is None else face_ends
     parts, kinds = np.asarray(parts, float), np.asarray(kinds, int)
     idx = band_parts(parts, kinds, rest)
     sdf = lambda q: sdf2d(np.atleast_2d(q), parts, kinds, idx)  # noqa: E731
@@ -200,6 +209,15 @@ def candidates(parts: np.ndarray, kinds: np.ndarray, rest: float, seg_len: float
                     p[along] += lo + (s + 0.5) * w
                     lab = f"part {i} {name}" + (f" seg {s + 1}/{nseg}" if nseg > 1 else "")
                     out.append(Contact(0, p, n.copy(), float(w), p - com, i, lab))
+                if face_ends and nseg == 1 and length >= end_min_len:
+                    # a short face's only contact is its centre: on a cube every face centre and every
+                    # diagonal corner push passes through the centre (no torque), so add the face's two
+                    # ends, end_inset from the corner, pushing along the face normal: the turning contacts
+                    for s, t in ((-1, lo + end_inset), (1, hi - end_inset)):
+                        p = base.copy()
+                        p[along] += t
+                        lab = f"part {i} {name} end {'-' if s < 0 else '+'}"
+                        out.append(Contact(0, p, n.copy(), float(2 * end_inset), p - com, i, lab))
         if corners:
             for sx in (1, -1):
                 for sy in (1, -1):
@@ -212,7 +230,12 @@ def candidates(parts: np.ndarray, kinds: np.ndarray, rest: float, seg_len: float
                     lab = f"part {i} corner {'+' if sx > 0 else '-'}x{'+' if sy > 0 else '-'}y"
                     out.append(Contact(0, cpt, n, 0.1, cpt - com, i, lab))
     keep = []
-    for c in out:
+    seen: list[Contact] = []
+    for c in out:  # (face_ends set) the same corner found from two touching parts counts once
+        if face_ends and any(np.linalg.norm(c.p - o.p) < 0.01 and float(c.n @ o.n) > 0.999 for o in seen):
+            continue
+        seen.append(c)
+    for c in seen:
         c.stand = c.p + c.n * (reach + standoff)
         c.clearance = robot_clearance(c.stand, -c.n, sdf, reach, half_w)
         c.reachable = c.clearance >= min_clearance

@@ -171,6 +171,16 @@ def main() -> int:
                     help="force_track: each robot observes an absolute push target (its share of what slides the object) "
                          "and the contact force it applies; the minimal reward's contact work is paid only up to the "
                          "target (needs --reward rmin --push-cmd --contacts)")
+    ap.add_argument("--contact-sense", action="store_true",
+                    help="contact curriculum: each robot observes the contact force it applies to the object, that force "
+                         "along its push direction, touching, and the object motion the planner wants (7 inputs, last)")
+    ap.add_argument("--acq-bonus", type=float, default=0.0,
+                    help="one-time bonus per contact assignment on first reaching real contact (on contact, 30 N+ along "
+                         "the push direction); 0 = off")
+    ap.add_argument("--time-cost", type=float, default=0.0, help="team cost per second (0 = off)")
+    ap.add_argument("--touch-cost", type=float, default=0.0,
+                    help="team cost per second while any part of one robot touches the other (the minimal reward has "
+                         "none: nothing stopped a robot shoving its partner aside); 0 = off")
     ap.add_argument("--over-push-w", type=float, default=1.0,
                     help="--effort: weight of the cost for pushing past 1.5 x the push target (per second, per robot)")
     ap.add_argument("--turn-frac", type=float, default=0.0,
@@ -308,6 +318,12 @@ def main() -> int:
             soft_txt += f", MINIMAL REWARD (progress, success, failure, falls, contact approach, contact work x{a.work_w:g})"
         if a.turn_frac > 0:
             soft_txt += f", TURN PRACTICE ({a.turn_frac:g} of episodes turn in place)"
+        if a.contact_sense:
+            soft_txt += ", CONTACT SENSE (contact force, touching, wanted object motion: 7 inputs)"
+        if a.acq_bonus > 0 or a.time_cost > 0:
+            soft_txt += f", contact-acquired bonus {a.acq_bonus:g}, time cost {a.time_cost:g}/s"
+        if a.touch_cost > 0:
+            soft_txt += f", robot-robot touch cost {a.touch_cost:g}/s"
         if a.effort:
             soft_txt += f", PUSH EFFORT (absolute push targets + force feedback; work paid up to the target, over-push cost {a.over_push_w:g})"
         if a.reselect_min_dist != 0.15:
@@ -346,7 +362,8 @@ def main() -> int:
                                  push_cmd=a.push_cmd, walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                                  exec_v2=a.exec_v2, hold_rand=a.hold_rand, hold_cost_w=a.hold_cost,
                                  credit_press=a.credit_press, work_w=a.work_w, effort=a.effort,
-                                 over_push_w=a.over_push_w)
+                                 over_push_w=a.over_push_w, contact_sense=a.contact_sense,
+                                 acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -370,6 +387,7 @@ def main() -> int:
                   exec_v2=a.exec_v2, hold_rand=a.hold_rand if a.exec_v2 else 0.0, hold_cost_w=a.hold_cost,
                   credit_press=a.credit_press, work_w=a.work_w, turn_frac=a.turn_frac, effort=a.effort,
                   over_push_w=a.over_push_w if a.effort else 0.0,
+                  contact_sense=a.contact_sense, acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"])

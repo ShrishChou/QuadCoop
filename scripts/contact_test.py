@@ -294,7 +294,7 @@ def main() -> int:
             disturb_frac=a.disturb_frac, push_sensors=True, push_cmd=bool(ck_cfg.get("push_cmd", False)),
             wrench="wrench" in rules or "expert" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)),
             reselect_min_dist=min_dist, expert="expert" in rules, exec_v2=bool(ck_cfg.get("exec_v2", False)),
-            effort=bool(ck_cfg.get("effort", False)))
+            effort=bool(ck_cfg.get("effort", False)), contact_sense=bool(ck_cfg.get("contact_sense", False)))
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
