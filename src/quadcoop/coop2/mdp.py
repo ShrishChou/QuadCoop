@@ -73,6 +73,7 @@ from quadcoop.stage2.shapes import (
 )
 
 from quadcoop.coop2.pairs import AGENTS, PARTNER, ROBOT_TYPE  # noqa: E402
+from quadcoop.contacts import PLANNER_PARTS  # noqa: E402
 
 _FOOTPRINT_OF_TYPE = {"anymal_c": (0.55, 0.30), "spot": (0.55, 0.28)}  # m: half-length, half-width
 FOOTPRINT_HALF = {a: _FOOTPRINT_OF_TYPE[ROBOT_TYPE[a]] for a in AGENTS}  # partner map, body gap
@@ -296,6 +297,8 @@ class CoopPush2Command(Push2Command):
         self._part_geom = None  # (S, MAX_PARTS) geom index of each part
         print(f"[coop2] contact mode: {', '.join(f'{SHAPES2[s].name} {len(cl)}' for s, cl in enumerate(lists))} "
               f"candidate contacts; pairs >= {self.cfg.contact_min_sep:g} m apart; rule mix {self.cfg.contact_mix}")
+        print(f"[coop2] planner: QUADCOOP_PLANNER={os.environ.get('QUADCOOP_PLANNER', 'ends')!r} -> face_ends={self.cfg.face_ends} "
+              f"keep_order={self.cfg.keep_order} footprint_sep={self.cfg.footprint_sep}")
 
     def contact_frame_yaw(self) -> torch.Tensor:
         return torch.where(self.c_free_spin[self.shape], self.c_yaw0, self.heading())
@@ -758,12 +761,15 @@ class CoopPush2Command(Push2Command):
 
     def _pair_residuals(self, p, nn, com, v, wz, cg, use, chunk: int = 8192, cap=None):
         """Residual of every usable contact pair (m, K, K) for the wanted motion (v, wz) per env;
-        1 where not usable. Computed for i < j and mirrored (the residual does not depend on which
-        robot takes which contact)."""
+        1 where not usable. The physical residual does not depend on which robot takes which contact:
+        computed once per unordered pair {i, j} usable either way round, mirrored, and only then
+        masked by the (possibly directed, keep_order) assignment mask `use`. (Before 2026-11-10 only
+        i < j was checked, so with a directed mask an allowed (j, i) assignment kept residual 1.)"""
         m, K = p.shape[0], p.shape[1]
         out = torch.ones(m, K, K, device=p.device)
         iu, ju = torch.triu_indices(K, K, 1, device=p.device)
-        e_ids, pr = torch.nonzero(use[:, iu, ju], as_tuple=True)
+        either = use | use.transpose(1, 2)
+        e_ids, pr = torch.nonzero(either[:, iu, ju], as_tuple=True)
         for s0 in range(0, len(e_ids), chunk):
             e, q = e_ids[s0:s0 + chunk], pr[s0:s0 + chunk]
             i, j = iu[q], ju[q]
@@ -772,7 +778,7 @@ class CoopPush2Command(Push2Command):
             _, r = self._split(pp, nq, com[e], v[e], wz[e], cg[e], None if cap is None else cap[e])
             out[e, i, j] = r
             out[e, j, i] = r
-        return out
+        return torch.where(use, out, torch.ones_like(out))
 
     def _update_push(self) -> None:
         """Every step: the motion still wanted, each robot's push direction and share at its current
@@ -1777,7 +1783,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     contact_mix: tuple[float, ...] = (1.0, 1.0, 1.0)  # spread, adjacent, random[, wrench[, expert]] pair
     contact_start_at: float = 0.7  # share of robots starting at the contact (the rest at its approach point)
     contact_min_sep: float = 0.85  # m between the two robots' standing points
-    # planner v2 (QUADCOOP_PLANNER=v2, the default; v1 = the planner every result before 2026-11-09 used):
+    # planner (QUADCOOP_PLANNER: default "ends"; v2 = all three parts; v1 = the planner before 2026-11-09):
     #   face_ends   turning contacts at the two ends of every short face (a cube had none: all its
     #               contacts pushed through its centre)
     #   footprint   a pair is usable only if the two standing robots' footprints (+ margin) do not
@@ -1786,9 +1792,10 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     #               the contacts are in the same order (counter-clockwise) as the robots, so the planner
     #               re-assigns instead of sending one robot around the other (unless they are about
     #               opposite each other, where either order is free); also applied at the episode start
-    face_ends: bool = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"  # (= contacts.PLANNER_V2)
-    footprint_sep: bool = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"
-    keep_order: bool = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"
+    #   (QUADCOOP_PLANNER may also list the parts: e.g. "ends,order")
+    face_ends: bool = "ends" in PLANNER_PARTS
+    footprint_sep: bool = "footprint" in PLANNER_PARTS
+    keep_order: bool = "order" in PLANNER_PARTS
     footprint_margin: float = 0.08  # m added around each robot's footprint (FOOTPRINT_HALF)
     order_free_deg: float = 150.0  # robots this far apart around the object: either order
     drift_dist: float = 0.35  # m from the front to the contact point
@@ -2020,24 +2027,32 @@ def contact_sense_obs(env, robot: str, f_ref: float = 200.0) -> torch.Tensor:
                       touch.unsqueeze(-1), vd.clamp(-1.5, 1.5), wd.clamp(-1.5, 1.5)], -1)
 
 
-def contact_acquired(env, robot: str, press_n: float = 30.0) -> torch.Tensor:
-    """One-time event per contact assignment: 1 on the first step the robot is on its assigned contact and
-    pushes it with press_n N or more along its push direction; re-armed when its contact changes or the
-    episode restarts. Weighted by bonus / step_dt, so each acquisition pays the bonus once."""
+def contact_acquired(env, robot: str, press_n: float = 30.0, hold_s: float = 0.5, progress_m: float = 0.1) -> torch.Tensor:
+    """Contact-acquired event (weighted by bonus / step_dt, so each event pays the bonus once): 1 when the
+    robot has been on its assigned contact pushing it with press_n N or more along its push direction for
+    hold_s s in a row (a single impact does not count). At most one payout per assignment, and a new
+    assignment re-arms it only once the object has made progress_m of pose progress (pose_error, m) since
+    the last payout, so switching between contacts cannot farm the bonus; a new episode re-arms it."""
     g = _g(env)
     k = AGENTS.index(robot)
-    n = env.num_envs
+    n, dev = env.num_envs, env.device
     key = f"_qc_acq_{robot}"
     if not hasattr(env, key):
-        setattr(env, key, (torch.zeros(n, dtype=torch.bool, device=env.device),
-                           torch.full((n,), -1, dtype=torch.long, device=env.device)))
-    done, last_idx = getattr(env, key)
-    rearm = (env.episode_length_buf <= 1) | (g.c_idx[:, k] != last_idx)
-    done &= ~rearm
+        setattr(env, key, (torch.zeros(n, dtype=torch.bool, device=dev), torch.full((n,), -1, dtype=torch.long, device=dev),
+                           torch.zeros(n, device=dev), torch.full((n,), 1e9, device=dev)))
+    done, last_idx, t_press, pe_paid = getattr(env, key)
+    pe = g.pose_error()
+    new_ep = env.episode_length_buf <= 1
+    pe_paid[:] = torch.where(new_ep, torch.full_like(pe_paid, 1e9), pe_paid)
+    changed = g.c_idx[:, k] != last_idx
+    done &= ~(new_ep | (changed & (pe <= pe_paid - progress_m)))
     last_idx[:] = g.c_idx[:, k]
     f = (object_force_from(env, robot) * g.push_dir_world(k)).sum(-1)
-    hit = g.on_contact(k) & (f >= press_n) & ~done
+    pressing = g.on_contact(k) & (f >= press_n) & ~changed & ~new_ep
+    t_press[:] = torch.where(pressing, t_press + env.step_dt, torch.zeros_like(t_press))
+    hit = (t_press >= hold_s - 1e-6) & ~done
     done |= hit
+    pe_paid[:] = torch.where(hit, pe, pe_paid)
     return hit.float()
 
 

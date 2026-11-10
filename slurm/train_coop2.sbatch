@@ -81,6 +81,12 @@
 #   ALGO=mappo SEED=0 RUN_NAME=cc_b ITERS=18000 EXTRA="$CC --reselect-s 3,6 --random-start 0.5 \
 #     --init-from logs/marl2/cc_a/model_16500.pt" sbatch --dependency=afterok:<cc_a job> slurm/train_coop2.sbatch
 #   (cc_a went wrong: fixed contacts cannot finish turn tasks, robots jammed into each other, phase B cancelled.)
+#   pv2 (below) ran with all three planner parts AND a bug: with the directed order mask, _pair_residuals only scored
+#   i < j pairs, so allowed (j, i) assignments kept residual 1 (fixed 2026-11-10). Its eval regressed (0.571 -> 0.467).
+#   Since 2026-11-10 the default planner is QUADCOOP_PLANNER=ends (face-end contacts only; order / footprint off) and
+#   --acq-bonus needs 0.5 s of sustained 30 N contact and re-arms on a new assignment only after 0.1 m of progress.
+#   Next executor run: the pv2 recipe under the default planner, initialised from whichever of turn_debug / pv2 wins
+#   the ends-only matched eval (td-ends-behind vs pv2-ends-behind).
 #   Planner v2 (QUADCOOP_PLANNER=v2, now the default; v1 restores the old planner): face-end turning contacts,
 #   footprint-checked pairs, robots keep their order around the object. Train under the planner the evaluation
 #   uses (expert, re-planning on), with a robot-robot touch cost; from turn_debug, 2500 iterations (~5 h):

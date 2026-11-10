@@ -175,8 +175,8 @@ def main() -> int:
                     help="contact curriculum: each robot observes the contact force it applies to the object, that force "
                          "along its push direction, touching, and the object motion the planner wants (7 inputs, last)")
     ap.add_argument("--acq-bonus", type=float, default=0.0,
-                    help="one-time bonus per contact assignment on first reaching real contact (on contact, 30 N+ along "
-                         "the push direction); 0 = off")
+                    help="bonus for reaching real contact: on contact, 30 N+ along the push direction for 0.5 s; once per "
+                         "assignment, re-armed by a new assignment only after 0.1 m of pose progress; 0 = off")
     ap.add_argument("--time-cost", type=float, default=0.0, help="team cost per second (0 = off)")
     ap.add_argument("--touch-cost", type=float, default=0.0,
                     help="team cost per second while any part of one robot touches the other (the minimal reward has "

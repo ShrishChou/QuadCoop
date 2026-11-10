@@ -159,7 +159,7 @@ def main() -> int:
                          "recorded command, yaw-rate error, heading drift, response delay). An approximation: the robots "
                          "drift from the recorded run's states, and commands are 10 Hz samples of the smoothed command")
     ap.add_argument("--trace", type=int, default=0,
-                    help="1 = per-step traces (10 Hz) of the rep-0 episodes in logs/evals/<prefix>-<rule>/pair/trace_<mass>kg.csv.gz")
+                    help="1 = per-step traces (10 Hz) of the rep-0 episodes (2 = every episode) in logs/evals/<prefix>-<rule>/pair/trace_<mass>kg.csv.gz")
     ap.add_argument("--tasks", choices=("standard", "turn"), default="standard",
                     help="standard: scripts/eval_coop2.py's 4 scenarios; turn: turn in place (the object starts at the goal "
                          "position with its heading off by 15 / 30 / 60 / 90 deg, capped by the object's symmetry)")
@@ -414,7 +414,7 @@ def main() -> int:
 
         dt = base.step_dt
         dg = dgm.ExecDiag(n, dev, dt) if stage4 and a.diag else None
-        tr_ids = [j for j, cs in enumerate(cases) if cs[3] == 0] if (dg is not None and a.trace) else []
+        tr_ids = [j for j, cs in enumerate(cases) if cs[3] == 0 or a.trace >= 2] if (dg is not None and a.trace) else []
         tr_rows = []
         rp = None
         if a.replay:  # recorded walker commands per (object, scenario), rep 0 of the traced run

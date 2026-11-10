@@ -43,9 +43,15 @@ import numpy as np
 
 BAND = (0.12, 0.70)  # m above the ground: what a robot body can touch (profiles.TOP_BAND-like)
 KIND_NONE, KIND_BOX, KIND_SPHERE, KIND_CYL_Y = -1, 0, 1, 2
-# planner v2 (default) adds the face-end turning contacts; QUADCOOP_PLANNER=v1 = the candidate sets of
+# planner: default "ends" adds the face-end turning contacts (order and footprint off: unproven); QUADCOOP_PLANNER=v1 = the candidate sets of
 # every result before 2026-11-09. Every caller follows it, so contact indices agree with the env's.
-PLANNER_V2 = os.environ.get("QUADCOOP_PLANNER", "v2") == "v2"
+# QUADCOOP_PLANNER: v1, v2 (= ends,order,footprint) or a comma list of those parts
+_PL = os.environ.get("QUADCOOP_PLANNER", "ends").strip()  # default: face-end contacts only
+PLANNER_PARTS = set() if _PL == "v1" else {"ends", "order", "footprint"} if _PL == "v2" else \
+    {x.strip() for x in _PL.split(",") if x.strip()}
+if not PLANNER_PARTS <= {"ends", "order", "footprint"} or (_PL not in ("v1", "v2") and not PLANNER_PARTS):
+    raise ValueError(f"QUADCOOP_PLANNER={_PL!r}: use v1, v2 or a comma list of ends, order, footprint")
+PLANNER_V2 = "ends" in PLANNER_PARTS  # (name kept: the face-end contacts)
 
 
 @dataclass
