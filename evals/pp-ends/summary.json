@@ -1,0 +1,1711 @@
+{
+ "fmax": [
+  150.0,
+  250.0,
+  350.0
+ ],
+ "masses": [
+  20.0,
+  40.0,
+  60.0,
+  80.0
+ ],
+ "motions": [
+  "turn",
+  "move_x",
+  "move_y",
+  "move_turn"
+ ],
+ "objects": [
+  "cube",
+  "long",
+  "sphere",
+  "cylinder",
+  "arch",
+  "dumbbell",
+  "t_shape",
+  "beam",
+  "l_shape",
+  "asym",
+  "u_channel",
+  "plus"
+ ],
+ "control_max_motion_m": 0.0,
+ "150": {
+  "model_ok": 0.8675496688741722,
+  "model": {
+   "turn / 20": 1.0,
+   "turn / 40": 1.0,
+   "turn / 60": 0.36363636363636365,
+   "turn / 80": 0.1111111111111111,
+   "turn": 0.6428571428571429,
+   "move_x / 20": 0.9166666666666666,
+   "move_x / 40": 1.0,
+   "move_x / 60": 1.0,
+   "move_x / 80": null,
+   "move_x": 0.9722222222222222,
+   "move_y / 20": 0.9166666666666666,
+   "move_y / 40": 0.9166666666666666,
+   "move_y / 60": 0.8333333333333334,
+   "move_y / 80": null,
+   "move_y": 0.8888888888888888,
+   "move_turn / 20": 1.0,
+   "move_turn / 40": 1.0,
+   "move_turn / 60": 1.0,
+   "move_turn / 80": 1.0,
+   "move_turn": 1.0
+  },
+  "too_weak_n": 32,
+  "too_weak_but_ok": 11,
+  "weight": {
+   "20": {
+    "agree_can": 28,
+    "agree_cannot": 13,
+    "optimistic": 1,
+    "cautious": 4,
+    "agreement": 0.8913043478260869
+   },
+   "40": {
+    "agree_can": 4,
+    "agree_cannot": 28,
+    "optimistic": 0,
+    "cautious": 14,
+    "agreement": 0.6956521739130435
+   },
+   "60": {
+    "agree_can": 0,
+    "agree_cannot": 33,
+    "optimistic": 0,
+    "cautious": 13,
+    "agreement": 0.717391304347826
+   },
+   "80": {
+    "agree_can": 0,
+    "agree_cannot": 42,
+    "optimistic": 0,
+    "cautious": 4,
+    "agreement": 0.9130434782608695
+   }
+  },
+  "turning": [
+   {
+    "object": "cube",
+    "mass": 20.0,
+    "single": 0.522,
+    "same": 0.509,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 40.0,
+    "single": 0.511,
+    "same": 0.509,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 60.0,
+    "single": 0.456,
+    "same": 0.356,
+    "opp": 0.581,
+    "pair": 0.658,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "cube",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.31,
+    "opp": 0.0,
+    "pair": 0.557,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "long",
+    "mass": 20.0,
+    "single": 0.519,
+    "same": 0.519,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 40.0,
+    "single": 0.504,
+    "same": 0.504,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 60.0,
+    "single": 0.0,
+    "same": 0.0,
+    "opp": 0.0,
+    "pair": 0.521,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "long",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.0,
+    "opp": 0.0,
+    "pair": 0.49,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 20.0,
+    "single": 0.101,
+    "same": 0.109,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 40.0,
+    "single": 0.096,
+    "same": 0.086,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 60.0,
+    "single": 0.106,
+    "same": 0.091,
+    "opp": 0.146,
+    "pair": 0.146,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 80.0,
+    "single": 0.114,
+    "same": 0.091,
+    "opp": 0.146,
+    "pair": 0.146,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "arch",
+    "mass": 20.0,
+    "single": 0.664,
+    "same": 0.686,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 40.0,
+    "single": 0.647,
+    "same": 0.675,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 60.0,
+    "single": 0.621,
+    "same": 0.672,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "arch",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.0,
+    "opp": 0.0,
+    "pair": 0.618,
+    "planner": 0.618,
+    "equal": 0.618
+   },
+   {
+    "object": "dumbbell",
+    "mass": 20.0,
+    "single": 0.696,
+    "same": 0.717,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 40.0,
+    "single": 0.701,
+    "same": 0.708,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 60.0,
+    "single": 0.697,
+    "same": 0.699,
+    "opp": 0.948,
+    "pair": 0.948,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.0,
+    "opp": 0.0,
+    "pair": 0.683,
+    "planner": 0.683,
+    "equal": 0.683
+   },
+   {
+    "object": "t_shape",
+    "mass": 20.0,
+    "single": 0.738,
+    "same": 0.738,
+    "opp": 0.983,
+    "pair": 0.983,
+    "planner": 0.967,
+    "equal": 0.98
+   },
+   {
+    "object": "t_shape",
+    "mass": 40.0,
+    "single": 0.727,
+    "same": 0.727,
+    "opp": 0.991,
+    "pair": 0.991,
+    "planner": 0.952,
+    "equal": 0.962
+   },
+   {
+    "object": "t_shape",
+    "mass": 60.0,
+    "single": 0.784,
+    "same": 0.799,
+    "opp": 0.958,
+    "pair": 0.958,
+    "planner": 0.942,
+    "equal": 0.971
+   },
+   {
+    "object": "t_shape",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.723,
+    "opp": 0.846,
+    "pair": 0.846,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "beam",
+    "mass": 20.0,
+    "single": 0.528,
+    "same": 0.528,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 40.0,
+    "single": 0.531,
+    "same": 0.528,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 60.0,
+    "single": 0.519,
+    "same": 0.519,
+    "opp": 0.519,
+    "pair": 0.531,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "beam",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.516,
+    "opp": 0.0,
+    "pair": 0.516,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "l_shape",
+    "mass": 20.0,
+    "single": 0.737,
+    "same": 0.772,
+    "opp": 0.961,
+    "pair": 0.961,
+    "planner": 0.921,
+    "equal": 0.922
+   },
+   {
+    "object": "l_shape",
+    "mass": 40.0,
+    "single": 0.726,
+    "same": 0.771,
+    "opp": 0.962,
+    "pair": 0.962,
+    "planner": 0.932,
+    "equal": 0.924
+   },
+   {
+    "object": "l_shape",
+    "mass": 60.0,
+    "single": 0.75,
+    "same": 0.765,
+    "opp": 0.932,
+    "pair": 0.932,
+    "planner": 0.932,
+    "equal": 0.929
+   },
+   {
+    "object": "l_shape",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.769,
+    "opp": 0.0,
+    "pair": 0.834,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "asym",
+    "mass": 20.0,
+    "single": 0.777,
+    "same": 0.78,
+    "opp": 0.994,
+    "pair": 0.994,
+    "planner": 0.973,
+    "equal": 0.967
+   },
+   {
+    "object": "asym",
+    "mass": 40.0,
+    "single": 0.758,
+    "same": 0.758,
+    "opp": 0.975,
+    "pair": 0.975,
+    "planner": 0.962,
+    "equal": 0.967
+   },
+   {
+    "object": "asym",
+    "mass": 60.0,
+    "single": 0.727,
+    "same": 0.729,
+    "opp": 0.939,
+    "pair": 0.939,
+    "planner": 0.948,
+    "equal": 0.979
+   },
+   {
+    "object": "asym",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.68,
+    "opp": 0.912,
+    "pair": 0.912,
+    "planner": 0.913,
+    "equal": 0.939
+   },
+   {
+    "object": "u_channel",
+    "mass": 20.0,
+    "single": 0.687,
+    "same": 0.809,
+    "opp": 0.997,
+    "pair": 0.997,
+    "planner": 0.992,
+    "equal": 0.995
+   },
+   {
+    "object": "u_channel",
+    "mass": 40.0,
+    "single": 0.693,
+    "same": 0.8,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 0.985,
+    "equal": 0.997
+   },
+   {
+    "object": "u_channel",
+    "mass": 60.0,
+    "single": 0.678,
+    "same": 0.808,
+    "opp": 0.997,
+    "pair": 0.997,
+    "planner": 0.997,
+    "equal": 0.985
+   },
+   {
+    "object": "u_channel",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.748,
+    "opp": 0.883,
+    "pair": 0.883,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "plus",
+    "mass": 20.0,
+    "single": 0.518,
+    "same": 0.542,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 40.0,
+    "single": 0.52,
+    "same": 0.536,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 60.0,
+    "single": 0.536,
+    "same": 0.536,
+    "opp": 0.536,
+    "pair": 0.717,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "plus",
+    "mass": 80.0,
+    "single": 0.0,
+    "same": 0.507,
+    "opp": 0.0,
+    "pair": 0.507,
+    "planner": 0.0,
+    "equal": 0.0
+   }
+  ],
+  "split": {
+   "turn": {
+    "planner_ok": 0.6136363636363636,
+    "equal_ok": 0.6136363636363636,
+    "planner_cos": 0.6299318181818182,
+    "equal_cos": 0.6322272727272727,
+    "lost": 0,
+    "n": 44
+   },
+   "move_x": {
+    "planner_ok": 0.7916666666666666,
+    "equal_ok": 0.8125,
+    "planner_cos": 0.8691874999999999,
+    "equal_cos": 0.8399166666666668,
+    "lost": 0,
+    "n": 48
+   },
+   "move_y": {
+    "planner_ok": 0.7291666666666666,
+    "equal_ok": 0.7291666666666666,
+    "planner_cos": 0.7623541666666666,
+    "equal_cos": 0.7262291666666667,
+    "lost": 0,
+    "n": 48
+   },
+   "move_turn": {
+    "planner_ok": 0.9772727272727273,
+    "equal_ok": 0.7727272727272727,
+    "planner_cos": 0.91325,
+    "equal_cos": 0.8629090909090908,
+    "lost": 9,
+    "n": 44
+   }
+  },
+  "pick": {
+   "turn": {
+    "planner_cos": 0.6299318181818182,
+    "best_cos": 0.8454999999999999,
+    "near": 0.6590909090909091,
+    "best_ok": 0.7272727272727273
+   },
+   "move_x": {
+    "planner_cos": 0.8691874999999999,
+    "best_cos": 0.8871875,
+    "near": 0.9375,
+    "best_ok": 0.8541666666666666
+   },
+   "move_y": {
+    "planner_cos": 0.7623541666666666,
+    "best_cos": 0.8861875,
+    "near": 0.7708333333333334,
+    "best_ok": 0.875
+   },
+   "move_turn": {
+    "planner_cos": 0.91325,
+    "best_cos": 0.9674772727272728,
+    "near": 0.8409090909090909,
+    "best_ok": 0.9772727272727273
+   }
+  }
+ },
+ "250": {
+  "model_ok": 0.9619565217391305,
+  "model": {
+   "turn / 20": 1.0,
+   "turn / 40": 1.0,
+   "turn / 60": 1.0,
+   "turn / 80": 1.0,
+   "turn": 1.0,
+   "move_x / 20": 0.9166666666666666,
+   "move_x / 40": 0.9166666666666666,
+   "move_x / 60": 1.0,
+   "move_x / 80": 1.0,
+   "move_x": 0.9583333333333334,
+   "move_y / 20": 0.9166666666666666,
+   "move_y / 40": 0.9166666666666666,
+   "move_y / 60": 0.8333333333333334,
+   "move_y / 80": 0.9166666666666666,
+   "move_y": 0.8958333333333334,
+   "move_turn / 20": 1.0,
+   "move_turn / 40": 1.0,
+   "move_turn / 60": 1.0,
+   "move_turn / 80": 1.0,
+   "move_turn": 1.0
+  },
+  "too_weak_n": 0,
+  "too_weak_but_ok": 0,
+  "weight": {
+   "20": {
+    "agree_can": 28,
+    "agree_cannot": 13,
+    "optimistic": 1,
+    "cautious": 4,
+    "agreement": 0.8913043478260869
+   },
+   "40": {
+    "agree_can": 27,
+    "agree_cannot": 13,
+    "optimistic": 2,
+    "cautious": 4,
+    "agreement": 0.8695652173913043
+   },
+   "60": {
+    "agree_can": 7,
+    "agree_cannot": 27,
+    "optimistic": 0,
+    "cautious": 12,
+    "agreement": 0.7391304347826086
+   },
+   "80": {
+    "agree_can": 2,
+    "agree_cannot": 29,
+    "optimistic": 0,
+    "cautious": 15,
+    "agreement": 0.6739130434782609
+   }
+  },
+  "turning": [
+   {
+    "object": "cube",
+    "mass": 20.0,
+    "single": 0.52,
+    "same": 0.516,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 40.0,
+    "single": 0.518,
+    "same": 0.52,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 60.0,
+    "single": 0.522,
+    "same": 0.501,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 80.0,
+    "single": 0.495,
+    "same": 0.504,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 20.0,
+    "single": 0.525,
+    "same": 0.525,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 40.0,
+    "single": 0.521,
+    "same": 0.521,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 60.0,
+    "single": 0.526,
+    "same": 0.526,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 80.0,
+    "single": 0.51,
+    "same": 0.51,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 20.0,
+    "single": 0.091,
+    "same": 0.1,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 40.0,
+    "single": 0.101,
+    "same": 0.125,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 60.0,
+    "single": 0.105,
+    "same": 0.088,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 80.0,
+    "single": 0.091,
+    "same": 0.101,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 20.0,
+    "single": 0.647,
+    "same": 0.676,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 40.0,
+    "single": 0.638,
+    "same": 0.68,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 60.0,
+    "single": 0.644,
+    "same": 0.679,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 80.0,
+    "single": 0.644,
+    "same": 0.682,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 20.0,
+    "single": 0.696,
+    "same": 0.729,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 40.0,
+    "single": 0.693,
+    "same": 0.73,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 60.0,
+    "single": 0.702,
+    "same": 0.713,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 80.0,
+    "single": 0.701,
+    "same": 0.713,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "t_shape",
+    "mass": 20.0,
+    "single": 0.739,
+    "same": 0.739,
+    "opp": 0.988,
+    "pair": 0.988,
+    "planner": 0.972,
+    "equal": 0.966
+   },
+   {
+    "object": "t_shape",
+    "mass": 40.0,
+    "single": 0.729,
+    "same": 0.729,
+    "opp": 0.984,
+    "pair": 0.984,
+    "planner": 0.964,
+    "equal": 0.977
+   },
+   {
+    "object": "t_shape",
+    "mass": 60.0,
+    "single": 0.739,
+    "same": 0.739,
+    "opp": 0.993,
+    "pair": 0.993,
+    "planner": 0.961,
+    "equal": 0.974
+   },
+   {
+    "object": "t_shape",
+    "mass": 80.0,
+    "single": 0.719,
+    "same": 0.719,
+    "opp": 0.993,
+    "pair": 0.993,
+    "planner": 0.969,
+    "equal": 0.964
+   },
+   {
+    "object": "beam",
+    "mass": 20.0,
+    "single": 0.526,
+    "same": 0.526,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 40.0,
+    "single": 0.525,
+    "same": 0.526,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 60.0,
+    "single": 0.529,
+    "same": 0.53,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 80.0,
+    "single": 0.524,
+    "same": 0.529,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "l_shape",
+    "mass": 20.0,
+    "single": 0.76,
+    "same": 0.77,
+    "opp": 0.963,
+    "pair": 0.963,
+    "planner": 0.913,
+    "equal": 0.921
+   },
+   {
+    "object": "l_shape",
+    "mass": 40.0,
+    "single": 0.742,
+    "same": 0.753,
+    "opp": 0.965,
+    "pair": 0.965,
+    "planner": 0.919,
+    "equal": 0.926
+   },
+   {
+    "object": "l_shape",
+    "mass": 60.0,
+    "single": 0.732,
+    "same": 0.773,
+    "opp": 0.985,
+    "pair": 0.985,
+    "planner": 0.916,
+    "equal": 0.923
+   },
+   {
+    "object": "l_shape",
+    "mass": 80.0,
+    "single": 0.736,
+    "same": 0.767,
+    "opp": 0.97,
+    "pair": 0.97,
+    "planner": 0.922,
+    "equal": 0.936
+   },
+   {
+    "object": "asym",
+    "mass": 20.0,
+    "single": 0.788,
+    "same": 0.771,
+    "opp": 0.989,
+    "pair": 0.989,
+    "planner": 0.959,
+    "equal": 0.968
+   },
+   {
+    "object": "asym",
+    "mass": 40.0,
+    "single": 0.78,
+    "same": 0.78,
+    "opp": 0.992,
+    "pair": 0.992,
+    "planner": 0.968,
+    "equal": 0.953
+   },
+   {
+    "object": "asym",
+    "mass": 60.0,
+    "single": 0.782,
+    "same": 0.789,
+    "opp": 0.986,
+    "pair": 0.986,
+    "planner": 0.954,
+    "equal": 0.974
+   },
+   {
+    "object": "asym",
+    "mass": 80.0,
+    "single": 0.744,
+    "same": 0.749,
+    "opp": 0.986,
+    "pair": 0.986,
+    "planner": 0.944,
+    "equal": 0.984
+   },
+   {
+    "object": "u_channel",
+    "mass": 20.0,
+    "single": 0.7,
+    "same": 0.83,
+    "opp": 0.998,
+    "pair": 0.998,
+    "planner": 0.972,
+    "equal": 0.987
+   },
+   {
+    "object": "u_channel",
+    "mass": 40.0,
+    "single": 0.69,
+    "same": 0.827,
+    "opp": 0.999,
+    "pair": 0.999,
+    "planner": 0.973,
+    "equal": 0.995
+   },
+   {
+    "object": "u_channel",
+    "mass": 60.0,
+    "single": 0.698,
+    "same": 0.809,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 0.988,
+    "equal": 0.995
+   },
+   {
+    "object": "u_channel",
+    "mass": 80.0,
+    "single": 0.709,
+    "same": 0.804,
+    "opp": 0.997,
+    "pair": 0.997,
+    "planner": 0.993,
+    "equal": 0.985
+   },
+   {
+    "object": "plus",
+    "mass": 20.0,
+    "single": 0.514,
+    "same": 0.552,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 40.0,
+    "single": 0.509,
+    "same": 0.545,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 60.0,
+    "single": 0.511,
+    "same": 0.544,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 80.0,
+    "single": 0.524,
+    "same": 0.544,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   }
+  ],
+  "split": {
+   "turn": {
+    "planner_ok": 1.0,
+    "equal_ok": 1.0,
+    "planner_cos": 0.9837954545454545,
+    "equal_cos": 0.987,
+    "lost": 0,
+    "n": 44
+   },
+   "move_x": {
+    "planner_ok": 0.9583333333333334,
+    "equal_ok": 0.9791666666666666,
+    "planner_cos": 0.9808541666666667,
+    "equal_cos": 0.9506041666666666,
+    "lost": 1,
+    "n": 48
+   },
+   "move_y": {
+    "planner_ok": 0.8958333333333334,
+    "equal_ok": 0.875,
+    "planner_cos": 0.9366249999999999,
+    "equal_cos": 0.8694999999999999,
+    "lost": 2,
+    "n": 48
+   },
+   "move_turn": {
+    "planner_ok": 1.0,
+    "equal_ok": 0.6590909090909091,
+    "planner_cos": 0.9199545454545455,
+    "equal_cos": 0.8375454545454545,
+    "lost": 15,
+    "n": 44
+   }
+  },
+  "pick": {
+   "turn": {
+    "planner_cos": 0.9837954545454545,
+    "best_cos": 0.9951818181818181,
+    "near": 1.0,
+    "best_ok": 1.0
+   },
+   "move_x": {
+    "planner_cos": 0.9808541666666667,
+    "best_cos": 0.9972500000000001,
+    "near": 0.9583333333333334,
+    "best_ok": 1.0
+   },
+   "move_y": {
+    "planner_cos": 0.9366249999999999,
+    "best_cos": 0.9897916666666666,
+    "near": 0.8125,
+    "best_ok": 1.0
+   },
+   "move_turn": {
+    "planner_cos": 0.9199545454545455,
+    "best_cos": 0.977840909090909,
+    "near": 0.7727272727272727,
+    "best_ok": 1.0
+   }
+  }
+ },
+ "350": {
+  "model_ok": 0.9619565217391305,
+  "model": {
+   "turn / 20": 1.0,
+   "turn / 40": 1.0,
+   "turn / 60": 1.0,
+   "turn / 80": 1.0,
+   "turn": 1.0,
+   "move_x / 20": 0.9166666666666666,
+   "move_x / 40": 0.9166666666666666,
+   "move_x / 60": 0.9166666666666666,
+   "move_x / 80": 1.0,
+   "move_x": 0.9375,
+   "move_y / 20": 0.9166666666666666,
+   "move_y / 40": 0.9166666666666666,
+   "move_y / 60": 0.9166666666666666,
+   "move_y / 80": 0.9166666666666666,
+   "move_y": 0.9166666666666666,
+   "move_turn / 20": 1.0,
+   "move_turn / 40": 1.0,
+   "move_turn / 60": 1.0,
+   "move_turn / 80": 1.0,
+   "move_turn": 1.0
+  },
+  "too_weak_n": 0,
+  "too_weak_but_ok": 0,
+  "weight": {
+   "20": {
+    "agree_can": 28,
+    "agree_cannot": 13,
+    "optimistic": 1,
+    "cautious": 4,
+    "agreement": 0.8913043478260869
+   },
+   "40": {
+    "agree_can": 28,
+    "agree_cannot": 13,
+    "optimistic": 1,
+    "cautious": 4,
+    "agreement": 0.8913043478260869
+   },
+   "60": {
+    "agree_can": 27,
+    "agree_cannot": 13,
+    "optimistic": 2,
+    "cautious": 4,
+    "agreement": 0.8695652173913043
+   },
+   "80": {
+    "agree_can": 7,
+    "agree_cannot": 24,
+    "optimistic": 0,
+    "cautious": 15,
+    "agreement": 0.6739130434782609
+   }
+  },
+  "turning": [
+   {
+    "object": "cube",
+    "mass": 20.0,
+    "single": 0.538,
+    "same": 0.529,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 40.0,
+    "single": 0.519,
+    "same": 0.528,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 60.0,
+    "single": 0.524,
+    "same": 0.522,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cube",
+    "mass": 80.0,
+    "single": 0.53,
+    "same": 0.501,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 20.0,
+    "single": 0.526,
+    "same": 0.526,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 40.0,
+    "single": 0.519,
+    "same": 0.519,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 60.0,
+    "single": 0.509,
+    "same": 0.509,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "long",
+    "mass": 80.0,
+    "single": 0.51,
+    "same": 0.522,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 20.0,
+    "single": 0.095,
+    "same": 0.108,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 40.0,
+    "single": 0.105,
+    "same": 0.107,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 60.0,
+    "single": 0.105,
+    "same": 0.121,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 80.0,
+    "single": 0.108,
+    "same": 0.088,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 20.0,
+    "single": 0.653,
+    "same": 0.69,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 40.0,
+    "single": 0.647,
+    "same": 0.679,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 60.0,
+    "single": 0.643,
+    "same": 0.679,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "arch",
+    "mass": 80.0,
+    "single": 0.652,
+    "same": 0.682,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 20.0,
+    "single": 0.696,
+    "same": 0.725,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 40.0,
+    "single": 0.695,
+    "same": 0.708,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 60.0,
+    "single": 0.694,
+    "same": 0.702,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "dumbbell",
+    "mass": 80.0,
+    "single": 0.694,
+    "same": 0.706,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "t_shape",
+    "mass": 20.0,
+    "single": 0.747,
+    "same": 0.747,
+    "opp": 0.984,
+    "pair": 0.984,
+    "planner": 0.965,
+    "equal": 0.974
+   },
+   {
+    "object": "t_shape",
+    "mass": 40.0,
+    "single": 0.756,
+    "same": 0.751,
+    "opp": 0.989,
+    "pair": 0.989,
+    "planner": 0.971,
+    "equal": 0.979
+   },
+   {
+    "object": "t_shape",
+    "mass": 60.0,
+    "single": 0.733,
+    "same": 0.733,
+    "opp": 0.987,
+    "pair": 0.987,
+    "planner": 0.961,
+    "equal": 0.977
+   },
+   {
+    "object": "t_shape",
+    "mass": 80.0,
+    "single": 0.728,
+    "same": 0.728,
+    "opp": 0.991,
+    "pair": 0.991,
+    "planner": 0.98,
+    "equal": 0.964
+   },
+   {
+    "object": "beam",
+    "mass": 20.0,
+    "single": 0.53,
+    "same": 0.53,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 40.0,
+    "single": 0.529,
+    "same": 0.529,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 60.0,
+    "single": 0.53,
+    "same": 0.53,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "beam",
+    "mass": 80.0,
+    "single": 0.528,
+    "same": 0.531,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "l_shape",
+    "mass": 20.0,
+    "single": 0.754,
+    "same": 0.766,
+    "opp": 0.968,
+    "pair": 0.968,
+    "planner": 0.914,
+    "equal": 0.921
+   },
+   {
+    "object": "l_shape",
+    "mass": 40.0,
+    "single": 0.755,
+    "same": 0.773,
+    "opp": 0.956,
+    "pair": 0.956,
+    "planner": 0.919,
+    "equal": 0.924
+   },
+   {
+    "object": "l_shape",
+    "mass": 60.0,
+    "single": 0.746,
+    "same": 0.768,
+    "opp": 0.961,
+    "pair": 0.961,
+    "planner": 0.918,
+    "equal": 0.918
+   },
+   {
+    "object": "l_shape",
+    "mass": 80.0,
+    "single": 0.728,
+    "same": 0.75,
+    "opp": 0.965,
+    "pair": 0.965,
+    "planner": 0.924,
+    "equal": 0.929
+   },
+   {
+    "object": "asym",
+    "mass": 20.0,
+    "single": 0.771,
+    "same": 0.771,
+    "opp": 0.992,
+    "pair": 0.992,
+    "planner": 0.972,
+    "equal": 0.981
+   },
+   {
+    "object": "asym",
+    "mass": 40.0,
+    "single": 0.788,
+    "same": 0.794,
+    "opp": 0.993,
+    "pair": 0.993,
+    "planner": 0.973,
+    "equal": 0.967
+   },
+   {
+    "object": "asym",
+    "mass": 60.0,
+    "single": 0.792,
+    "same": 0.792,
+    "opp": 0.997,
+    "pair": 0.997,
+    "planner": 0.932,
+    "equal": 0.968
+   },
+   {
+    "object": "asym",
+    "mass": 80.0,
+    "single": 0.8,
+    "same": 0.8,
+    "opp": 0.987,
+    "pair": 0.987,
+    "planner": 0.956,
+    "equal": 0.97
+   },
+   {
+    "object": "u_channel",
+    "mass": 20.0,
+    "single": 0.696,
+    "same": 0.826,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 0.983,
+    "equal": 0.993
+   },
+   {
+    "object": "u_channel",
+    "mass": 40.0,
+    "single": 0.681,
+    "same": 0.826,
+    "opp": 0.997,
+    "pair": 0.997,
+    "planner": 0.98,
+    "equal": 0.994
+   },
+   {
+    "object": "u_channel",
+    "mass": 60.0,
+    "single": 0.692,
+    "same": 0.823,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 0.987,
+    "equal": 0.98
+   },
+   {
+    "object": "u_channel",
+    "mass": 80.0,
+    "single": 0.695,
+    "same": 0.831,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 0.994,
+    "equal": 0.994
+   },
+   {
+    "object": "plus",
+    "mass": 20.0,
+    "single": 0.518,
+    "same": 0.546,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 40.0,
+    "single": 0.517,
+    "same": 0.551,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 60.0,
+    "single": 0.514,
+    "same": 0.552,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "plus",
+    "mass": 80.0,
+    "single": 0.513,
+    "same": 0.542,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   }
+  ],
+  "split": {
+   "turn": {
+    "planner_ok": 1.0,
+    "equal_ok": 1.0,
+    "planner_cos": 0.98475,
+    "equal_cos": 0.9871136363636364,
+    "lost": 0,
+    "n": 44
+   },
+   "move_x": {
+    "planner_ok": 0.9375,
+    "equal_ok": 1.0,
+    "planner_cos": 0.9768958333333333,
+    "equal_cos": 0.9515208333333334,
+    "lost": 0,
+    "n": 48
+   },
+   "move_y": {
+    "planner_ok": 0.9166666666666666,
+    "equal_ok": 0.9166666666666666,
+    "planner_cos": 0.9304583333333333,
+    "equal_cos": 0.8703333333333334,
+    "lost": 0,
+    "n": 48
+   },
+   "move_turn": {
+    "planner_ok": 1.0,
+    "equal_ok": 0.5909090909090909,
+    "planner_cos": 0.9157954545454546,
+    "equal_cos": 0.8212727272727274,
+    "lost": 18,
+    "n": 44
+   }
+  },
+  "pick": {
+   "turn": {
+    "planner_cos": 0.98475,
+    "best_cos": 0.9947045454545456,
+    "near": 1.0,
+    "best_ok": 1.0
+   },
+   "move_x": {
+    "planner_cos": 0.9768958333333333,
+    "best_cos": 0.9973333333333333,
+    "near": 0.9375,
+    "best_ok": 1.0
+   },
+   "move_y": {
+    "planner_cos": 0.9304583333333333,
+    "best_cos": 0.9935625,
+    "near": 0.75,
+    "best_ok": 1.0
+   },
+   "move_turn": {
+    "planner_cos": 0.9157954545454546,
+    "best_cos": 0.9744318181818182,
+    "near": 0.7727272727272727,
+    "best_ok": 1.0
+   }
+  }
+ }
+}

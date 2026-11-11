@@ -272,6 +272,10 @@ class CoopPush2Command(Push2Command):
         self.c_fin = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window: no progress in the zone
         self.c_win_yaw = torch.zeros(n, device=dev)
         self.c_stalled = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress
+        # the last re-plan's cause (logged): 0 reset, 1 timer, 2 wrench residual, 3 no progress, 4 weak pair,
+        # 5 finish, 6 slow arrival; and re-plans run this episode (a re-plan may keep the same pair)
+        self.c_plan_reason = torch.zeros(n, dtype=torch.long, device=dev)
+        self.c_plan_n = torch.zeros(n, device=dev)
         self.c_replans = torch.zeros(n, device=dev)  # re-plans by cause (logged): no progress,
         self.c_replan_slow = torch.zeros(n, device=dev)  # slow arrival
         self.c_replan_weak = torch.zeros(n, device=dev)  # and no progress the force model expects (pair at its limit)
@@ -1370,13 +1374,18 @@ class CoopPush2Command(Push2Command):
             if hi > 0:
                 self.c_reselect_t -= dt
                 due = self.c_reselect_t <= 0.0
+                why = torch.where(due, 1, 0)  # the first cause that applies, in this order (logging only)
                 if self.cfg.wrench:  # the wrench rule also re-chooses when its pair cannot do the job
-                    due |= (self.c_rule >= 3) & (self.c_res_t >= self.cfg.resid_dwell_s)
+                    rd = (self.c_rule >= 3) & (self.c_res_t >= self.cfg.resid_dwell_s)
+                    why = torch.where((why == 0) & rd, 2, why)
+                    due |= rd
                 if self.cfg.expert:  # expert: also when nothing moves, or a robot is late reaching its contact
                     slow = (~self.c_engaged & (self.c_free_t >= self.c_reach_lim)).any(-1) & (self.c_rule == 4)
                     self.c_replans += (self.c_stalled & ~due).float()
                     self.c_replan_weak += (self.c_weak & ~due & ~self.c_stalled).float()
                     self.c_replan_slow += (slow & ~due & ~self.c_stalled & ~self.c_weak & ~self.c_fin).float()
+                    for code, m_ in ((3, self.c_stalled), (4, self.c_weak), (5, self.c_fin), (6, slow)):
+                        why = torch.where((why == 0) & m_, code, why)
                     due |= self.c_stalled | self.c_weak | self.c_fin | slow
                 if bool(due.any()):
                     ids = due.nonzero().flatten()
@@ -1391,7 +1400,10 @@ class CoopPush2Command(Push2Command):
                         settled |= self.c_rule[ids] == 4
                     # close to the goal the direction to it is noise: keep the contacts there
                     far = torch.linalg.norm(self.goal_xy[ids] - self.box_pos()[ids, :2], dim=-1) > self.cfg.reselect_min_dist
-                    self._reselect(ids[settled & far])
+                    run = ids[settled & far]
+                    self.c_plan_reason[run] = why[run]
+                    self.c_plan_n[run] += 1.0
+                    self._reselect(run)
             # the approach potential's baseline for the next step (after resets and re-selections, so
             # a new contact or a new episode never pays for the jump)
             for k in range(len(AGENTS)):
@@ -1597,6 +1609,8 @@ class CoopPush2Command(Push2Command):
                 self.c_fin[env_ids] = False
                 self.c_stalled[env_ids] = False
                 self.c_replans[env_ids] = 0.0
+                self.c_plan_reason[env_ids] = 0
+                self.c_plan_n[env_ids] = 0.0
                 self.c_replan_slow[env_ids] = 0.0
                 self.c_replan_weak[env_ids] = 0.0
                 self.c_weak[env_ids] = False

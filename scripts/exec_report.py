@@ -37,7 +37,11 @@ def stall_causes(rows, ags, t):
     press = np.stack([np.array([float(r[f"force_along_cmd_{a}"]) for r in rows]) >= PRESS for a in ags])
     cd = np.stack([np.array([float(r[f"contact_dist_{a}"]) for r in rows]) for a in ags])
     jump = np.zeros_like(on)
-    jump[:, 1:] = np.abs(np.diff(cd, axis=1)) > JUMP
+    if f"cidx_{ags[0]}" in rows[0]:  # recorded assignment ids (traces from 2026-11-10 on)
+        ci = np.stack([np.array([float(r[f"cidx_{a}"]) for r in rows]) for a in ags])
+        jump[:, 1:] = np.diff(ci, axis=1) != 0
+    else:  # older traces: a step change of the distance to the assigned contact
+        jump[:, 1:] = np.abs(np.diff(cd, axis=1)) > JUMP
     # since each robot's latest assignment: has it been on contact?
     got = np.zeros_like(on)
     since_sw = np.full(len(rows), 1e9)

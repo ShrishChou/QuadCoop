@@ -79,6 +79,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import random
 import shutil
 import sys
@@ -105,6 +106,32 @@ TURN_SCENARIOS = (  # --tasks turn (test 3): the object already at the goal posi
 )
 RULES = ("centre", "adjacent", "spread")
 SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the force split)
+
+
+def write_provenance(folders, a, g, mass) -> None:
+    """E0: what exactly ran, per eval folder -> provenance.json (git state, checkpoint hash, resolved planner
+    settings, candidate-table hash, environment switches) and provenance_<mass>kg.json (object masses as applied)."""
+    import hashlib
+    import subprocess
+    h = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    git = lambda *x: subprocess.run(["git", *x], cwd=ROOT, capture_output=True).stdout  # noqa: E731
+    diff = git("diff", "HEAD")
+    tabs = b"".join(t.detach().cpu().numpy().tobytes() for t in (g.c_p, g.c_n, g.c_pre, g.c_valid, g.c_sep_ok))
+    ck = Path(a.checkpoint) if a.checkpoint else None
+    prov = {"git_head": git("rev-parse", "HEAD").decode().strip(), "git_dirty_files": git("status", "--porcelain").decode().split("\n")[:-1],
+            "git_diff_sha256": h(diff), "argv": sys.argv, "checkpoint": a.checkpoint,
+            "checkpoint_sha256": h(ck.read_bytes()) if ck and ck.exists() else None, "walkers": walker_record(),
+            "env": {k: v for k, v in os.environ.items() if k.startswith("QUADCOOP_")},
+            "goal_cfg": {k: v for k, v in vars(g.cfg).items() if not k.startswith("_")},
+            "candidates_sha256": h(tabs), "candidates_per_shape": g.c_valid.sum(-1).tolist()}
+    m_ = g.c_mass.detach().cpu()
+    for f in folders:
+        out = ROOT / "logs" / "evals" / f / "pair"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "provenance.json").write_text(json.dumps(prov, indent=1, default=str))
+        (out / "git_diff.patch").write_bytes(diff)
+        (out / f"provenance_{mass:g}kg.json").write_text(json.dumps(
+            {"requested_kg": mass, "applied_kg_min": float(m_.min()), "applied_kg_max": float(m_.max())}, indent=1))
 
 
 def main() -> int:
@@ -352,6 +379,8 @@ def main() -> int:
                                       for k, v in sc.items()}
         obs, _ = base.reset()
         g.scenario = None
+        if stage4:
+            write_provenance([f"{prefix}-{r_}" for r_ in rules], a, g, mass)
         obs = TensorDict({k: v for k, v in obs.items() if not k.startswith("walker_")}, batch_size=[n])
         policy = PairPolicy(obs, device, "b", singles=models["policy"]) if use_policy else \
             PairPolicy(obs, device, "b", checkpoint=a.checkpoint) if stage4 else None
@@ -799,6 +828,9 @@ def main() -> int:
                             rd_ = robots[k].data
                             cols += [wc[:, 0], wc[:, 1], wc[:, 2], rd_.root_link_lin_vel_b[ti, 0], rd_.root_link_lin_vel_b[ti, 1],
                                      rd_.root_link_ang_vel_b[ti, 2], fell[k][ti].float()]
+                        # the planner's actual assignment: contact ids, last re-plan cause and re-plans run
+                        cols += [g.c_idx[ti, k].float() for k in range(2)]
+                        cols += [g.c_plan_reason[ti].float(), g.c_plan_n[ti]]
                         tr_rows.append(torch.stack(cols, -1).cpu().numpy())
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
@@ -882,7 +914,8 @@ def main() -> int:
                         f"{x}_{ag}" for ag in AGENTS for x in
                         ("cmd", "on", "engaged", "contact_dist", "heading_err_deg", "touching", "force",
                          "force_align", "base_speed", "share_cmd", "force_along_cmd")] + [
-                        f"{x}_{ag}" for ag in AGENTS for x in ("wcmd_vx", "wcmd_vy", "wcmd_wz", "vx", "vy", "wz", "fell")]
+                        f"{x}_{ag}" for ag in AGENTS for x in ("wcmd_vx", "wcmd_vy", "wcmd_wz", "vx", "vy", "wz", "fell")] + [
+                        f"cidx_{ag}" for ag in AGENTS] + ["plan_reason", "plan_n"]
             for rule_ in dict.fromkeys(cases[j][0] for j in tr_ids):
                 pth = ROOT / "logs" / "evals" / f"{prefix}-{rule_}" / "pair" / f"trace_{mass:g}kg.csv.gz"
                 pth.parent.mkdir(parents=True, exist_ok=True)
@@ -941,6 +974,7 @@ def main() -> int:
                 "both_press_share": (round(float(press_both[j] / press_any[j]), 3) if float(press_any[j]) > 0 else "") if stage4 else "",
                 "walked_m": round(float(walked[j]), 1) if stage4 else "",
                 "stall_replans": int(g.c_replans[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
+                "replans_run": int(g.c_plan_n[j]) if stage4 else "",
                 "limit_replans": int(g.c_replan_weak[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "finish_stalls": int(g.c_fin_stalls[j]) if stage4 and getattr(g.cfg, "expert", False) else "",
                 "push_force_med": hist_q(fb_all[j], 0.5) if stage4 else "",
