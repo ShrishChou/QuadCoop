@@ -1371,15 +1371,18 @@ class CoopPush2Command(Push2Command):
             if self.cfg.exec_v2:
                 self._update_exec(dt)
             lo, hi = self.cfg.reselect_s
-            if hi > 0:
+            once = hi <= 0 and self.cfg.expert_first_only  # only the expert's start-up re-plan (timer set to 0.1 s at reset)
+            if hi > 0 or once:
                 self.c_reselect_t -= dt
                 due = self.c_reselect_t <= 0.0
                 why = torch.where(due, 1, 0)  # the first cause that applies, in this order (logging only)
-                if self.cfg.wrench:  # the wrench rule also re-chooses when its pair cannot do the job
+                if once:
+                    pass
+                elif self.cfg.wrench:  # the wrench rule also re-chooses when its pair cannot do the job
                     rd = (self.c_rule >= 3) & (self.c_res_t >= self.cfg.resid_dwell_s)
                     why = torch.where((why == 0) & rd, 2, why)
                     due |= rd
-                if self.cfg.expert:  # expert: also when nothing moves, or a robot is late reaching its contact
+                if self.cfg.expert and not once:  # expert: also when nothing moves, or a robot is late reaching its contact
                     slow = (~self.c_engaged & (self.c_free_t >= self.c_reach_lim)).any(-1) & (self.c_rule == 4)
                     self.c_replans += (self.c_stalled & ~due).float()
                     self.c_replan_weak += (self.c_weak & ~due & ~self.c_stalled).float()
@@ -1390,7 +1393,7 @@ class CoopPush2Command(Push2Command):
                 if bool(due.any()):
                     ids = due.nonzero().flatten()
                     nd = len(ids)
-                    self.c_reselect_t[ids] = lo + (hi - lo) * torch.rand(nd, device=self.device)
+                    self.c_reselect_t[ids] = 1e9 if once else lo + (hi - lo) * torch.rand(nd, device=self.device)
                     self.c_res_t[ids] = 0.0
                     settled = self.c_engaged[ids].all(-1)  # nobody still on the way to a new contact
                     if self.cfg.wrench:  # wrench rule: a robot stuck on its way past its reach limit does not block it
@@ -1822,6 +1825,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     reach_max_s: float = 15.0
     random_start: float = 0.0  # share of robots starting anywhere around the object (they walk to their contact)
     reselect_s: tuple[float, float] = (0.0, 0.0)  # re-apply the contact rule every U(lo, hi) s; (0, 0) = fixed contacts
+    expert_first_only: bool = False  # with reselect_s (0, 0): still run the expert's first re-plan (0.1 s), then freeze
     reselect_margin: float = 0.3  # m of rule score a new pair needs over the current one (hysteresis)
     reselect_min_dist: float = 0.15  # m: no re-selection with the object this close to its goal
     off_contact_mode: str = "terminate"  # "terminate" (Stage 4 / 4b) or "soft" (cost, no ending, no deadlines)

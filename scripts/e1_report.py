@@ -127,6 +127,9 @@ def main():
             contrasts = x.split("=", 1)[1].split(",")
         elif x.startswith("--out="):
             out_md = x.split("=", 1)[1]
+        elif x.startswith("--horizon="):  # capped time for unsuccessful episodes (E6 segments: 20)
+            global HORIZON
+            HORIZON = float(x.split("=", 1)[1])
         else:
             k, v = x.split("=", 1)
             arms[k] = Path(v)

@@ -104,6 +104,12 @@ TURN_SCENARIOS = (  # --tasks turn (test 3): the object already at the goal posi
     ("T60", 0.0, 0.0, 60.0),
     ("T90", 0.0, 0.0, -90.0),
 )
+SEGMENT_SCENARIOS = (  # --tasks segment (E6): short fixed-contact motions from an engaged start
+    ("S_straight", 1.5, 0.0, 0.0),
+    ("S_side", 1.5, 45.0, 0.0),
+    ("S_moveturn", 1.5, 0.0, 30.0),
+    ("S_side_turn", 1.5, -45.0, -30.0),
+)
 RULES = ("centre", "adjacent", "spread")
 SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the force split)
 
@@ -149,7 +155,8 @@ def main() -> int:
     ap.add_argument("--checkpoint", default=None, help="stage4 executor: a train_coop2.py --contacts model_<iter>.pt")
     ap.add_argument("--reselect-s", default="auto",
                     help="stage4 executor: re-apply the contact rule every so many seconds ('lo,hi' or one value; "
-                         "0 = contacts fixed for the episode; auto = as the checkpoint was trained)")
+                         "0 = contacts fixed for the episode; first = the expert's start-up re-plan at 0.1 s, then fixed; "
+                         "auto = as the checkpoint was trained)")
     ap.add_argument("--return-dist", type=float, default=0.5,
                     help="policy executor: hand back to the script when the front is this far from the contact (0 = never)")
     ap.add_argument("--start", choices=("contact", "behind"), default="contact",
@@ -187,9 +194,16 @@ def main() -> int:
                          "drift from the recorded run's states, and commands are 10 Hz samples of the smoothed command")
     ap.add_argument("--trace", type=int, default=0,
                     help="1 = per-step traces (10 Hz) of the rep-0 episodes (2 = every episode) in logs/evals/<prefix>-<rule>/pair/trace_<mass>kg.csv.gz")
-    ap.add_argument("--tasks", choices=("standard", "turn"), default="standard",
+    ap.add_argument("--recipe", choices=("none", "equal", "share"), default="none",
+                    help="stage4 (E6): replace the executor's walker commands with a scripted recipe: drive the front to "
+                         "the assigned contact, face the planner's push direction, then drive in at --recipe-speed while "
+                         "the planner wants motion along it, easing off when the contact moves faster than wanted "
+                         "(equal: both robots alike; share: scaled by the planner's force split, 2 x share)")
+    ap.add_argument("--recipe-speed", type=float, default=0.6, help="--recipe: push speed command (m/s)")
+    ap.add_argument("--tasks", choices=("standard", "turn", "segment"), default="standard",
                     help="standard: scripts/eval_coop2.py's 4 scenarios; turn: turn in place (the object starts at the goal "
-                         "position with its heading off by 15 / 30 / 60 / 90 deg, capped by the object's symmetry)")
+                         "position with its heading off by 15 / 30 / 60 / 90 deg, capped by the object's symmetry); "
+                         "segment: 1.5 m straight / 45 deg sideways / with a 30 deg turn (E6, use --horizon 20)")
     ap.add_argument("--set", default="",
                     help="planner settings to override, comma list key=value on the goal command's config, e.g. "
                          "'finish_dist=0' or 'robot_push_force=320'")
@@ -202,6 +216,10 @@ def main() -> int:
     global SCENARIOS
     if a.tasks == "turn":
         SCENARIOS = TURN_SCENARIOS
+    elif a.tasks == "segment":
+        SCENARIOS = SEGMENT_SCENARIOS
+    if a.recipe != "none" and (a.executor != "stage4" or a.replay):
+        raise SystemExit("--recipe replaces the stage4 executor's commands (and not with --replay)")
     overrides = {}
     for kv in [x for x in a.set.split(",") if x.strip()]:
         k_, v_ = kv.split("=", 1)
@@ -246,8 +264,11 @@ def main() -> int:
         ck_cfg = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {})
         if not ck_cfg.get("contacts"):
             raise SystemExit(f"{a.checkpoint} was not trained with --contacts")
+    first_only = a.reselect_s == "first"
     if a.reselect_s == "auto":
         reselect_s = tuple(float(x) for x in ck_cfg.get("reselect_s", (0.0, 0.0)))
+    elif first_only:  # the expert's start-up re-plan only, then contacts stay fixed
+        reselect_s = (0.0, 0.0)
     else:
         rs_ = [float(x) for x in a.reselect_s.split(",")]
         reselect_s = (rs_[0], rs_[-1])
@@ -397,6 +418,8 @@ def main() -> int:
         if stage4 and getattr(g.cfg, "exec_v2", False):
             g.c_in_group[:, 1] = ~solo  # a parked robot is not waited for
             g.cfg.exec_cmd_mode = a.cmd_mode
+        if stage4:
+            g.cfg.expert_first_only = first_only
         active = [x.clone() for x in present]  # has a contact to work on
         ctrl = [ContactController(n, dev, reach=SPECS[ag].half_length) for ag in AGENTS]
         p_obj = [torch.zeros(n, 2, device=dev) for _ in AGENTS]
@@ -676,6 +699,37 @@ def main() -> int:
                     pushing.append(ph & active[k])
                     cdist.append(dk)
                     herr.append(hk)
+                if a.recipe != "none":  # E6: a scripted command recipe instead of the executor
+                    tq_ = [base.action_manager.get_term(f"walker_{ag}") for ag in AGENTS]
+                    dg_, eg_ = g.errors()
+                    at_g = (dg_ < pt) & (eg_.abs() < yt)
+                    slow_ = (g.pose_error() / 0.3).clamp(0.3, 1.0)  # ease off close to the goal
+                    for k in range(2):
+                        pw_, _ = g.contact_world(k)
+                        dw_ = g.push_dir_world(k)
+                        yw_ = g.robot_yaw(k)
+                        cy_, sy_ = torch.cos(yw_), torch.sin(yw_)
+                        ew_ = pw_ - g.front_point(AGENTS[k])
+                        ex_ = cy_ * ew_[:, 0] + sy_ * ew_[:, 1]
+                        ey_ = -sy_ * ew_[:, 0] + cy_ * ew_[:, 1]
+                        he_ = wrap(yw_ - torch.atan2(dw_[:, 1], dw_[:, 0]))
+                        wz_ = (-2.0 * he_).clamp(-1.0, 1.0)
+                        vy_ = (1.5 * ey_).clamp(-0.3, 0.3)
+                        sh_ = (2.0 * g.push_share[:, k]) if a.recipe == "share" else torch.ones_like(yw_)
+                        # push only while the planner wants motion along this push direction, easing off when
+                        # the contact already moves faster than wanted (a light object coasts past the goal)
+                        want_ = (g.c_vdes * dw_).sum(-1)
+                        vc_ = (g.contact_velocity(k) * dw_).sum(-1)
+                        v_push = (a.recipe_speed * sh_ * slow_ - 2.0 * (vc_ - want_).clamp(min=0.0)).clamp(0.25, 0.9)
+                        v_push = torch.where((want_ > 0.02) & (vc_ < want_ + 0.15), v_push, torch.zeros_like(v_push))
+                        v_push = v_push * torch.cos(he_).clamp(min=0.0)
+                        v_app = (1.2 * ex_).clamp(-0.3, 0.7)
+                        vx_ = torch.where(g.on_contact(k), v_push, v_app)  # the executor's own 'on' (drift radius)
+                        cmd_ = torch.stack([vx_, vy_, wz_], -1)
+                        cmd_ = torch.where(at_g.unsqueeze(-1), torch.zeros_like(cmd_), cmd_)
+                        cmd_ = torch.maximum(torch.minimum(cmd_, tq_[k]._hi), tq_[k]._lo)
+                        a_r = 2.0 * (cmd_ - tq_[k]._lo) / (tq_[k]._hi - tq_[k]._lo) - 1.0
+                        act[:, 3 * k:3 * k + 3] = torch.where(present[k].unsqueeze(-1), a_r, act[:, 3 * k:3 * k + 3])
                 if rp is not None:  # replay: the recorded command instead of the executor's
                     ridx = min(int(i * dt / 0.1), rcmd.shape[1] - 1)
                     rwin = (i * dt) < rlen * 0.1
@@ -1250,6 +1304,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
+            old_meta.get("recipe", "none") == (f"{a.recipe}:{a.recipe_speed:g}" if a.recipe != "none" else "none") and \
             old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
             bool(old_meta.get("swap_actors", False)) == bool(getattr(a, "swap_actors", False)) and \
             old_meta.get("walkers", walker_record()) == walker_record()
@@ -1331,6 +1386,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
+               "recipe": f"{a.recipe}:{a.recipe_speed:g}" if a.recipe != "none" else "none",
                "swap_actors": bool(getattr(a, "swap_actors", False)),
                "walkers": walker_record(),
                "overall": agg(rows),
