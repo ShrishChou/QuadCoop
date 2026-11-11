@@ -15,6 +15,11 @@ Definitions (all from the 10 Hz traces unless noted):
   progress@T        1 - pose_err(T) / pose_err(0) (pose_err = the planner's position + scaled heading error)
   capped time       time to success, or the 80 s horizon if not successful (from episodes.csv)
   reassignments     changes of the recorded contact ids, by the planner's re-plan cause
+  precise           10 cm / 3 deg with the object at rest, reached before the episode ended (episodes.csv), unconditional
+  in tolerance at window end   (supplementary) successes still within 10 cm / 6 deg when the window ends
+  settled           (contact_test.py --settle-s) precise at rest by the end of the post-success window, unconditional
+                    (nan for arms run without a window); "| succ" = among that arm's successes, always shown next to
+                    the unconditional rate
 """
 import collections
 import csv
@@ -102,7 +107,10 @@ def ep_metrics(r):
     ts = num(r.get("t_success", ""))
     return dict(success=s, capped=(ts if s > 0.5 and ts == ts else HORIZON),
                 fell=float(r["outcome"].startswith("fell")), horizon=float(r["outcome"] == "horizon"),
-                final_pos=num(r["final_pos_err"]), min_pos=num(r["min_pos_err"]))
+                final_pos=num(r["final_pos_err"]), min_pos=num(r["min_pos_err"]), precise=num(r["precise"]),
+                settled=num(r.get("settled", "")),
+                kept=(float(num(r["settle_pos_err"]) < 0.10 and num(r["settle_yaw_err"]) < 6.0)
+                      if s > 0.5 and r.get("settle_pos_err", "") not in ("", None) else np.nan))
 
 
 def boot(diffs, n=2000):
@@ -149,7 +157,11 @@ def main():
         p1 = np.array([m["push1"] for m in tm]) if tm else np.array([np.nan])
         p2 = np.array([m["push2"] for m in tm]) if tm else np.array([np.nan])
         ra = [m.get("reassign", np.nan) for m in tm]
+        sm = [m for m in em if m["success"] > 0.5]
+        gs = lambda f: np.nanmean([m[f] for m in sm]) if sm and not all(np.isnan(m[f]) for m in sm) else np.nan  # noqa: E731
         return dict(n=len(em), success=g("success"), fell=g("fell"), timeout=g("horizon"), capped=g("capped"),
+                    precise=g("precise"), settled=g("settled") if not all(np.isnan(m["settled"]) for m in em) else np.nan,
+                    precise_s=gs("precise"), settled_s=gs("settled"), kept_s=gs("kept"),
                     prog5=h("prog5"), prog10=h("prog10"), prog20=h("prog20"),
                     push1_10=np.mean(p1 <= 10.0) if tm else np.nan, push1_rm=np.mean(np.minimum(p1, CAP)),
                     push2_10=np.mean(p2 <= 10.0) if tm else np.nan, push2_rm=np.mean(np.minimum(p2, CAP)),
@@ -158,7 +170,8 @@ def main():
                     causes=np.sum([m["causes"] for m in tm], 0) if tm else np.zeros(len(X.CAUSES)))
 
     cols = [("success", "success", ".2f"), ("timeout", "timeout", ".2f"), ("fell", "fell", ".2f"),
-            ("capped time s", "capped", ".1f"), ("progress 5/10/20 s", None, None),
+            ("capped time s", "capped", ".1f"), ("precise / settled", None, None), ("precise / settled given success", None, None),
+            ("in tolerance at window end given success", "kept_s", ".2f"), ("progress 5/10/20 s", None, None),
             ("first push <=10 s / RM s", None, None), ("both push <=10 s / RM s", None, None),
             ("stalled (episode mean)", "stalled", ".2f"), ("press along / magnitude", None, None), ("both press", "both", ".2f"),
             ("reassign/ep", "reassign", ".1f")]
@@ -173,6 +186,10 @@ def main():
             for name, f, fm in cols:
                 if f:
                     cells.append(format(P[f], fm))
+                elif name == "precise / settled":
+                    cells.append(f"{P['precise']:.2f} / {P['settled']:.2f}")
+                elif name.startswith("precise / settled given"):
+                    cells.append(f"{P['precise_s']:.2f} / {P['settled_s']:.2f}")
                 elif name.startswith("progress"):
                     cells.append(f"{P['prog5']:.2f} / {P['prog10']:.2f} / {P['prog20']:.2f}")
                 elif name.startswith("first"):
@@ -206,7 +223,9 @@ def main():
             ("progress@10s", lambda k, x: T[k][x]["prog10"] if x in T[k] else np.nan),
             ("first push RM s", lambda k, x: min(T[k][x]["push1"], CAP) if x in T[k] else np.nan),
             ("both push RM s", lambda k, x: min(T[k][x]["push2"], CAP) if x in T[k] else np.nan),
-            ("fell", lambda k, x: ep_metrics(E[k][x])["fell"])]
+            ("fell", lambda k, x: ep_metrics(E[k][x])["fell"]),
+            ("precise", lambda k, x: ep_metrics(E[k][x])["precise"]),
+            ("settled", lambda k, x: ep_metrics(E[k][x])["settled"])]
 
     def contrast(expr, f, ks):
         if expr.startswith("("):  # (D-C)-(B-A)
@@ -220,8 +239,9 @@ def main():
     lines += ["### paired contrasts (mean [bootstrap 95% CI over tasks])", "",
               "| contrast | stratum | " + " | ".join(m[0] for m in metr) + " |", "|---" * (len(metr) + 2) + "|"]
     for c in contrasts:
+        light = [("20+40 kg", lambda x: x[1] in ("20.0", "40.0"))] if {"20.0", "40.0"} <= {x[1] for x in keys} else []
         for strat, sel in [("all", lambda x: True)] + [(f"{m} kg", (lambda m_: lambda x: x[1] == m_)(m))
-                                                       for m in sorted({x[1] for x in keys}, key=float)]:
+                                                       for m in sorted({x[1] for x in keys}, key=float)] + light:
             ks = [x for x in keys if sel(x)]
             lines.append(f"| {c} | {strat} | " + " | ".join(fmt_ci(boot(contrast(c, f, ks))) for _, f in metr) + " |")
     txt = "\n".join(lines)

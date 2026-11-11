@@ -203,6 +203,21 @@ def main() -> int:
     ap.add_argument("--recipe-scope", choices=("all", "push"), default="all",
                     help="--recipe: all = the recipe drives throughout (approach included); push = only while a robot is "
                          "on its contact, the executor approaching / repositioning (for full tasks with re-planning)")
+    ap.add_argument("--recipe-track", type=float, default=0.0,
+                    help="--recipe: add this gain x (wanted - measured contact speed along the push) when the contact lags "
+                         "(0 = open-loop speed, as e1s-R; the executor drives heavy objects at the walker's limit)")
+    ap.add_argument("--recipe-finish", choices=("recipe", "exec", "precise"), default="recipe",
+                    help="--recipe near the goal: recipe = zero command inside the success tolerance (10 cm / 6 deg, as e1s-R); "
+                         "exec = the executor commands within 30 cm / 15 deg; precise = zero only inside 10 cm / 3 deg")
+    ap.add_argument("--coordinator", choices=("none", "teacher", "random"), default="none",
+                    help="stage4, expert rule: route assignment decisions through src/quadcoop/coop2/coord.py (teacher = "
+                         "the expert's own choice via the coordinator path; random = uniform over valid joint choices, "
+                         "keep half the time). Writes decisions_<mass>kg.csv.gz")
+    ap.add_argument("--settle-s", type=float, default=0.0,
+                    help="after a success keep simulating (same controller) for this many seconds and record whether the "
+                         "object comes to precise rest (10 cm / 3 deg, at rest) and its pose error at the window's end. "
+                         "Success, t_success, precise and every other metric keep their definitions (measured up to the "
+                         "success); non-successful episodes still end at --horizon")
     ap.add_argument("--recipe-min-share", type=float, default=0.15,
                     help="--recipe share: a robot asked for less than this share of the push holds its contact instead")
     ap.add_argument("--tasks", choices=("standard", "turn", "segment"), default="standard",
@@ -425,6 +440,12 @@ def main() -> int:
             g.cfg.exec_cmd_mode = a.cmd_mode
         if stage4:
             g.cfg.expert_first_only = first_only
+            coord = None
+            if a.coordinator != "none":
+                from quadcoop.coop2 import coord as coord_mod
+                coord = (coord_mod.TeacherCoordinator(n, dev) if a.coordinator == "teacher"
+                         else coord_mod.RandomCoordinator(n, dev, seed=a.seed))
+                g.coordinator = coord
         active = [x.clone() for x in present]  # has a contact to work on
         ctrl = [ContactController(n, dev, reach=SPECS[ag].half_length) for ag in AGENTS]
         p_obj = [torch.zeros(n, 2, device=dev) for _ in AGENTS]
@@ -503,7 +524,7 @@ def main() -> int:
             rp = dict(pn=torch.zeros(n, 2, device=dev), pd=torch.zeros(n, 2, device=dev), yerr=torch.zeros(n, 2, device=dev),
                       ycum=torch.zeros(n, 2, device=dev), win=torch.zeros(n, 2, device=dev),
                       tfall=torch.full((n, 2), -1.0, device=dev), seq_c=[], seq_v=[])
-        steps = int(a.horizon / dt)
+        steps = int((a.horizon + a.settle_s) / dt)
         reassign_every = int(round(a.reassign_s / dt)) if a.reassign_s > 0 else 0
         film_ids = [j for j, (rule, o, s, r, _) in enumerate(cases) if rule != "allpairs"
                     if a.videos > 0 and mass in video_masses and (video_reps is None or r in video_reps)
@@ -552,6 +573,13 @@ def main() -> int:
         t_end = torch.full((n,), a.horizon, device=dev)
         fell = [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]
         precise = torch.zeros(n, dtype=torch.bool, device=dev)
+        # --settle-s: the post-success observation window (excluded from every other metric)
+        post = torch.zeros(n, dtype=torch.bool, device=dev)
+        post_end = torch.zeros(n, device=dev)
+        settled = torch.zeros(n, dtype=torch.bool, device=dev)
+        post_fell = torch.zeros(n, dtype=torch.bool, device=dev)
+        post_d = torch.full((n,), float("nan"), device=dev)
+        post_e = torch.full((n,), float("nan"), device=dev)
         hold = torch.zeros(n, device=dev)
         touch = torch.zeros(n, device=dev)
         live_steps = torch.zeros(n, device=dev)
@@ -707,7 +735,11 @@ def main() -> int:
                 if a.recipe != "none":  # E6: a scripted command recipe instead of the executor
                     tq_ = [base.action_manager.get_term(f"walker_{ag}") for ag in AGENTS]
                     dg_, eg_ = g.errors()
-                    at_g = (dg_ < pt) & (eg_.abs() < yt)
+                    if a.recipe_finish == "precise":
+                        at_g = (dg_ < pt) & (eg_.abs() < math.radians(3.0))
+                    else:
+                        at_g = (dg_ < pt) & (eg_.abs() < yt)
+                    fin_ = (dg_ < 0.30) & (eg_.abs() < math.radians(15.0)) if a.recipe_finish == "exec" else torch.zeros_like(at_g)
                     slow_ = (g.pose_error() / 0.3).clamp(0.3, 1.0)  # ease off close to the goal
                     for k in range(2):
                         pw_, _ = g.contact_world(k)
@@ -728,7 +760,8 @@ def main() -> int:
                         vdc_ = g.c_vdes + g.c_wdes.unsqueeze(-1) * torch.stack([-r_[:, 1], r_[:, 0]], -1)
                         want_ = (vdc_ * dw_).sum(-1)
                         vc_ = (g.contact_velocity(k) * dw_).sum(-1)
-                        v_push = (a.recipe_speed * sh_ * slow_ - 2.0 * (vc_ - want_).clamp(min=0.0)).clamp(0.25, 0.9)
+                        v_push = (a.recipe_speed * sh_ * slow_ - 2.0 * (vc_ - want_).clamp(min=0.0)
+                                  + a.recipe_track * (want_ - vc_).clamp(min=0.0)).clamp(0.25, 0.9)
                         go_ = (want_ > 0.02) & (vc_ < want_ + 0.15)
                         if a.recipe == "share":  # a near-zero share holds rather than driving at the 0.25 m/s floor
                             go_ &= g.push_share[:, k] >= a.recipe_min_share
@@ -740,7 +773,7 @@ def main() -> int:
                         cmd_ = torch.where(at_g.unsqueeze(-1), torch.zeros_like(cmd_), cmd_)
                         cmd_ = torch.maximum(torch.minimum(cmd_, tq_[k]._hi), tq_[k]._lo)
                         a_r = 2.0 * (cmd_ - tq_[k]._lo) / (tq_[k]._hi - tq_[k]._lo) - 1.0
-                        use_ = present[k] & (g.on_contact(k) if a.recipe_scope == "push" else torch.ones_like(present[k]))
+                        use_ = present[k] & (g.on_contact(k) if a.recipe_scope == "push" else torch.ones_like(present[k])) & ~fin_
                         act[:, 3 * k:3 * k + 3] = torch.where(use_.unsqueeze(-1), a_r, act[:, 3 * k:3 * k + 3])
                 if rp is not None:  # replay: the recorded command instead of the executor's
                     ridx = min(int(i * dt / 0.1), rcmd.shape[1] - 1)
@@ -755,12 +788,15 @@ def main() -> int:
                 ctrl_push = pushing
                 obs = TensorDict({kk: v for kk, v in o_.items() if not kk.startswith("walker_")}, batch_size=[n])
                 t = (i + 1) * dt
-                live = ~done
+                live = ~done & ~post
                 f_any = torch.zeros(n, dtype=torch.bool, device=dev)
+                f_post = torch.zeros(n, dtype=torch.bool, device=dev)
                 for k, ag in enumerate(AGENTS):
-                    f = falls.fallen(base, asset_name=ag, nominal_height=SPECS[ag].nominal_height) & live & present[k]
+                    f_raw = falls.fallen(base, asset_name=ag, nominal_height=SPECS[ag].nominal_height) & present[k]
+                    f = f_raw & live
                     fell[k] |= f
                     f_any |= f
+                    f_post |= f_raw & post
                 tip = hb.box_tipped(base) & live & ~f_any
                 lost = cm.box_lost(base) & live & ~f_any & ~tip
                 d, e2 = g.errors()
@@ -772,7 +808,7 @@ def main() -> int:
                 precise |= ok & g.success_flag
                 inside = ok & (d < pt) & (ea < yt)
                 hold = torch.where(inside, hold + dt, torch.zeros_like(hold))
-                succ = ok & (hold >= 1.0)
+                succ = ok & (hold >= 1.0) & (t <= a.horizon + 1e-6)
                 t_succ = torch.where(succ, torch.full_like(t_succ, t), t_succ)
                 touch += (cm.robots_touching(base) > 0).float() * live.float() * two.float()
                 live_steps += live.float()
@@ -934,7 +970,25 @@ def main() -> int:
                         rp["seq_v"].append(torch.stack([robots[k].data.root_link_lin_vel_b[:, 0] for k in range(2)], -1).cpu())
                     if i * dt > float(rlen.max()) * 0.1 + 0.5:
                         break
-                ended = f_any | tip | lost | succ
+                if a.settle_s > 0:  # successes go on into the observation window instead of ending
+                    t_end = torch.where(succ & ~done, torch.full_like(t_end, t), t_end)
+                    post_end = torch.where(succ, torch.full_like(post_end, t + a.settle_s), post_end)
+                    settled |= succ & precise  # already precise at rest before the window
+                    post |= succ
+                    if bool(post.any()):
+                        d_p, e_p = g.errors()
+                        bad_p = f_post | hb.box_tipped(base) | cm.box_lost(base)
+                        ok_p = post & ~bad_p
+                        settled |= ok_p & g.success_flag
+                        post_fell |= post & f_post
+                        post_d = torch.where(ok_p, d_p, post_d)
+                        post_e = torch.where(ok_p, e_p.abs(), post_e)
+                        p_done = post & (bad_p | (t >= post_end - 1e-6))
+                        done |= p_done
+                        post &= ~p_done
+                    ended = f_any | tip | lost | (live & (t >= a.horizon - 1e-6))
+                else:
+                    ended = f_any | tip | lost | succ
                 t_end = torch.where(ended & ~done, torch.full_like(t_end, t), t_end)
                 done |= ended
                 if fid is not None and (i + 1) % stride == 0:
@@ -996,6 +1050,19 @@ def main() -> int:
                                 break
                             wr.writerow([cases[j][1], SCENARIOS[cases[j][2]][0], how[j]] + [f"{v:.3f}" for v in row_])
                 print(f"trace: {pth}", flush=True)
+        if stage4 and coord is not None:
+            import gzip
+            dl = coord.log.table().numpy()
+            dl = dl[[float(r_[1]) <= float(t_end[int(r_[0])]) + 1e-6 for r_ in dl]] if len(dl) else dl
+            pth = ROOT / "logs" / "evals" / f"{prefix}-{cases[0][0]}" / "pair" / f"decisions_{mass:g}kg.csv.gz"
+            pth.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(pth, "wt", newline="") as fh:
+                wr = csv.writer(fh)
+                wr.writerow(["object", "scenario", "rep"] + coord.log.HEADER)
+                for r_ in dl:
+                    j = int(r_[0])
+                    wr.writerow([cases[j][1], SCENARIOS[cases[j][2]][0], cases[j][3]] + [f"{v:.3f}" for v in r_])
+            print(f"decisions: {pth} ({len(dl)} in episodes, {coord.invalid} outside the joint mask)", flush=True)
         for j, (rule, o, s, r, _) in enumerate(cases):
             ls = float(live_steps[j].clamp(min=1))
             duo = rule != "centre"  # (a two-robot rule may still have parked robot 2: contact_2 empty)
@@ -1009,6 +1076,11 @@ def main() -> int:
                 "distance": SCENARIOS[s][1], "direction": SCENARIOS[s][2], "turn": round(math.degrees(float(turn[j])), 1),
                 "rep": r, "success": int(how[j] == "success"), "precise": int(bool(precise[j])), "outcome": how[j],
                 "t_success": round(float(t_succ[j]), 2) if how[j] == "success" else "",
+                "settle_s": a.settle_s,
+                "settled": (int(bool(settled[j])) if how[j] == "success" else 0) if a.settle_s > 0 else "",
+                "settle_pos_err": round(float(post_d[j]), 3) if a.settle_s > 0 and how[j] == "success" else "",
+                "settle_yaw_err": round(math.degrees(float(post_e[j])), 1) if a.settle_s > 0 and how[j] == "success" else "",
+                "settle_fell": int(bool(post_fell[j])) if a.settle_s > 0 and how[j] == "success" else "",
                 **{f"fell_{ag}": int(bool(fell[k][j])) for k, ag in enumerate(AGENTS)},
                 "final_pos_err": round(float(last_d[j]), 3), "final_yaw_err": round(math.degrees(float(last_e[j])), 1),
                 "min_pos_err": round(float(min_d[j]), 3),
@@ -1316,7 +1388,9 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
-            old_meta.get("recipe", "none") == (f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2" if a.recipe != "none" else "none") and \
+            float(old_meta.get("settle_s", 0.0)) == a.settle_s and \
+            old_meta.get("recipe", "none") == ((f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2"
+                    + (f":track{a.recipe_track:g}" if a.recipe_track else "") + (f":fin-{a.recipe_finish}" if a.recipe_finish != "recipe" else "")) if a.recipe != "none" else "none") and \
             old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
             bool(old_meta.get("swap_actors", False)) == bool(getattr(a, "swap_actors", False)) and \
             old_meta.get("walkers", walker_record()) == walker_record()
@@ -1398,7 +1472,9 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
-               "recipe": f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2" if a.recipe != "none" else "none",
+               "settle_s": a.settle_s,
+               "recipe": (f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2"
+                    + (f":track{a.recipe_track:g}" if a.recipe_track else "") + (f":fin-{a.recipe_finish}" if a.recipe_finish != "recipe" else "")) if a.recipe != "none" else "none",
                "swap_actors": bool(getattr(a, "swap_actors", False)),
                "walkers": walker_record(),
                "overall": agg(rows),

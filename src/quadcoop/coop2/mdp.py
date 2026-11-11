@@ -276,6 +276,9 @@ class CoopPush2Command(Push2Command):
         # 5 finish, 6 slow arrival; and re-plans run this episode (a re-plan may keep the same pair)
         self.c_plan_reason = torch.zeros(n, dtype=torch.long, device=dev)
         self.c_plan_n = torch.zeros(n, device=dev)
+        # assignment decisions: None = the env's contact rule (_reselect); else a callable (g, ids) that decides for
+        # the expert-rule envs in ids and applies its choice through apply_assignment (coop2/coord.py)
+        self.coordinator = None
         self.c_replans = torch.zeros(n, device=dev)  # re-plans by cause (logged): no progress,
         self.c_replan_slow = torch.zeros(n, device=dev)  # slow arrival
         self.c_replan_weak = torch.zeros(n, device=dev)  # and no progress the force model expects (pair at its limit)
@@ -1010,7 +1013,7 @@ class CoopPush2Command(Push2Command):
             self.c_reach_lim[e, k] = self.reach_limit(d)
             self.c_switches[e] += 1
 
-    def _reselect_expert(self, ids: torch.Tensor) -> None:
+    def _propose_expert(self, ids: torch.Tensor) -> dict:
         """Expert planner v2 (rule 4): the contact pair AND which robot takes each, together, at the
         lowest cost J = residual + time_weight x (slower robot's arrival, s) + stop_weight x (robots
         that stop pushing to move); arrival = route length around the object / walk_speed. Hand-
@@ -1020,7 +1023,13 @@ class CoopPush2Command(Push2Command):
         pair can slide the object, c_need_more is set). A robot may not go back
         to a contact it left less than relock_s ago (no flip-flopping). Switch only when the best
         option beats the current one by expert_margin; within finish_dist of the goal only when the current
-        pair cannot make the motion left (residual > finish_resid)."""
+        pair cannot make the motion left (residual > finish_resid).
+
+        Pure: computes the expert's choice and returns it without changing any state, so it can label
+        decisions taken by another coordinator. Returns new (m, 2) contact ids, cur (m, 2), the candidate
+        geometry p / nn / pre (m, K, 2), use (m, K, K) = the geometric validity of each ordered pair, t_route
+        (2 x (m, K)) = each robot's route time to each contact (0 for its own contact while on it), need_more
+        (m,) = no usable pair can slide the object."""
         c, dev = self.cfg, self.device
         m = len(ids)
         ar = torch.arange(m, device=dev)
@@ -1036,13 +1045,14 @@ class CoopPush2Command(Push2Command):
         com = self.c_cof[ids]  # friction acts about the centre of friction
         res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use, cap=self.robot_cap(ids))
         kk = torch.arange(K, device=dev).unsqueeze(0)
-        t_arr, stop = [], []
+        t_arr, stop, t_route = [], [], []
         for k in range(2):
             on = (self.c_engaged[ids, k] & self.on_contact(k)[ids])
             rl = torch.stack([self.guide(k, ids=ids, target=(p[:, x], nn[:, x], pre_all[:, x]))[1] for x in range(K)], 1)
             t = rl / c.walk_speed
             same = kk == cur[:, k : k + 1]
             t = torch.where(same & on.unsqueeze(-1), torch.zeros_like(t), t)
+            t_route.append(t)
             relock = (kk == self.c_left_idx[ids, k : k + 1]) & ((self.c_time[ids] - self.c_left_t[ids, k]) < c.relock_s).unsqueeze(-1)
             t = torch.where(relock & ~same, torch.full_like(t, 1e6), t)
             t_arr.append(t)
@@ -1054,7 +1064,7 @@ class CoopPush2Command(Push2Command):
         j_cur = torch.where(cur_ok, J[ar, cur[:, 0], cur[:, 1]], torch.full_like(res[:, 0, 0], 1e9))
         j_cur = j_cur + c.stall_penalty * self.c_stalled[ids].float()
         # no usable pair can slide the object (every residual 1): more robots (or more force) needed
-        self.c_need_more[ids] = torch.where(use, res, torch.ones_like(res)).view(m, -1).min(-1).values >= 1.0 - 1e-6
+        need_more = torch.where(use, res, torch.ones_like(res)).view(m, -1).min(-1).values >= 1.0 - 1e-6
         best, flat = J.view(m, -1).min(-1)
         gi, gj = flat // K, flat % K
         go = best < j_cur - c.expert_margin
@@ -1066,8 +1076,20 @@ class CoopPush2Command(Push2Command):
         new = cur.clone()
         new[:, 0] = torch.where(go, gi, new[:, 0])
         new[:, 1] = torch.where(go, gj, new[:, 1])
+        return dict(new=new, cur=cur, p=p, nn=nn, pre=pre_all, use=use, t_route=t_route, need_more=need_more)
+
+    def apply_assignment(self, ids: torch.Tensor, new: torch.Tensor, p: torch.Tensor, nn: torch.Tensor,
+                         pre: torch.Tensor, t_route: list) -> torch.Tensor:
+        """Apply a decided assignment (expert or learned coordinator) to envs ids: new (m, 2) contact ids into
+        the candidate geometry p / nn / pre (m, K, 2). A robot whose contact changes gets the new contact's
+        geometry and push direction, loses its engagement (it must reach the new contact), restarts its drift /
+        free timers, gets a reach limit of 1.5 x its route time + 2 s (the slow-arrival trigger) and records the
+        contact it left (relock); each change counts one switch. Every decision (also a keep) clears the
+        stalled / weak / finish flags that triggered it. Returns chg (m, 2)."""
+        m = len(ids)
+        ar = torch.arange(m, device=self.device)
+        cur = self.c_idx[ids]
         chg = new != cur
-        obj = self.box_pos()[ids, :2]
         for k in range(2):
             sel = chg[:, k]
             if not bool(sel.any()):
@@ -1079,16 +1101,23 @@ class CoopPush2Command(Push2Command):
             self.c_idx[e, k] = nk
             self.c_pobj[e, k] = p[ar[sel], nk]
             self.c_nobj[e, k] = nn[ar[sel], nk]
-            self.c_preobj[e, k] = pre_all[ar[sel], nk]
+            self.c_preobj[e, k] = pre[ar[sel], nk]
             self.push_dir_obj[e, k] = -nn[ar[sel], nk]
             self.c_engaged[e, k] = False
             self.c_drift_t[e, k] = 0.0
             self.c_free_t[e, k] = 0.0
-            self.c_reach_lim[e, k] = 1.5 * t_arr[k][ar[sel], nk] + 2.0  # slow-arrival trigger
+            self.c_reach_lim[e, k] = 1.5 * t_route[k][ar[sel], nk] + 2.0  # slow-arrival trigger
             self.c_switches[e] += 1
         self.c_stalled[ids] = False
         self.c_weak[ids] = False
         self.c_fin[ids] = False
+        return chg
+
+    def _reselect_expert(self, ids: torch.Tensor) -> None:
+        """The expert planner's decision (_propose_expert), applied (apply_assignment)."""
+        prop = self._propose_expert(ids)
+        self.c_need_more[ids] = prop["need_more"]
+        self.apply_assignment(ids, prop["new"], prop["p"], prop["nn"], prop["pre"], prop["t_route"])
 
     def _update_expert(self, dt: float | None = None) -> None:
         """At 1 / expert_dt: priorities, expected arrivals, the no-progress window and the go / hold
@@ -1406,7 +1435,12 @@ class CoopPush2Command(Push2Command):
                     run = ids[settled & far]
                     self.c_plan_reason[run] = why[run]
                     self.c_plan_n[run] += 1.0
-                    self._reselect(run)
+                    if self.coordinator is not None and len(run):
+                        ex = self.c_rule[run] == 4
+                        self.coordinator(self, run[ex])
+                        self._reselect(run[~ex])
+                    else:
+                        self._reselect(run)
             # the approach potential's baseline for the next step (after resets and re-selections, so
             # a new contact or a new episode never pays for the jump)
             for k in range(len(AGENTS)):
