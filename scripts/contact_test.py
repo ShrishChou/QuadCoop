@@ -200,6 +200,11 @@ def main() -> int:
                          "the planner wants motion along it, easing off when the contact moves faster than wanted "
                          "(equal: both robots alike; share: scaled by the planner's force split, 2 x share)")
     ap.add_argument("--recipe-speed", type=float, default=0.6, help="--recipe: push speed command (m/s)")
+    ap.add_argument("--recipe-scope", choices=("all", "push"), default="all",
+                    help="--recipe: all = the recipe drives throughout (approach included); push = only while a robot is "
+                         "on its contact, the executor approaching / repositioning (for full tasks with re-planning)")
+    ap.add_argument("--recipe-min-share", type=float, default=0.15,
+                    help="--recipe share: a robot asked for less than this share of the push holds its contact instead")
     ap.add_argument("--tasks", choices=("standard", "turn", "segment"), default="standard",
                     help="standard: scripts/eval_coop2.py's 4 scenarios; turn: turn in place (the object starts at the goal "
                          "position with its heading off by 15 / 30 / 60 / 90 deg, capped by the object's symmetry); "
@@ -716,12 +721,18 @@ def main() -> int:
                         wz_ = (-2.0 * he_).clamp(-1.0, 1.0)
                         vy_ = (1.5 * ey_).clamp(-0.3, 0.3)
                         sh_ = (2.0 * g.push_share[:, k]) if a.recipe == "share" else torch.ones_like(yw_)
-                        # push only while the planner wants motion along this push direction, easing off when
-                        # the contact already moves faster than wanted (a light object coasts past the goal)
-                        want_ = (g.c_vdes * dw_).sum(-1)
+                        # push only while the planner wants this contact point to move along the push direction
+                        # (its translation plus its turn about the object's centre), easing off when the contact
+                        # already moves faster than wanted (a light object coasts past the goal)
+                        r_ = pw_ - g.box_pos()[:, :2]
+                        vdc_ = g.c_vdes + g.c_wdes.unsqueeze(-1) * torch.stack([-r_[:, 1], r_[:, 0]], -1)
+                        want_ = (vdc_ * dw_).sum(-1)
                         vc_ = (g.contact_velocity(k) * dw_).sum(-1)
                         v_push = (a.recipe_speed * sh_ * slow_ - 2.0 * (vc_ - want_).clamp(min=0.0)).clamp(0.25, 0.9)
-                        v_push = torch.where((want_ > 0.02) & (vc_ < want_ + 0.15), v_push, torch.zeros_like(v_push))
+                        go_ = (want_ > 0.02) & (vc_ < want_ + 0.15)
+                        if a.recipe == "share":  # a near-zero share holds rather than driving at the 0.25 m/s floor
+                            go_ &= g.push_share[:, k] >= a.recipe_min_share
+                        v_push = torch.where(go_, v_push, torch.zeros_like(v_push))
                         v_push = v_push * torch.cos(he_).clamp(min=0.0)
                         v_app = (1.2 * ex_).clamp(-0.3, 0.7)
                         vx_ = torch.where(g.on_contact(k), v_push, v_app)  # the executor's own 'on' (drift radius)
@@ -729,7 +740,8 @@ def main() -> int:
                         cmd_ = torch.where(at_g.unsqueeze(-1), torch.zeros_like(cmd_), cmd_)
                         cmd_ = torch.maximum(torch.minimum(cmd_, tq_[k]._hi), tq_[k]._lo)
                         a_r = 2.0 * (cmd_ - tq_[k]._lo) / (tq_[k]._hi - tq_[k]._lo) - 1.0
-                        act[:, 3 * k:3 * k + 3] = torch.where(present[k].unsqueeze(-1), a_r, act[:, 3 * k:3 * k + 3])
+                        use_ = present[k] & (g.on_contact(k) if a.recipe_scope == "push" else torch.ones_like(present[k]))
+                        act[:, 3 * k:3 * k + 3] = torch.where(use_.unsqueeze(-1), a_r, act[:, 3 * k:3 * k + 3])
                 if rp is not None:  # replay: the recorded command instead of the executor's
                     ridx = min(int(i * dt / 0.1), rcmd.shape[1] - 1)
                     rwin = (i * dt) < rlen * 0.1
@@ -1304,7 +1316,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                                                        ("reassign_s", a.reassign_s), ("reps", a.reps), ("agents", list(agents)))) and \
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
-            old_meta.get("recipe", "none") == (f"{a.recipe}:{a.recipe_speed:g}" if a.recipe != "none" else "none") and \
+            old_meta.get("recipe", "none") == (f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2" if a.recipe != "none" else "none") and \
             old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
             bool(old_meta.get("swap_actors", False)) == bool(getattr(a, "swap_actors", False)) and \
             old_meta.get("walkers", walker_record()) == walker_record()
@@ -1386,7 +1398,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
-               "recipe": f"{a.recipe}:{a.recipe_speed:g}" if a.recipe != "none" else "none",
+               "recipe": f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2" if a.recipe != "none" else "none",
                "swap_actors": bool(getattr(a, "swap_actors", False)),
                "walkers": walker_record(),
                "overall": agg(rows),
