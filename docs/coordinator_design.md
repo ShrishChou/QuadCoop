@@ -181,7 +181,7 @@ but are not recorded.
 - **BC:** collect (context, teacher label) pairs from teacher-controlled rollouts on the training distribution, with
   keep/select only and both robots active. Because `_propose_expert` is pure, states the student visits can also be
   labelled (DAgger, 1–2 rounds). Report held-out agreement (exact pair; keep vs switch).
-- **RL:** MAPPO from the BC weights, with a decaying KL-to-teacher term (0 by the end of the first quarter of the
+- **RL:** centralized PPO over the joint assignment (one policy chooses both robots' contacts; sampling robot 1 then robot 2 does not make it decentralized MAPPO), from the BC weights, with a decaying KL-to-teacher term (0 by the end of the first quarter of the
   budget). It is not tied to the old velocity policy.
 - **Distribution:**
   - objects long, arch, dumbbell; 20–60 kg;
@@ -223,7 +223,7 @@ Setup: long, arch, dumbbell; 20 and 40 kg; 4 scenarios x 2 reps; start behind; r
 
 | check | result |
 |---|---|
-| Identical-input parity (`--coordinator parity`): at every decision, snapshot every env-state tensor, run the old expert path, restore, run propose → apply, compare | **0 differing state tensors in 13,131 env-decisions** (3,830 at 20 kg, 9,301 at 40 kg; as-trained schedule). Success 37/48. |
+| Adapter parity (`--coordinator parity`): at every decision, snapshot every env-state tensor, run `_reselect_expert`, restore, run the coordinator path, compare | **0 differing state tensors in 13,131 env-decisions** (3,830 at 20 kg, 9,301 at 40 kg; as-trained schedule). Success 37/48. Scope: `_reselect_expert` itself now calls `_propose_expert` and `apply_assignment`, so this shows the coordinator adapter matches the current expert wrapper. It is **not** an independent comparison against the pre-refactor implementation. That rests on the code review in §1 (one known deviation: the reach limit's relock term). |
 | Slow-arrival limit 1.0 s, teacher path | 18.5 decisions per episode (37.1 without), **0% within 0.05 s of the previous one (58%)**, KEEP 0.81 (0.92). Switches per episode 3.5 (2.9–3.5 without). Success 36/48 (36–37 without), precise 35. Masks: 0 outside. |
 
 Caveats: the smoke uses three relatively favourable shapes at 20/40 kg, so its ~75% success is not comparable with
@@ -241,3 +241,48 @@ horizon:
 The BC policy (5 epochs on 105 decisions, effectively untrained) took 20 kg success to 0.17 (teacher 0.58–0.83 on the
 same settings). An unimitated assignment policy is therefore harmful, so RL starts only from a BC policy with
 adequate switch metrics.
+
+## 8. Seeds (reserved 2026-11-11)
+
+| use | placement seeds |
+|---|---|
+| BC data (teacher collection) | 100–104 train, 105 held out |
+| Closed-loop BC vs teacher check | 2000 |
+| PPO pilot rollouts | 200–223 |
+| Smoke and pipeline tests (used; never for final results) | 0, 90, 91, 1000 |
+| **Final comparison: teacher, BC, final PPO** | **3000–3002**, not used before the final evaluation |
+
+## 9. Full-data BC (2026-11-11)
+
+Data: teacher collection on seeds 100–105. That is 2,592 episodes, or 2,520 without the excluded cell, and 49,001
+recorded decisions. Seeds 100–104 are used for training (41,145) and seed 105 is held out (7,856). Teacher
+switch share: 0.17 overall (20 kg 0.26, 40 kg 0.17, 60 kg 0.12). Training ran 40 epochs, with switches weighted to
+30% of the loss.
+
+| held-out (seed 105) | n | exact pair | exact on keep | switch recall | exact on switch | false switch | critic R² |
+|---|---|---|---|---|---|---|---|
+| 20 kg | 2,129 | 0.977 | 0.982 | 0.987 | 0.960 | 0.018 | 0.70 |
+| 40 kg | 2,688 | 0.987 | 0.991 | 0.987 | 0.969 | 0.009 | 0.60 |
+| 60 kg | 3,039 | 0.993 | 0.997 | 0.978 | 0.965 | 0.003 | 0.47 |
+| all | 7,856 | 0.987 | 0.991 | 0.985 | 0.964 | 0.009 | 0.60 |
+
+**Closed-loop check:** seed 2000, identical tasks, 80 s horizon, `--slow-min-s 1.0`, greedy BC against the teacher.
+Excluded cell removed: 210 episodes per arm. Intervals are paired bootstrap 95% CIs over tasks.
+
+| | success | precise | fell | capped time (s) |
+|---|---|---|---|---|
+| teacher | 0.781 | 0.671 | 0.010 | 44.4 |
+| BC | 0.748 | 0.590 | 0.014 | 44.3 |
+| BC − teacher | −0.033 [−0.100, +0.029] | −0.081 [−0.171, +0.005] | | |
+
+BC's on-policy agreement with the teacher's label, measured in BC's own states:
+- 0.985 / 0.987 / 0.993 at 20 / 40 / 60 kg;
+- switch recall ≥ 0.99;
+- false switches ≤ 0.9%.
+
+No collapse, so no DAgger round. The precise gap is not resolved at this sample size and is watched in the final
+comparison.
+
+**PPO pilot launched:** `logs/coord/rl_s0`, jobs 28767151 and 28767152 (chained resume). 24 iterations; each is one
+mass × 144 episodes, cycling 20/40/60 kg on seeds 200–223. All other settings are frozen as in §0 and §1. The
+reward is fixed per `RewardCfg`; the configuration and checkpoint rule are in `run.json`.

@@ -167,7 +167,14 @@ def cmd_bc(a):
     ret_s = float(ret[tr].std().clamp(min=1e-3))
     log = []
 
-    def evaluate(idx):
+    mass_of = torch.tensor([float(r["key"][1]) for r in rows])
+
+    def evaluate(idx, by_mass=False):
+        if by_mass:
+            out = {"all": evaluate(idx)}
+            for m_ in sorted(set(mass_of[idx].tolist())):
+                out[f"{m_:g}kg"] = evaluate(idx[mass_of[idx] == m_])
+            return out
         net.eval()
         L, V = [], []
         with torch.no_grad():
@@ -200,6 +207,11 @@ def cmd_bc(a):
             m_tr, m_te = evaluate(tr), evaluate(te) if len(te) else {}
             log.append(dict(epoch=ep, ce=tot / len(tr), train=m_tr, heldout=m_te))
             print(f"epoch {ep}: ce {tot / len(tr):.3f} | train {fmt(m_tr)} | held-out {fmt(m_te)}", flush=True)
+    final = dict(train=evaluate(tr, True), heldout=evaluate(te, True) if len(te) else {})
+    for part in ("train", "heldout"):
+        for k_, m_ in final[part].items():
+            print(f"final {part} {k_} (n {m_['n']}, teacher switch share {m_['teacher_switch_share']:.3f}): {fmt(m_)}", flush=True)
+    log.append(dict(final=final))
     CL.save_policy(a.out, net, dict(ret_scale=ret_s, bc=dict(vars(a)), log=log, reward=asdict(rc)))
     Path(a.out).with_suffix(".json").write_text(json.dumps(log[-1], indent=1))
     print(f"saved {a.out}", flush=True)
@@ -228,7 +240,7 @@ def cmd_rl(a):
                       f"(cycling {masses}); seeds {a.seed0}..{a.seed0 + a.iters - 1}",
                checkpoint_rule="the final checkpoint (model_final.pt) is the result; intermediate checkpoints are "
                                "kept for the record only and are not selected on held-out performance",
-               heldout="evaluation on placement seeds 1000-1002 (never used in training), greedy policy")
+               heldout="final comparison on placement seeds 3000-3002 (reserved, never used before), greedy policy, against the teacher and BC")
     if (run / "run.json").exists():
         old = json.loads((run / "run.json").read_text())
         if {k: v for k, v in old.items() if k != "resume"} != {k: v for k, v in cfg.items() if k != "resume"}:
