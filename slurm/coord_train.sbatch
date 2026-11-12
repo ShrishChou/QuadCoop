@@ -17,3 +17,5 @@ if [[ -n "${CMD:-}" ]]; then python scripts/coord_train.py $CMD; fi
 if [[ -n "${CMD2:-}" ]]; then python scripts/coord_train.py $CMD2; fi
 if [[ -n "${CMD3:-}" ]]; then python scripts/coord_train.py $CMD3; fi
 if [[ -n "${EVAL:-}" ]]; then python scripts/contact_test.py $EVAL; fi
+# EVAL_ARGS + EVAL_SEEDS + EVAL_PREFIX: one contact_test.py run per seed, prefix <EVAL_PREFIX>-s<seed>
+for s in ${EVAL_SEEDS:-}; do python scripts/contact_test.py $EVAL_ARGS --seed "$s" --prefix "${EVAL_PREFIX}-s$s"; done

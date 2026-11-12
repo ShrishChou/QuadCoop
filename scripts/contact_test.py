@@ -218,8 +218,9 @@ def main() -> int:
                          "keep half the time; parity = at every decision run the expert path and the coordinator path on the same "
                          "snapshot of the env state and count differing state tensors). Writes decisions_<mass>kg.csv.gz")
     ap.add_argument("--coord-ckpt", default=None, help="--coordinator learned: a scripts/coord_train.py policy")
-    ap.add_argument("--coord-mode", choices=("greedy", "sample"), default="greedy",
-                    help="--coordinator learned: the most likely pair (evaluation) or a sample")
+    ap.add_argument("--coord-mode", choices=("greedy", "sample", "teacher"), default="greedy",
+                    help="--coordinator learned: the most likely pair (evaluation) or a sample. --coordinator external: "
+                         "recorded in the summary only (set by scripts/coord_train.py)")
     ap.add_argument("--slow-min-s", type=float, default=0.0,
                     help="expert rule: at most one slow-arrival re-plan per env per this many seconds (0 = as trained: "
                          "every step while a robot is overdue). Applies to the expert, teacher and learned coordinators alike")

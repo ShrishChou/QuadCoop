@@ -76,7 +76,8 @@ def rollout(net, mode: str, seed: int, masses: str, reps: int, prefix: str, ro, 
     argv = ["contact_test.py", "--executor", "stage4", "--checkpoint", TD, "--rules", "expert", "--objects", OBJECTS,
             "--masses", masses, "--reps", str(reps), "--seed", str(seed), "--start", start, "--reselect-s", "auto",
             "--videos", "0", "--diag", "0", "--trace", "0", "--horizon", str(horizon), "--tasks", tasks,
-            "--slow-min-s", str(slow_min_s), "--coordinator", "external", "--prefix", prefix]
+            "--slow-min-s", str(slow_min_s), "--coordinator", "external", "--prefix", prefix,
+            "--coord-mode", "teacher" if net is None else mode]
     old = sys.argv
     sys.argv = argv
     try:

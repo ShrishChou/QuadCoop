@@ -1,0 +1,47 @@
+{
+ "cmd": "rl",
+ "init": "logs/coord/bc0/bc.pt",
+ "run": "logs/coord/rl_s0",
+ "iters": 24,
+ "reps": 12,
+ "masses": "20,40,60",
+ "horizon": 80.0,
+ "seed0": 200,
+ "epochs": 4,
+ "batch": 256,
+ "lr": 0.0001,
+ "clip": 0.2,
+ "vf_coef": 0.5,
+ "ent_coef": 0.003,
+ "bc_coef": 0.5,
+ "bc_decay": 0.25,
+ "reward": {
+  "w_progress": 1.0,
+  "r_success": 2.0,
+  "r_fail": 2.0,
+  "w_time": 0.02,
+  "w_collide": 0.1,
+  "w_deploy": 0.0,
+  "gamma": 0.98,
+  "lam": 0.95
+ },
+ "backend": {
+  "executor": "logs/keep/marl2/turn_debug/model_15000.pt",
+  "planner": "ends",
+  "contact": "train",
+  "cmd_if": "raw",
+  "reselect": "auto (3-6 s)",
+  "slow_min_s": 1.0
+ },
+ "objects": "long,arch,dumbbell",
+ "excluded": [
+  [
+   "dumbbell",
+   "D_far_turn",
+   60.0
+  ]
+ ],
+ "budget": "24 iterations x 12 reps x 3 objects x 4 scenarios, one mass per iteration (cycling ['20', '40', '60']); seeds 200..223",
+ "checkpoint_rule": "the final checkpoint (model_final.pt) is the result; intermediate checkpoints are kept for the record only and are not selected on held-out performance",
+ "heldout": "final comparison on placement seeds 3000-3002 (reserved, never used before), greedy policy, against the teacher and BC"
+}
