@@ -281,6 +281,7 @@ class CoopPush2Command(Push2Command):
         self.coordinator = None
         self.c_replans = torch.zeros(n, device=dev)  # re-plans by cause (logged): no progress,
         self.c_replan_slow = torch.zeros(n, device=dev)  # slow arrival
+        self.c_slow_wait = torch.zeros(n, device=dev)  # s until a slow-arrival re-plan may fire again (slow_min_s)
         self.c_replan_weak = torch.zeros(n, device=dev)  # and no progress the force model expects (pair at its limit)
         self.c_weak = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress, pair at its limit
         self.c_strength = torch.full((n,), 1e6, device=dev)  # current pair: most push along the wanted motion / sliding force
@@ -1045,9 +1046,10 @@ class CoopPush2Command(Push2Command):
         com = self.c_cof[ids]  # friction acts about the centre of friction
         res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use, cap=self.robot_cap(ids))
         kk = torch.arange(K, device=dev).unsqueeze(0)
-        t_arr, stop, t_route = [], [], []
+        t_arr, stop, t_route, ons = [], [], [], []
         for k in range(2):
             on = (self.c_engaged[ids, k] & self.on_contact(k)[ids])
+            ons.append(on)
             rl = torch.stack([self.guide(k, ids=ids, target=(p[:, x], nn[:, x], pre_all[:, x]))[1] for x in range(K)], 1)
             t = rl / c.walk_speed
             same = kk == cur[:, k : k + 1]
@@ -1068,6 +1070,7 @@ class CoopPush2Command(Push2Command):
         best, flat = J.view(m, -1).min(-1)
         gi, gj = flat // K, flat % K
         go = best < j_cur - c.expert_margin
+        zone = torch.zeros_like(go)
         if c.finish_dist > 0:
             # finishing zone: keep the pair unless it cannot make the motion left (residual > finish_resid)
             res_cur = torch.where(cur_ok, res[ar, cur[:, 0], cur[:, 1]], torch.ones_like(j_cur))
@@ -1076,7 +1079,9 @@ class CoopPush2Command(Push2Command):
         new = cur.clone()
         new[:, 0] = torch.where(go, gi, new[:, 0])
         new[:, 1] = torch.where(go, gj, new[:, 1])
-        return dict(new=new, cur=cur, p=p, nn=nn, pre=pre_all, use=use, t_route=t_route, need_more=need_more)
+        # the remaining entries are the expert's intermediate quantities, exposed as coordinator features only
+        return dict(new=new, cur=cur, p=p, nn=nn, pre=pre_all, use=use, t_route=t_route, need_more=need_more,
+                    res=res, J=J, t_arr=t_arr, stop=stop, on=torch.stack(ons, -1), j_cur=j_cur, zone=zone)
 
     def apply_assignment(self, ids: torch.Tensor, new: torch.Tensor, p: torch.Tensor, nn: torch.Tensor,
                          pre: torch.Tensor, t_route: list) -> torch.Tensor:
@@ -1413,6 +1418,9 @@ class CoopPush2Command(Push2Command):
                     due |= rd
                 if self.cfg.expert and not once:  # expert: also when nothing moves, or a robot is late reaching its contact
                     slow = (~self.c_engaged & (self.c_free_t >= self.c_reach_lim)).any(-1) & (self.c_rule == 4)
+                    if self.cfg.slow_min_s > 0:
+                        self.c_slow_wait -= dt
+                        slow &= self.c_slow_wait <= 0.0
                     self.c_replans += (self.c_stalled & ~due).float()
                     self.c_replan_weak += (self.c_weak & ~due & ~self.c_stalled).float()
                     self.c_replan_slow += (slow & ~due & ~self.c_stalled & ~self.c_weak & ~self.c_fin).float()
@@ -1424,6 +1432,9 @@ class CoopPush2Command(Push2Command):
                     nd = len(ids)
                     self.c_reselect_t[ids] = 1e9 if once else lo + (hi - lo) * torch.rand(nd, device=self.device)
                     self.c_res_t[ids] = 0.0
+                    if self.cfg.expert and not once and self.cfg.slow_min_s > 0:  # this decision answered the slow question
+                        self.c_slow_wait[ids] = torch.where(slow[ids], torch.full_like(self.c_slow_wait[ids], self.cfg.slow_min_s),
+                                                            self.c_slow_wait[ids])
                     settled = self.c_engaged[ids].all(-1)  # nobody still on the way to a new contact
                     if self.cfg.wrench:  # wrench rule: a robot stuck on its way past its reach limit does not block it
                         stuck = (~self.c_engaged[ids] & (self.c_free_t[ids] >= self.c_reach_lim[ids])).any(-1)
@@ -1649,6 +1660,7 @@ class CoopPush2Command(Push2Command):
                 self.c_plan_reason[env_ids] = 0
                 self.c_plan_n[env_ids] = 0.0
                 self.c_replan_slow[env_ids] = 0.0
+                self.c_slow_wait[env_ids] = 0.0
                 self.c_replan_weak[env_ids] = 0.0
                 self.c_weak[env_ids] = False
                 self.c_strength[env_ids] = 1e6
@@ -1860,6 +1872,9 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     random_start: float = 0.0  # share of robots starting anywhere around the object (they walk to their contact)
     reselect_s: tuple[float, float] = (0.0, 0.0)  # re-apply the contact rule every U(lo, hi) s; (0, 0) = fixed contacts
     expert_first_only: bool = False  # with reselect_s (0, 0): still run the expert's first re-plan (0.1 s), then freeze
+    # slow-arrival re-plans: at most one per env per slow_min_s (0 = every step while a robot is overdue, as trained).
+    # A KEEP leaves the overdue condition true, so without this the same question is asked again next step.
+    slow_min_s: float = 0.0
     reselect_margin: float = 0.3  # m of rule score a new pair needs over the current one (hysteresis)
     reselect_min_dist: float = 0.15  # m: no re-selection with the object this close to its goal
     off_contact_mode: str = "terminate"  # "terminate" (Stage 4 / 4b) or "soft" (cost, no ending, no deadlines)

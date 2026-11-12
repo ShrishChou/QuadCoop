@@ -140,6 +140,9 @@ def write_provenance(folders, a, g, mass) -> None:
             {"requested_kg": mass, "applied_kg_min": float(m_.min()), "applied_kg_max": float(m_.max())}, indent=1))
 
 
+EXTERNAL_COORD = None  # scripts/coord_train.py: factory (n, device, cases, mass, dt) -> coordinator (--coordinator external)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pair", choices=("mixed", "anymal", "spot"), default="anymal")
@@ -209,10 +212,17 @@ def main() -> int:
     ap.add_argument("--recipe-finish", choices=("recipe", "exec", "precise"), default="recipe",
                     help="--recipe near the goal: recipe = zero command inside the success tolerance (10 cm / 6 deg, as e1s-R); "
                          "exec = the executor commands within 30 cm / 15 deg; precise = zero only inside 10 cm / 3 deg")
-    ap.add_argument("--coordinator", choices=("none", "teacher", "random"), default="none",
+    ap.add_argument("--coordinator", choices=("none", "teacher", "parity", "random", "learned", "external"), default="none",
                     help="stage4, expert rule: route assignment decisions through src/quadcoop/coop2/coord.py (teacher = "
                          "the expert's own choice via the coordinator path; random = uniform over valid joint choices, "
-                         "keep half the time). Writes decisions_<mass>kg.csv.gz")
+                         "keep half the time; parity = at every decision run the expert path and the coordinator path on the same "
+                         "snapshot of the env state and count differing state tensors). Writes decisions_<mass>kg.csv.gz")
+    ap.add_argument("--coord-ckpt", default=None, help="--coordinator learned: a scripts/coord_train.py policy")
+    ap.add_argument("--coord-mode", choices=("greedy", "sample"), default="greedy",
+                    help="--coordinator learned: the most likely pair (evaluation) or a sample")
+    ap.add_argument("--slow-min-s", type=float, default=0.0,
+                    help="expert rule: at most one slow-arrival re-plan per env per this many seconds (0 = as trained: "
+                         "every step while a robot is overdue). Applies to the expert, teacher and learned coordinators alike")
     ap.add_argument("--settle-s", type=float, default=0.0,
                     help="after a success keep simulating (same controller) for this many seconds and record whether the "
                          "object comes to precise rest (10 cm / 3 deg, at rest) and its pose error at the window's end. "
@@ -440,11 +450,18 @@ def main() -> int:
             g.cfg.exec_cmd_mode = a.cmd_mode
         if stage4:
             g.cfg.expert_first_only = first_only
+            g.cfg.slow_min_s = a.slow_min_s
             coord = None
             if a.coordinator != "none":
                 from quadcoop.coop2 import coord as coord_mod
-                coord = (coord_mod.TeacherCoordinator(n, dev) if a.coordinator == "teacher"
-                         else coord_mod.RandomCoordinator(n, dev, seed=a.seed))
+                if a.coordinator in ("learned", "external"):
+                    from quadcoop.coop2 import coord_learn as cl_mod
+                coord = {"teacher": lambda: coord_mod.TeacherCoordinator(n, dev),
+                         "learned": lambda: cl_mod.LearnedCoordinator(n, dev, cl_mod.load_policy(a.coord_ckpt, dev), a.coord_mode,
+                                                                      None, cl_mod.RewardCfg(), base.step_dt, seed=a.seed),
+                         "external": lambda: EXTERNAL_COORD(n, dev, cases, mass, base.step_dt),
+                         "parity": lambda: coord_mod.ParityCoordinator(n, dev),
+                         "random": lambda: coord_mod.RandomCoordinator(n, dev, seed=a.seed)}[a.coordinator]()
                 g.coordinator = coord
         active = [x.clone() for x in present]  # has a contact to work on
         ctrl = [ContactController(n, dev, reach=SPECS[ag].half_length) for ag in AGENTS]
@@ -991,6 +1008,8 @@ def main() -> int:
                     ended = f_any | tip | lost | succ
                 t_end = torch.where(ended & ~done, torch.full_like(t_end, t), t_end)
                 done |= ended
+                if stage4 and coord is not None and hasattr(coord, "on_step"):  # learned coordinators: team reward
+                    coord.on_step(g, succ, f_any | tip | lost, live & (t >= a.horizon - 1e-6), cm.robots_touching(base) > 0)
                 if fid is not None and (i + 1) % stride == 0:
                     record()
                 if all_done_at is None and bool(done.all()):
@@ -1063,6 +1082,9 @@ def main() -> int:
                     j = int(r_[0])
                     wr.writerow([cases[j][1], SCENARIOS[cases[j][2]][0], cases[j][3]] + [f"{v:.3f}" for v in r_])
             print(f"decisions: {pth} ({len(dl)} in episodes, {coord.invalid} outside the joint mask)", flush=True)
+            if a.coordinator == "parity":
+                print(f"parity: {coord.checked} env-decisions on identical inputs; state tensors differing "
+                      f"(expert path vs propose -> apply): {coord.mismatch or 'none'}", flush=True)
         for j, (rule, o, s, r, _) in enumerate(cases):
             ls = float(live_steps[j].clamp(min=1))
             duo = rule != "centre"  # (a two-robot rule may still have parked robot 2: contact_2 empty)
@@ -1389,6 +1411,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             old_meta.get("disturb_frac", 0.0) == a.disturb_frac and old_meta.get("start", "contact") == a.start and \
             old_meta.get("reselect_min_dist", "auto") == a.reselect_min_dist and \
             float(old_meta.get("settle_s", 0.0)) == a.settle_s and \
+            float(old_meta.get("slow_min_s", 0.0)) == a.slow_min_s and old_meta.get("coordinator", "none") == a.coordinator and \
+            old_meta.get("coord_ckpt") == a.coord_ckpt and int(old_meta.get("seed", 0)) == a.seed and \
             old_meta.get("recipe", "none") == ((f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2"
                     + (f":track{a.recipe_track:g}" if a.recipe_track else "") + (f":fin-{a.recipe_finish}" if a.recipe_finish != "recipe" else "")) if a.recipe != "none" else "none") and \
             old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
@@ -1472,7 +1496,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "return_dist": a.return_dist, "checkpoint": a.checkpoint, "reselect": a.reselect_s, "disturb_frac": a.disturb_frac,
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
-               "settle_s": a.settle_s,
+               "settle_s": a.settle_s, "slow_min_s": a.slow_min_s, "coordinator": a.coordinator,
+               "coord_ckpt": a.coord_ckpt, "coord_mode": a.coord_mode, "seed": a.seed,
                "recipe": (f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2"
                     + (f":track{a.recipe_track:g}" if a.recipe_track else "") + (f":fin-{a.recipe_finish}" if a.recipe_finish != "recipe" else "")) if a.recipe != "none" else "none",
                "swap_actors": bool(getattr(a, "swap_actors", False)),

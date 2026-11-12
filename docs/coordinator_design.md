@@ -1,7 +1,8 @@
 # Learned contact-and-participation coordinator: interface design
 
-Status: interfaces 1–3 implemented and verified by a teacher-controlled integration smoke run (§7). Withdrawal
-(stage W) and the trainer are not built yet.
+Status: interfaces 1–3 implemented and verified by a teacher-controlled integration smoke run (§7). Slow-arrival
+limit implemented (§1). Policy, rollout buffer, BC and PPO implemented (`src/quadcoop/coop2/coord_learn.py`,
+`scripts/coord_train.py`, §3, §6); not yet run at scale. Withdrawal (stage W) is not built.
 
 ## 0. Frozen for the first learning experiment
 
@@ -31,6 +32,12 @@ its successes are still within 10 cm / 6 deg 5 s later (`evals/e1-repair-accepta
 exception. The reach limit of a newly assigned contact now uses the route time without the relock penalty. The old
 code used the relock-penalised time, which only matters if the expert picks a contact it left less than 3 s ago,
 and its 1e6 s penalty makes that practically impossible.
+
+**Slow-arrival limit (approved in review of f6e0f39):** `slow_min_s` (config; `contact_test.py --slow-min-s`).
+After a decision taken while a robot was overdue, the slow-arrival trigger is suppressed for that env for
+`slow_min_s` seconds. A KEEP leaves the overdue condition true, so without the limit the same question is asked
+again on the next control step. Every other trigger and the timer are unchanged. Default 0 (as trained). The first
+learning experiment uses 1.0 s for the teacher, the learner and the hand-written baseline alike.
 
 ## 2. Action space and joint validity
 
@@ -65,11 +72,23 @@ The PPO update recomputes log-probabilities under exactly these masks. `coord.De
 time, time since the previous decision, the current / teacher / chosen pairs, the number of valid pairs and the
 log-probability for every decision, and `contact_test.py --coordinator` writes `decisions_<mass>kg.csv.gz`.
 
-## 3. Policy (MAPPO)
+## 3. Policy (centralized PPO over the joint assignment)
 
-**Actors:** one network per robot role, or a shared network with a role id. Robot 2's actor also sees robot 1's
-sampled action. Each actor scores the K candidates (plus withdraw) with a per-candidate head over candidate
-features, so one network handles the different candidate counts per shape.
+**Actor (implemented):** one score per ordered pair, s(i, j) = MLP(A·cand_i + B·cand_j + P·pair_ij + Z·shared).
+The joint policy is the masked softmax over the K × K scores. It is sampled autoregressively: robot 1 from its
+marginal (log-sum over valid partners), then robot 2 from the row fixed by robot 1's choice. The stored joint
+log-probability equals robot 1's marginal plus robot 2's conditional log-probability, and PPO recomputes it
+under the stored mask. This replaces the per-robot heads first proposed. It conditions robot 2 on robot 1's choice
+exactly, and the teacher's own cost is defined per pair. With a third robot (K³ pairs) it would need a factored
+form again. Withdraw will be one extra row and column.
+
+**Pair features (implemented):** the expert's own intermediate quantities, exposed by `_propose_expert`:
+- pair residual;
+- J minus J of the current pair (clipped);
+- the slower robot's arrival time;
+- whether it is the current pair.
+
+The teacher's decision itself is never an input.
 
 **Per-candidate features:**
 - contact point, normal and standing point in the object frame;
@@ -137,6 +156,28 @@ Requirements and design:
 
 ## 6. Initialization and training
 
+Implementation (`scripts/coord_train.py`, `slurm/coord_train.sbatch`):
+- rollouts run `contact_test.py --coordinator external` in-process, so success, failure and horizon are the
+  evaluator's own;
+- `collect` records teacher (or policy) rollouts with the teacher label at every decision;
+- `bc` trains imitation plus a critic on discounted returns, with held-out seeds;
+- `rl` runs PPO with semi-MDP GAE and a decaying teacher cross-entropy term. The budget and checkpoint rule are
+  written to `run.json` before the first iteration, and a run will not resume under a different configuration;
+- `contact_test.py --coordinator learned --coord-ckpt X` evaluates a policy greedily.
+
+Imitation metrics (KEEP dominates teacher labels, so overall accuracy is not reported alone):
+- exact pair accuracy, overall and on keeps;
+- switch recall;
+- exact accuracy on teacher switches;
+- false-switch rate.
+
+Switch decisions are up-weighted to 30% of the loss.
+
+Declared task cells: long, arch, dumbbell × 4 standard scenarios × 20/40/60 kg, start behind. Pooled e1s-A + e1s-Aw
+reference success is ≥ 25% for 35 of the 36 cells. Excluded: dumbbell / D_far_turn / 60 kg (0.17). Its episodes run
+but are not recorded.
+
+
 - **BC:** collect (context, teacher label) pairs from teacher-controlled rollouts on the training distribution, with
   keep/select only and both robots active. Because `_propose_expert` is pure, states the student visits can also be
   labelled (DAgger, 1–2 rounds). Report held-out agreement (exact pair; keep vs switch).
@@ -176,6 +217,27 @@ Setup: long, arch, dumbbell; 20 and 40 kg; 4 scenarios x 2 reps; start behind; r
 | Arbitrary valid assignments execute (random coordinator, 20 kg) | Success 0.62; one fall in 24 episodes. Contacts reached among assignments held at least 6 s: **0.60** (teacher **0.98**). Executing an arbitrary valid contact is therefore not guaranteed: distant or obstructed contacts often are not reached in time. The learner needs route time as an input, and "chosen but not reached" is a logged failure mode. |
 | Decision rate | 40.8 decisions per episode (20 kg). **62% come less than 0.05 s after the previous one, and 62% are slow-arrival triggers.** The teacher keeps the pair in 92% of decisions. |
 
-**Proposed scheduling change for the first learning experiment (awaiting approval):** slow-arrival decisions are limited to one per env
-per 1.0 s. All other triggers and the timer are unchanged. The teacher-path baseline is re-run with the same limit so
-the hand-written comparison uses an identical schedule.
+**Scheduling change (approved):** slow-arrival decisions are limited to one per env per 1.0 s (`slow_min_s`, §1).
+
+### 7b. Follow-up checks (same 48 tasks)
+
+| check | result |
+|---|---|
+| Identical-input parity (`--coordinator parity`): at every decision, snapshot every env-state tensor, run the old expert path, restore, run propose → apply, compare | **0 differing state tensors in 13,131 env-decisions** (3,830 at 20 kg, 9,301 at 40 kg; as-trained schedule). Success 37/48. |
+| Slow-arrival limit 1.0 s, teacher path | 18.5 decisions per episode (37.1 without), **0% within 0.05 s of the previous one (58%)**, KEEP 0.81 (0.92). Switches per episode 3.5 (2.9–3.5 without). Success 36/48 (36–37 without), precise 35. Masks: 0 outside. |
+
+Caveats: the smoke uses three relatively favourable shapes at 20/40 kg, so its ~75% success is not comparable with
+the full suite's 57%. The random coordinator samples uniformly at each conditional stage, which is not uniform
+over joint pairs: it is a sampling smoke test, not a performance baseline.
+
+### 7c. Training pipeline smoke (job 28735652, 2026-11-11)
+
+Collect, BC, one PPO iteration and a greedy evaluation of the result, each on 12 episodes at 20 kg with a 30 s
+horizon:
+- all stages ran;
+- 0 decisions fell outside the joint mask;
+- the transitions closed and GAE was computed.
+
+The BC policy (5 epochs on 105 decisions, effectively untrained) took 20 kg success to 0.17 (teacher 0.58–0.83 on the
+same settings). An unimitated assignment policy is therefore harmful, so RL starts only from a BC policy with
+adequate switch metrics.

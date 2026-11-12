@@ -122,3 +122,38 @@ class RandomCoordinator(Coordinator):
         chosen = torch.where(keep.unsqueeze(-1), cur, torch.stack([a0, a1], -1))
         lp = torch.where(keep, torch.zeros_like(lp), lp)  # mixture: logged for the record only
         return chosen, lp
+
+
+class ParityCoordinator(Coordinator):
+    """Identical-input check of the refactor: at every decision, snapshot every env-state tensor, run the expert's
+    own re-selection (g._reselect_expert), record the result, restore the snapshot, then run the teacher through the
+    coordinator path (propose -> apply). Both see exactly the same inputs; any difference in the resulting state is a
+    refactor error, not physics. The coordinator path's result is kept. self.mismatch counts differing tensors per
+    attribute name; self.checked counts decisions."""
+
+    def __init__(self, n: int, device):
+        super().__init__(n, device)
+        self.mismatch: dict[str, int] = {}
+        self.checked = 0
+
+    def choose(self, ctx):
+        return ctx["teacher"], None
+
+    @staticmethod
+    def _state(g) -> dict:
+        return {k: v.clone() for k, v in vars(g).items() if isinstance(v, torch.Tensor)}
+
+    def __call__(self, g, ids: torch.Tensor) -> None:
+        if len(ids) == 0:
+            return
+        pre = self._state(g)
+        g._reselect_expert(ids)
+        ref = self._state(g)
+        for k, v in pre.items():
+            getattr(g, k).copy_(v)
+        super().__call__(g, ids)
+        for k, v in ref.items():
+            new = getattr(g, k)
+            if new.shape != v.shape or not torch.equal(new, v):
+                self.mismatch[k] = self.mismatch.get(k, 0) + 1
+        self.checked += len(ids)
