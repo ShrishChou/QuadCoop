@@ -192,7 +192,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        work_w: float = 3.0, effort: bool = False, over_push_w: float = 1.0,
                        contact_sense: bool = False, acq_bonus: float = 0.0, time_cost: float = 0.0,
                        touch_cost: float = 0.0, resid: bool = False, resid_objects: tuple = (),
-                       shape_bias: tuple = ()) -> ManagerBasedRlEnvCfg:
+                       shape_bias: tuple = (), resid_gate_dist: float = 0.0, train_shapes: tuple = (),
+                       train_mass: tuple = (), fixed_difficulty: bool = False) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -325,7 +326,11 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         exec_v2=exec_v2 and push_cmd and contacts, hold_rand=hold_rand if exec_v2 else 0.0,
         effort=effort and push_cmd and contacts, tol_levels=tuple(tuple(x) for x in tol_levels),
         resid=resid and contacts and push_cmd, resid_objects=tuple(resid_objects),
-        shape_bias=tuple(tuple(x) for x in shape_bias))
+        shape_bias=tuple(tuple(x) for x in shape_bias), resid_gate_dist=float(resid_gate_dist),
+        train_shapes=tuple(train_shapes), train_mass=tuple(float(x) for x in train_mass),
+        fixed_difficulty=bool(fixed_difficulty))
+    if fixed_difficulty:  # no replayed lower levels either
+        cfg.commands["goal"].replay_frac = 0.0
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
@@ -353,8 +358,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         for a in AGENTS:
             obs[f"resid_{a}"] = ObservationGroupCfg(terms={"resid": T(func=mdp.resid_obs, params={"robot": a})},
                                                     concatenate_terms=True, enable_corruption=False)
-        obs["resid_gate"] = ObservationGroupCfg(terms={"gate": T(func=mdp.resid_gate)}, concatenate_terms=True,
-                                                enable_corruption=False)
+            obs[f"resid_gate_{a}"] = ObservationGroupCfg(terms={"gate": T(func=mdp.resid_gate, params={"robot": a})},
+                                                         concatenate_terms=True, enable_corruption=False)
     cfg.observations = obs
 
     # -- events: each robot's walker randomization; object geometry, mass and friction -------------

@@ -264,8 +264,24 @@ def main() -> int:
     ap.add_argument("--resid-scale", type=float, default=0.3, help="--residual: correction bound (command units)")
     ap.add_argument("--resid-std", type=float, default=0.15, help="--residual: initial exploration std")
     ap.add_argument("--resid-objects", default="", help="--residual: shapes with the correction enabled (default all)")
+    ap.add_argument("--resid-gate-dist", type=float, default=0.0,
+                    help="--residual: also gate the correction per robot to contact distance <= this (m; 0 = object "
+                         "gate only)")
+    ap.add_argument("--resid-compose", choices=("clipped", "raw"), default="clipped",
+                    help="--residual: correction added to the clipped base command (default) or the raw base output")
+    ap.add_argument("--resid-check", type=int, default=0,
+                    help="--residual: run the command-interface check for this many steps per pass, then exit")
     ap.add_argument("--shape-bias", default="",
-                    help="training shape mix weights, e.g. beam:8,cylinder:1.5,asym:0 (others 1; 0 = never drawn)")
+                    help="training shape mix weights, e.g. beam:8,cylinder:1.5,asym:0 (others 1; 0 = never drawn). "
+                         "Applied after eligibility: a held-out shape needs --train-shapes")
+    ap.add_argument("--train-shapes", default="",
+                    help="shapes eligible in training, e.g. beam (default: the Stage 2 split, which holds out beam, "
+                         "l_shape, asym, u_channel, plus)")
+    ap.add_argument("--train-mass", default="", help="fixed training mass window lo,hi kg (default: the level's)")
+    ap.add_argument("--fixed-difficulty", action="store_true",
+                    help="hold the curriculum: level and tolerance fixed, uniform shape weights, no replayed levels")
+    ap.add_argument("--fixed-level", type=int, default=None,
+                    help="--fixed-difficulty: the level to hold (default: the one the warm start carries)")
     ap.add_argument("--min-std", type=float, default=0.2, help="action noise floor")
     ap.add_argument("--max-std-factor", type=float, default=1.0,
                     help="action noise may not rise above this x its warm-start value")
@@ -292,6 +308,12 @@ def main() -> int:
     contact_mix = parse_contact_mix(a.contact_mix)
     resid_objects = tuple(x.strip() for x in a.resid_objects.split(",") if x.strip())
     shape_bias = tuple((x.split(":")[0].strip(), float(x.split(":")[1])) for x in a.shape_bias.split(",") if x.strip())
+    train_shapes = tuple(x.strip() for x in a.train_shapes.split(",") if x.strip())
+    train_mass = tuple(float(x) for x in a.train_mass.split(",")) if a.train_mass else ()
+    if train_mass and len(train_mass) != 2:
+        raise SystemExit("--train-mass lo,hi")
+    if a.fixed_level is not None and not a.fixed_difficulty:
+        raise SystemExit("--fixed-level needs --fixed-difficulty")
     if a.residual and not (a.contacts and a.push_cmd and a.guide):
         raise SystemExit("--residual builds on the Stage 4e executor (--contacts --guide --push-cmd)")
     rs = [float(x) for x in a.reselect_s.split(",")]
@@ -378,11 +400,17 @@ def main() -> int:
                                  credit_press=a.credit_press, work_w=a.work_w, effort=a.effort,
                                  over_push_w=a.over_push_w, contact_sense=a.contact_sense,
                                  acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
-                                 resid=bool(a.residual), resid_objects=resid_objects, shape_bias=shape_bias)
+                                 resid=bool(a.residual), resid_objects=resid_objects, shape_bias=shape_bias,
+                                 resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes, train_mass=train_mass,
+                                 fixed_difficulty=a.fixed_difficulty)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
     env_cfg.commands["goal"].turn_frac = a.turn_frac
+    if a.fixed_difficulty:  # the very first episodes (drawn at construction, before the warm start) match too
+        if a.fixed_level is not None:
+            env_cfg.commands["goal"].start_level = a.fixed_level
+        env_cfg.commands["goal"].tol_start_finest = True
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     cfg = MarlCfg(algo=a.algo, variant=a.variant, num_envs=a.num_envs, seed=a.seed,
                   max_iterations=2 if a.check else a.max_iterations,
@@ -406,7 +434,9 @@ def main() -> int:
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
-                  resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std)
+                  resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std,
+                  resid_compose=a.resid_compose, resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes,
+                  train_mass=train_mass, fixed_difficulty=a.fixed_difficulty)
     trainer = MarlTrainer(env, cfg, log_dir, device, logger="tensorboard" if a.check else a.logger,
                           wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)
@@ -423,6 +453,17 @@ def main() -> int:
             trainer.init_from(a.init_from)
         else:
             trainer.warm_start(models["policy"])
+    if a.fixed_difficulty and a.fixed_level is not None and not (a.resume and last is not None):
+        env.command_manager.get_term("goal").level = a.fixed_level
+    if a.fixed_difficulty:
+        g_ = env.command_manager.get_term("goal")
+        print(f"[marl2] fixed difficulty: level {g_.level}, tolerance level {getattr(g_, 'tol_level', 0)}, "
+              f"mass window {train_mass or 'the level'}s, shapes {train_shapes or 'Stage 2 split'}")
+    if a.resid_check:
+        if not a.residual:
+            raise SystemExit("--resid-check needs --residual")
+        rep = trainer.check_residual(steps=a.resid_check)
+        raise SystemExit(0 if rep["pass"] else 1)
     if a.check:
         cfg.max_iterations = trainer.it + 2  # a check always runs 2 iterations, wherever it starts
     if a.kl_ref > 0:

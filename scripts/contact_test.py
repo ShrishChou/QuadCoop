@@ -224,6 +224,9 @@ def main() -> int:
     ap.add_argument("--resid-objects", default="checkpoint",
                     help="residual executor checkpoints: shapes with the correction enabled (comma-separated, 'all', or "
                          "'checkpoint' = as trained); elsewhere the frozen base executor acts exactly as before")
+    ap.add_argument("--resid-gate-dist", type=float, default=None,
+                    help="residual executor checkpoints: per-robot contact-distance gate (m; default as trained, "
+                         "0 = object gate only)")
     ap.add_argument("--slow-min-s", type=float, default=0.0,
                     help="expert rule: at most one slow-arrival re-plan per env per this many seconds (0 = as trained: "
                          "every step while a robot is overdue). Applies to the expert, teacher and learned coordinators alike")
@@ -306,6 +309,10 @@ def main() -> int:
     else:
         resid_objects = tuple(x.strip() for x in a.resid_objects.split(",") if x.strip())
     a.resid_gate = list(resid_objects) if ck_cfg.get("residual") else None  # recorded in the summary
+    if a.resid_gate_dist is None:
+        a.resid_gate_dist = float(ck_cfg.get("resid_gate_dist", 0.0) or 0.0)
+    # recorded: composition as trained (checkpoints from before the fix used the raw base) and the phase gate
+    a.resid_compose = ck_cfg.get("resid_compose", "raw") if ck_cfg.get("residual") else None
     if a.reselect_s == "auto":
         reselect_s = tuple(float(x) for x in ck_cfg.get("reselect_s", (0.0, 0.0)))
     elif first_only:  # the expert's start-up re-plan only, then contacts stay fixed
@@ -384,7 +391,7 @@ def main() -> int:
             wrench="wrench" in rules or "expert" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)),
             reselect_min_dist=min_dist, expert="expert" in rules, exec_v2=bool(ck_cfg.get("exec_v2", False)),
             effort=bool(ck_cfg.get("effort", False)), contact_sense=bool(ck_cfg.get("contact_sense", False)),
-            resid=bool(ck_cfg.get("residual")), resid_objects=resid_objects)
+            resid=bool(ck_cfg.get("residual")), resid_objects=resid_objects, resid_gate_dist=a.resid_gate_dist)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -1426,6 +1433,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
             float(old_meta.get("slow_min_s", 0.0)) == a.slow_min_s and old_meta.get("coordinator", "none") == a.coordinator and \
             old_meta.get("coord_ckpt") == a.coord_ckpt and int(old_meta.get("seed", 0)) == a.seed and \
             old_meta.get("resid_objects") == getattr(a, "resid_gate", None) and \
+            old_meta.get("resid_gate_dist", 0.0) == a.resid_gate_dist and \
+            old_meta.get("resid_compose") == getattr(a, "resid_compose", None) and \
             old_meta.get("recipe", "none") == ((f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2"
                     + (f":track{a.recipe_track:g}" if a.recipe_track else "") + (f":fin-{a.recipe_finish}" if a.recipe_finish != "recipe" else "")) if a.recipe != "none" else "none") and \
             old_meta.get("tasks", "standard") == getattr(a, "tasks", "standard") and old_meta.get("set", "") == getattr(a, "set", "") and \
@@ -1512,6 +1521,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "settle_s": a.settle_s, "slow_min_s": a.slow_min_s, "coordinator": a.coordinator,
                "coord_ckpt": a.coord_ckpt, "coord_mode": a.coord_mode, "seed": a.seed,
                "resid_objects": getattr(a, "resid_gate", None),
+               "resid_gate_dist": a.resid_gate_dist, "resid_compose": getattr(a, "resid_compose", None),
                "recipe": (f"{a.recipe}:{a.recipe_speed:g}:{a.recipe_scope}:{a.recipe_min_share:g}:v2"
                     + (f":track{a.recipe_track:g}" if a.recipe_track else "") + (f":fin-{a.recipe_finish}" if a.recipe_finish != "recipe" else "")) if a.recipe != "none" else "none",
                "swap_actors": bool(getattr(a, "swap_actors", False)),

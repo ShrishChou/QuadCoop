@@ -152,8 +152,16 @@ class CoopPush2Command(Push2Command):
         for k in ("success", "pos_err", "yaw_err_deg", "level", "hold_frac", "turn_task", "turn_success"):
             self.metrics[k] = torch.zeros(n, device=dev)
         self.shape_success = torch.zeros(S, device=dev)
-        self.train_mask = (torch.tensor(TRAIN_MASK, device=dev) if not cfg.allow_heldout
-                           else torch.ones(S, dtype=torch.bool, device=dev))
+        if cfg.train_shapes:  # explicit training set (overrides the Stage 2 train / held-out split)
+            unknown = set(cfg.train_shapes) - {sh.name for sh in SHAPES2}
+            assert not unknown, f"train_shapes: unknown shapes {sorted(unknown)}"
+            self.train_mask = torch.tensor([sh.name in cfg.train_shapes for sh in SHAPES2], device=dev)
+        else:
+            self.train_mask = (torch.tensor(TRAIN_MASK, device=dev) if not cfg.allow_heldout
+                               else torch.ones(S, dtype=torch.bool, device=dev))
+        # episode starts by object x mass bin (cumulative; logged by the trainer, never used for sampling)
+        self.reset_mass_edges = torch.arange(10.0, 91.0, 10.0, device=dev)  # 8 bins of 10 kg over 10-90
+        self.reset_counts = torch.zeros(S, len(self.reset_mass_edges) - 1, device=dev)
         self.shape_weight = torch.ones(S, device=dev)
         # images: one robot-frame top map per robot, one object-frame front profile
         self.variant = cfg.variant
@@ -1566,6 +1574,8 @@ class CoopPush2Command(Push2Command):
         # each is going (Stage 2); none inside -> the trainable one closest to the window
         masses = torch.stack([self._env.sim.model.body_mass[env_ids, o.indexing.body_ids[0]] for o in self.objs], -1)
         lo, hi = t[:, MASS_LO].unsqueeze(-1), t[:, MASS_HI].unsqueeze(-1)
+        if c.train_mass:  # fixed mass window (kg) instead of the level's
+            lo, hi = torch.full_like(lo, float(c.train_mass[0])), torch.full_like(hi, float(c.train_mass[1]))
         ok = (masses >= lo) & (masses <= hi) & self.train_mask.unsqueeze(0)
         if c.only is not None:
             ok &= torch.tensor([nm == c.only for nm in OBJ_NAMES2], device=dev).unsqueeze(0)
@@ -1595,6 +1605,9 @@ class CoopPush2Command(Push2Command):
         if sc is not None and "shape" in sc:
             shape = sc["shape"]
         self.shape[env_ids] = shape
+        m_sel = masses.gather(1, shape.unsqueeze(-1)).squeeze(-1)
+        b_ = (torch.bucketize(m_sel, self.reset_mass_edges, right=True) - 1).clamp(0, self.reset_counts.shape[1] - 1)
+        self.reset_counts.index_put_((shape, b_), torch.ones_like(m_sel), accumulate=True)
 
         def U(a, b):
             return a + torch.rand(m, device=dev) * (b - a)
@@ -1914,6 +1927,11 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     resid: bool = False
     resid_objects: tuple = ()  # shape names with the correction enabled; () = all
     shape_bias: tuple = ()  # ((shape name, weight), ...) multiplies the training shape mix (0 = never drawn)
+    # (applied after the eligibility mask: a held-out shape stays out unless it is in train_shapes)
+    resid_gate_dist: float = 0.0  # > 0: the correction is also gated per robot to contact_dist <= this (m)
+    train_shapes: tuple = ()  # shapes eligible in training; () = the Stage 2 split (TRAIN_NAMES)
+    train_mass: tuple = ()  # (lo, hi) kg: fixed mass window for the shape draw instead of the level's
+    fixed_difficulty: bool = False  # curriculum holds level and tolerance, shape weights stay uniform
     reselect_margin: float = 0.3  # m of rule score a new pair needs over the current one (hysteresis)
     reselect_min_dist: float = 0.15  # m: no re-selection with the object this close to its goal
     off_contact_mode: str = "terminate"  # "terminate" (Stage 4 / 4b) or "soft" (cost, no ending, no deadlines)
@@ -2301,6 +2319,12 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
     it = env.common_step_counter / steps_per_iter
     n_tol = len(g.cfg.tol_levels)
     out = push2_curriculum(env, env_ids, steps_per_iter=steps_per_iter, allow_level=False)
+    if g.cfg.fixed_difficulty:  # fixed-difficulty check: uniform shape weights, level and tolerance held
+        g.shape_weight.fill_(1.0)
+        tl = g.cfg.tol_levels[g.tol_level]
+        out.update({"level": torch.tensor(float(g.level)), "tol_level": torch.tensor(float(g.tol_level)),
+                    "tol_pos_m": torch.tensor(float(tl[0])), "tol_yaw_deg": torch.tensor(float(tl[1]))})
+        return out
     if not hasattr(g, "lvl_ema"):
         g.lvl_ema = 0.0
     if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
@@ -2581,13 +2605,20 @@ def resid_obs(env, robot: str) -> torch.Tensor:
     return out
 
 
-def resid_gate(env) -> torch.Tensor:
-    """(n, 1): 1 where the residual correction is enabled for the env's object (cfg.resid_objects; () = all)."""
+def resid_gate(env, robot: str) -> torch.Tensor:
+    """(n, 1) for one robot: 1 where its residual correction is enabled. Object gate: the env's shape is in
+    cfg.resid_objects (() = all). Phase gate (cfg.resid_gate_dist > 0): the robot's front is also within that
+    distance of its assigned contact, i.e. final approach, pressing, and recovery after slipping off, but not
+    the walk around the object or repositioning to a far contact."""
     g = _g(env)
     if not g.cfg.resid_objects:
-        return torch.ones(g.num_envs, 1, device=g.device)
-    on = torch.tensor([SHAPES2[s].name in g.cfg.resid_objects for s in range(len(SHAPES2))], device=g.device)
-    return on[g.shape].float().unsqueeze(-1)
+        on = torch.ones(g.num_envs, dtype=torch.bool, device=g.device)
+    else:
+        sel = torch.tensor([SHAPES2[s].name in g.cfg.resid_objects for s in range(len(SHAPES2))], device=g.device)
+        on = sel[g.shape]
+    if g.cfg.resid_gate_dist > 0:
+        on = on & (g.contact_dist(AGENTS.index(robot)) <= g.cfg.resid_gate_dist)
+    return on.float().unsqueeze(-1)
 
 
 FORCE_SIGN = 1.0  # sensor convention: force on the primary (object) is -FORCE_SIGN * reading (checked in tests)

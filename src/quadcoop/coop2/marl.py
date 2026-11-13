@@ -58,6 +58,8 @@ settings otherwise, so it isolates what the single-robot warm start contributes.
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import time
 from collections import defaultdict
@@ -160,6 +162,13 @@ class MarlCfg:
     resid_hidden: tuple[int, ...] = (128, 64)
     resid_objects: tuple = ()  # env option (recorded): shapes with the correction enabled (() = all)
     shape_bias: tuple = ()  # env option (recorded): training shape mix weights
+    # how the correction is composed with the base: "clipped" = clip(base, -1, 1) + correction (the walker clips
+    # again), so it can also pull a saturated base command back; "raw" = base + correction (resid_beam_s0)
+    resid_compose: str = "clipped"
+    resid_gate_dist: float = 0.0  # env option (recorded): phase gate, contact distance (m); 0 = object gate only
+    train_shapes: tuple = ()  # env option (recorded): shapes eligible in training (() = the Stage 2 split)
+    train_mass: tuple = ()  # env option (recorded): fixed training mass window (kg)
+    fixed_difficulty: bool = False  # env option (recorded): curriculum held, uniform shape weights
     init: dict = field(default_factory=dict)  # agent -> Stage 2 checkpoint
     inputs: dict = field(default_factory=dict)  # what was used (models.yaml roles), for the record
 
@@ -195,14 +204,23 @@ def resid_groups(a: str) -> list[str]:
 
 
 class ResidualActor(torch.nn.Module):
-    """Residual execution pilot: a = base(obs) + gate x resid_scale x tanh(MLP(actor_<a>, resid_<a>)).
-    The base is a frozen executor actor (deterministic output); the correction's last layer starts at zero, so at
-    iteration 0 the policy's mean is exactly the base. Exploration: a Gaussian with a learned scalar std (init
-    resid_std) around that mean. gate = obs["resid_gate"] (1 where the correction is enabled): with gate 0 the
-    deterministic output is exactly the base. Exposes the rsl_rl model interface the trainer and PairPolicy use."""
+    """Residual execution pilot: mean = B + gate x resid_scale x tanh(MLP(actor_<a>, resid_<a>)), with
+    B = clip(base(obs), -1, 1) (compose "clipped") or the raw base output (compose "raw", the first pilot).
+    The walker clips every command to [-1, 1], so with the raw base a saturated output (|base| > 1 + scale)
+    cannot be changed at all; with the clipped base a zero correction gives the same applied command and a
+    nonzero one can pull a saturated command back. The base is a frozen executor actor (deterministic output);
+    the correction's last layer starts at zero, so at iteration 0 the mean is exactly B. Exploration: a Gaussian
+    with a learned scalar std (init resid_std) around the mean, applied only where gate = 1, so robots with the
+    correction off run the base deterministically in training too (their samples are masked out of the actor
+    loss). gate = obs["resid_gate_<a>"] (object, and optionally contact-distance, gate). Exposes the rsl_rl model
+    interface the trainer and PairPolicy use."""
 
-    def __init__(self, obs: TensorDict, a: str, variant: str, scale: float, init_std: float, hidden):
+    def __init__(self, obs: TensorDict, a: str, variant: str, scale: float, init_std: float, hidden,
+                 compose: str = "clipped"):
         super().__init__()
+        assert compose in ("clipped", "raw"), compose
+        self.compose, self.gate_key = compose, f"resid_gate_{a}"
+        self.last = None  # (gate, raw base, mean, output) of the last stochastic call, for the trainer's stats
         from rsl_rl.models.mlp_model import MLPModel
         from rsl_rl.modules.distribution import GaussianDistribution
 
@@ -222,17 +240,24 @@ class ResidualActor(torch.nn.Module):
         self.base.eval()  # frozen: its normalizer never updates
         return self
 
+    def gate(self, obs: TensorDict) -> torch.Tensor:
+        return obs[self.gate_key]
+
     def correction(self, obs: TensorDict) -> torch.Tensor:
-        return self.scale * torch.tanh(self.res(obs)) * obs["resid_gate"]
+        return self.scale * torch.tanh(self.res(obs)) * self.gate(obs)
 
     def forward(self, obs: TensorDict, stochastic_output: bool = False) -> torch.Tensor:
         with torch.no_grad():
-            b = self.base(obs)
+            b_raw = self.base(obs)
+        b = b_raw.clamp(-1.0, 1.0) if self.compose == "clipped" else b_raw
         mean = b + self.correction(obs)
         if stochastic_output:
             self.distribution.update(mean)
             self.distribution.raw_mean = mean
-            return self.distribution.sample()
+            gate = self.gate(obs)
+            out = mean + gate * (self.distribution.sample() - mean)  # no exploration where the gate is off
+            self.last = (gate.detach(), b_raw.detach(), mean.detach(), out.detach())
+            return out
         return mean
 
     def update_normalization(self, obs: TensorDict) -> None:
@@ -347,8 +372,8 @@ class MarlTrainer:
         self.obs = self._td(obs)
         v = cfg.variant
         if cfg.residual:
-            self.actors = {a: ResidualActor(self.obs, a, v, cfg.resid_scale, cfg.resid_std, cfg.resid_hidden).to(device)
-                           for a in AGENTS}
+            self.actors = {a: ResidualActor(self.obs, a, v, cfg.resid_scale, cfg.resid_std, cfg.resid_hidden,
+                                            cfg.resid_compose).to(device) for a in AGENTS}
         else:
             self.actors = {a: make_model(self.obs, actor_groups(a, v), 3, cfg.hidden_dims, v, True).to(device)
                            for a in AGENTS}
@@ -401,7 +426,7 @@ class MarlTrainer:
         for a in AGENTS:
             gs.update(actor_groups(a, self.cfg.variant))
             if self.cfg.residual:
-                gs.update(resid_groups(a) + ["resid_gate"])
+                gs.update(resid_groups(a) + [f"resid_gate_{a}"])
         for k in self.critics:
             gs.update(critic_groups(self.cfg.algo, self.cfg.variant, None if k == "central" else k))
         return sorted(gs)
@@ -520,7 +545,69 @@ class MarlTrainer:
         }
         path = self.log_dir / f"model_{self.it}.pt"
         torch.save(ck, path)
+        rc = self._reset_counts()
+        if rc is not None:  # cumulative episode starts by object x mass (what training actually drew)
+            edges = g.reset_mass_edges.tolist()
+            tab = {sh.name: {f"{edges[j]:g}-{edges[j + 1]:g}": int(rc[i, j]) for j in range(len(edges) - 1)}
+                   for i, sh in enumerate(g.shape_list)}
+            (self.log_dir / "reset_counts.json").write_text(json.dumps({"iter": self.it, "counts": tab}, indent=1))
         return path
+
+    def _reset_counts(self):
+        g = self.env.command_manager.get_term("goal")
+        rc = getattr(g, "reset_counts", None)
+        return None if rc is None else rc.clone()
+
+    def _reset_log(self, counts0) -> dict:
+        """Episode starts this iteration, as a share per object (from the sampler's own counts)."""
+        if counts0 is None:
+            return {}
+        g = self.env.command_manager.get_term("goal")
+        d = (g.reset_counts - counts0).sum(-1)
+        tot = float(d.sum())
+        out = {"Resets/total": tot}
+        for i, sh in enumerate(g.shape_list):
+            out[f"Resets/frac_{sh.name}"] = float(d[i]) / max(tot, 1.0)
+        return out
+
+    @staticmethod
+    def _residual_stats(rs, a: str, gate, b_raw, mean, out) -> None:
+        """Accumulate (on device) what the correction does to the walker command, per agent and rollout step:
+        gated rows: share of base components past +-1 and +-1.3, mean |applied change| of the deterministic
+        command (clip(mean) - clip(base)) and of the sampled one; ungated rows: largest applied change (must be
+        0: the base runs unchanged)."""
+        on = gate.squeeze(-1) > 0.5
+        n_on = on.sum()
+        bc = b_raw.clamp(-1.0, 1.0)
+        w = on.float().unsqueeze(-1)
+        rs[f"{a}/steps"] += 1
+        rs[f"{a}/gate_on"] += on.float().mean()
+        rs[f"{a}/n_on"] += n_on
+        for nm, x in (("base_past_1", (b_raw.abs() > 1.0).float()), ("base_past_1p3", (b_raw.abs() > 1.3).float()),
+                      ("cmd_change_mean", (mean.clamp(-1.0, 1.0) - bc).abs()),
+                      ("cmd_change_sample", (out.clamp(-1.0, 1.0) - bc).abs())):
+            rs[f"{a}/{nm}"] += (x * w).sum(0).sum() / 3.0
+            for j, ax in enumerate(("vx", "vy", "wz")):
+                rs[f"{a}/{nm}_{ax}"] += (x[:, j] * w[:, 0]).sum()
+        off = (out.clamp(-1.0, 1.0) - bc).abs().amax(-1)
+        rs[f"{a}/ungated_change_max"] = torch.maximum(rs[f"{a}/ungated_change_max"],
+                                                      torch.where(on, torch.zeros_like(off), off).max())
+
+    @staticmethod
+    def _residual_log(rs) -> dict:
+        out = {}
+        for a in AGENTS:
+            st = float(rs[f"{a}/steps"])
+            if st == 0:
+                continue
+            n_on = float(rs[f"{a}/n_on"])
+            out[f"Resid/gate_on_{a}"] = float(rs[f"{a}/gate_on"]) / st
+            out[f"Resid/ungated_change_max_{a}"] = float(rs[f"{a}/ungated_change_max"])
+            for nm in ("base_past_1", "base_past_1p3", "cmd_change_mean", "cmd_change_sample"):
+                out[f"Resid/{nm}_{a}"] = float(rs[f"{a}/{nm}"]) / max(n_on, 1.0)
+                for ax in ("vx", "vy", "wz"):
+                    out[f"Resid/{nm}_{ax}_{a}"] = float(rs[f"{a}/{nm}_{ax}"]) / max(n_on, 1.0)
+        return out
 
     def load(self, path: str | Path) -> None:
         ck = torch.load(str(path), map_location=self.device, weights_only=False)
@@ -620,6 +707,101 @@ class MarlTrainer:
         print(f"[marl2] residual pilot: base actors <- {path} (frozen), correction at zero (bound "
               f"{self.cfg.resid_scale:g}, std {self.cfg.resid_std:g}), critic and curriculum carried over "
               f"(level {g.level}{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''})")
+
+    @torch.no_grad()
+    def check_residual(self, steps: int = 600, bias: float = 0.2) -> dict:
+        """Command-interface check before training (deterministic policy, the env's own walker terms).
+        Pass 0, correction zero (as initialised): the applied walker command (the term's target_command of the
+        action actually sent) must equal the frozen base's, for every robot and step. Passes +/-: the correction
+        forced to a constant +-bias on every axis (last-layer bias); on gated rows, the share of components whose
+        applied command changes, split by where the base sits (inside (-1, 1), saturated on the side the bias
+        pulls away from, saturated on the side it pushes into), next to what the raw composition (base +
+        correction, clipped) would have changed; ungated rows must not change at all. Also the base saturation
+        on gated rows (|base| > 1 and > 1.3). Returns the numbers (also written to resid_check.json)."""
+        assert self.cfg.residual
+        env, dev = self.env, self.device
+        terms = {a: env.action_manager.get_term(f"walker_{a}") for a in AGENTS}
+        res_last = {a: [m for m in self.actors[a].res.mlp.modules() if isinstance(m, torch.nn.Linear)][-1]
+                    for a in AGENTS}
+        for m_ in self.actors.values():
+            m_.eval()
+        obs, report = self.obs, {}
+        for name, b in (("zero", 0.0), ("minus", -bias), ("plus", bias)):
+            for a in AGENTS:  # tanh(x) x scale = b
+                res_last[a].bias.fill_(math.atanh(b / self.cfg.resid_scale) if b else 0.0)
+            acc = defaultdict(float)
+            for _ in range(steps):
+                acts, rows = [], {}
+                for a in AGENTS:
+                    act = self.actors[a](obs)
+                    rows[a] = (act, self.actors[a].base(obs), obs[f"resid_gate_{a}"].squeeze(-1) > 0.5)
+                    acts.append(act)
+                o, _, term_, trunc_, _ = env.step(torch.cat(acts, -1))
+                live = ~(term_ | trunc_)  # envs reset in this step zero the term's stored action: skip them
+                for a in AGENTS:
+                    act, b_raw, on = rows[a]
+                    act, b_raw, on = act[live], b_raw[live], on[live]
+                    t = terms[a]
+                    applied = t.target_command(t.raw_action[live])  # what this step's walker term actually used
+                    base_cmd = t.target_command(b_raw)
+                    sent = (t.raw_action[live] - act).abs().max()
+                    acc["sent_vs_actor_max"] = max(acc["sent_vs_actor_max"], float(sent))
+                    span = (t._hi - t._lo) * 0.5  # back to command units ([-1, 1] per axis)
+                    d = (applied - base_cmd).abs() / span
+                    ch = d > 1e-5
+                    acc["ungated_change_max"] = max(acc["ungated_change_max"], float(d[~on].max()) if (~on).any() else 0.0)
+                    acc["rows"] += float(on.numel())
+                    acc["gated_rows"] += float(on.sum())
+                    if name == "zero":
+                        acc["applied_minus_base_max"] = max(acc["applied_minus_base_max"], float(d.max()))
+                        bo = b_raw[on]
+                        acc["base_past_1"] += float((bo.abs() > 1.0).float().sum())
+                        acc["base_past_1p3"] += float((bo.abs() > 1.3).float().sum())
+                        for j, ax in enumerate(("vx", "vy", "wz")):
+                            acc[f"base_past_1p3_{ax}"] += float((bo[:, j].abs() > 1.3).float().sum())
+                        continue
+                    sg = 1.0 if b > 0 else -1.0
+                    inside = b_raw.abs() < 1.0
+                    away = (b_raw * sg <= -1.0)  # saturated where the bias pulls back into range
+                    into = (b_raw * sg >= 1.0)  # saturated where the bias pushes further out (no change possible)
+                    raw_ch = ((b_raw + b).clamp(-1.0, 1.0) - b_raw.clamp(-1.0, 1.0)).abs() > 1e-5
+                    on3 = on.unsqueeze(-1).expand_as(b_raw)
+                    for nm, msk in (("inside", inside), ("saturated_pull_back", away), ("saturated_push_out", into)):
+                        m_ = msk & on3
+                        acc[f"n_{nm}"] += float(m_.sum())
+                        acc[f"changed_{nm}"] += float((ch & m_).sum())
+                        acc[f"raw_would_change_{nm}"] += float((raw_ch & m_).sum())
+                    acc["mean_abs_change_gated"] += float(d[on].sum())
+                obs = self._td(o)
+            r = {"rows": acc["rows"], "gated_share": acc["gated_rows"] / max(acc["rows"], 1.0),
+                 "sent_vs_actor_max": acc["sent_vs_actor_max"], "ungated_change_max": acc["ungated_change_max"]}
+            ng = max(acc["gated_rows"] * 3.0, 1.0)
+            if name == "zero":
+                r["applied_minus_base_max"] = acc["applied_minus_base_max"]
+                r["base_past_1"] = acc["base_past_1"] / ng
+                r["base_past_1p3"] = acc["base_past_1p3"] / ng
+                for ax in ("vx", "vy", "wz"):
+                    r[f"base_past_1p3_{ax}"] = acc[f"base_past_1p3_{ax}"] / max(acc["gated_rows"], 1.0)
+            else:
+                r["bias"] = b
+                r["mean_abs_change_gated"] = acc["mean_abs_change_gated"] / ng
+                for nm in ("inside", "saturated_pull_back", "saturated_push_out"):
+                    n_ = max(acc[f"n_{nm}"], 1.0)
+                    r[f"share_{nm}"] = acc[f"n_{nm}"] / ng
+                    r[f"changed_{nm}"] = acc[f"changed_{nm}"] / n_
+                    r[f"raw_would_change_{nm}"] = acc[f"raw_would_change_{nm}"] / n_
+            report[name] = r
+            print(f"[marl2] residual check, correction {name} ({b:+g}): " + json.dumps(r), flush=True)
+        for a in AGENTS:
+            res_last[a].bias.zero_()
+        z = report["zero"]
+        report["pass"] = bool(z["applied_minus_base_max"] == 0.0 and all(
+            report[k]["ungated_change_max"] == 0.0 for k in ("zero", "minus", "plus")) and all(
+            report[k]["changed_inside"] > 0.99 and report[k]["changed_saturated_pull_back"] > 0.99
+            for k in ("minus", "plus") if report[k]["share_inside"] > 0))
+        (self.log_dir / "resid_check.json").write_text(json.dumps(report, indent=1))
+        print(f"[marl2] residual check {'PASSED' if report['pass'] else 'FAILED'} -> {self.log_dir / 'resid_check.json'}")
+        return report
 
     def _expand(self, model, old: dict, groups: list[str], what: str) -> None:
         """Copy `old` into `model`; 1D input groups may have grown at their end (new columns zero)."""
@@ -724,6 +906,8 @@ class MarlTrainer:
             outcome = defaultdict(float)
             n_ended = 0.0
             skipped = 0
+            rstat = defaultdict(lambda: torch.zeros((), device=dev))  # residual: correction-effect sums
+            counts0 = self._reset_counts()
 
             with torch.inference_mode():
                 for t in range(T):
@@ -737,6 +921,8 @@ class MarlTrainer:
                         mu[t, :, 3 * k:3 * k + 3] = m_
                         sigma[t, :, 3 * k:3 * k + 3] = s_.expand_as(m_)
                         acts.append(ak)
+                        if cfg.residual:
+                            self._residual_stats(rstat, a, *self.actors[a].last)
                     action = torch.cat(acts, -1)
                     act[t] = action
                     v = self.values(obs)
@@ -810,8 +996,13 @@ class MarlTrainer:
                             ent = actor.output_entropy
                             new_params = actor.output_distribution_params
                             with torch.inference_mode():
-                                kl = actor.get_kl_divergence((f_mu[idx, sl], f_sigma[idx, sl]),
-                                                             tuple(p.detach() for p in new_params)).mean()
+                                kl_s = actor.get_kl_divergence((f_mu[idx, sl], f_sigma[idx, sl]),
+                                                               tuple(p.detach() for p in new_params))
+                                if cfg.residual:  # gated-off samples have identical means: leave them out
+                                    gk = o_mb[f"resid_gate_{a}"].squeeze(-1)
+                                    kl = (kl_s * gk).sum() / gk.sum().clamp(min=1.0)
+                                else:
+                                    kl = kl_s.mean()
                                 if cfg.desired_kl is not None:
                                     if kl > cfg.desired_kl * 2.0:
                                         self.lr[a] = max(1e-5, self.lr[a] / 1.5)
@@ -821,8 +1012,15 @@ class MarlTrainer:
                                         pg["lr"] = self.lr[a]
                             ratio = torch.exp(lp - f_logp[idx, k])
                             adv_k = f_adv[idx, k]
-                            surr = -torch.min(adv_k * ratio,
-                                              adv_k * torch.clamp(ratio, 1 - cfg.clip_param, 1 + cfg.clip_param)).mean()
+                            surr_s = -torch.min(adv_k * ratio,
+                                                adv_k * torch.clamp(ratio, 1 - cfg.clip_param, 1 + cfg.clip_param))
+                            if cfg.residual:  # only samples with the correction on carry its gradient
+                                gm = o_mb[f"resid_gate_{a}"].squeeze(-1)
+                                if float(gm.sum()) < 1.0:
+                                    continue
+                                surr = (surr_s * gm).sum() / gm.sum()
+                            else:
+                                surr = surr_s.mean()
                             loss = surr - cfg.entropy_coef * ent.mean()
                             if cfg.bound_coef > 0:
                                 loss = loss + cfg.bound_coef * bound_loss
@@ -893,6 +1091,9 @@ class MarlTrainer:
             out["Train/critic_warmup"] = float(warm)
             out["Loss/kl_beta"] = beta
             out["Train/skipped_updates"] = float(skipped)
+            if cfg.residual:
+                out.update(self._residual_log(rstat))
+            out.update(self._reset_log(counts0))
             # how the episodes that ended this iteration ended (fractions; they sum to 1)
             for nm, cnt in outcome.items():
                 out[f"Outcome/{nm}"] = cnt / max(n_ended, 1.0)
@@ -953,8 +1154,10 @@ class PairPolicy:
         ck = torch.load(checkpoint, map_location=device, weights_only=False) if checkpoint else None
         rc = (ck or {}).get("cfg", {})
         if rc.get("residual"):
+            # checkpoints from before the composition fix (no resid_compose) were trained with the raw base
             self.actors = {a: ResidualActor(env_obs, a, variant, rc["resid_scale"], rc["resid_std"],
-                                            tuple(rc["resid_hidden"])).to(device) for a in AGENTS}
+                                            tuple(rc["resid_hidden"]), rc.get("resid_compose", "raw")).to(device)
+                           for a in AGENTS}
         else:
             self.actors = {a: make_model(env_obs, actor_groups(a, variant), 3, (256, 128, 64), variant, True).to(device)
                            for a in AGENTS}
