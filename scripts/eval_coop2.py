@@ -266,7 +266,7 @@ def main() -> int:
         tail = int(2.0 / dt)
         with torch.no_grad():
             for i in range(steps):
-                act = policy(obs)
+                act = policy(obs, env=base)
                 for k, ag in enumerate(AGENTS):
                     if ag not in active:
                         act[:, 3 * k:3 * k + 3] = 0.0

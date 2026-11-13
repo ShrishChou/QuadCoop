@@ -312,8 +312,8 @@ def main() -> int:
     train_mass = tuple(float(x) for x in a.train_mass.split(",")) if a.train_mass else ()
     if train_mass and len(train_mass) != 2:
         raise SystemExit("--train-mass lo,hi")
-    if a.fixed_level is not None and not a.fixed_difficulty:
-        raise SystemExit("--fixed-level needs --fixed-difficulty")
+    if (a.fixed_level is not None) != a.fixed_difficulty:
+        raise SystemExit("--fixed-difficulty and --fixed-level go together (the level is declared, not inherited)")
     if a.residual and not (a.contacts and a.push_cmd and a.guide):
         raise SystemExit("--residual builds on the Stage 4e executor (--contacts --guide --push-cmd)")
     rs = [float(x) for x in a.reselect_s.split(",")]
@@ -408,8 +408,7 @@ def main() -> int:
     env_cfg.commands["goal"].start_level = a.start_level
     env_cfg.commands["goal"].turn_frac = a.turn_frac
     if a.fixed_difficulty:  # the very first episodes (drawn at construction, before the warm start) match too
-        if a.fixed_level is not None:
-            env_cfg.commands["goal"].start_level = a.fixed_level
+        env_cfg.commands["goal"].start_level = a.fixed_level
         env_cfg.commands["goal"].tol_start_finest = True
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     cfg = MarlCfg(algo=a.algo, variant=a.variant, num_envs=a.num_envs, seed=a.seed,
@@ -453,12 +452,15 @@ def main() -> int:
             trainer.init_from(a.init_from)
         else:
             trainer.warm_start(models["policy"])
-    if a.fixed_difficulty and a.fixed_level is not None and not (a.resume and last is not None):
-        env.command_manager.get_term("goal").level = a.fixed_level
-    if a.fixed_difficulty:
-        g_ = env.command_manager.get_term("goal")
-        print(f"[marl2] fixed difficulty: level {g_.level}, tolerance level {getattr(g_, 'tol_level', 0)}, "
-              f"mass window {train_mass or 'the level'}s, shapes {train_shapes or 'Stage 2 split'}")
+    if a.fixed_difficulty:  # re-apply the declared settings after any warm start / resume, and check the
+        g_ = env.command_manager.get_term("goal")  # episodes already running were drawn with them
+        g_.level = a.fixed_level
+        if getattr(g_, "tol_table", None) is not None:
+            g_.tol_level = len(g_.cfg.tol_levels) - 1
+            assert bool((g_.env_tol_level == g_.tol_level).all()), "fixed difficulty: episodes at another tolerance"
+        assert bool((g_.env_level == a.fixed_level).all()), "fixed difficulty: episodes at another level"
+        print(f"[marl2] fixed difficulty: level {g_.level}, tolerance level {getattr(g_, 'tol_level', 0)} (finest), "
+              f"mass window {train_mass or 'the level'}, shapes {train_shapes or 'Stage 2 split'}")
     if a.resid_check:
         if not a.residual:
             raise SystemExit("--resid-check needs --residual")

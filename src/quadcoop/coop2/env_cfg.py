@@ -358,6 +358,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         for a in AGENTS:
             obs[f"resid_{a}"] = ObservationGroupCfg(terms={"resid": T(func=mdp.resid_obs, params={"robot": a})},
                                                     concatenate_terms=True, enable_corruption=False)
+            for grp in (f"actor_{a}", f"state_{a}"):  # the base keeps its own action history (see mdp)
+                obs[grp].terms["last_action"] = T(func=mdp.resid_base_last_action, params={"robot": a})
             obs[f"resid_gate_{a}"] = ObservationGroupCfg(terms={"gate": T(func=mdp.resid_gate, params={"robot": a})},
                                                          concatenate_terms=True, enable_corruption=False)
     cfg.observations = obs
@@ -377,7 +379,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             if k == "foot_friction":  # Stage 1/2: enough grip to push heavy objects
                 ev.params["ranges"] = (0.6, 1.2)
             events[f"{k}_{a}"] = ev
-    alpha = (0.5 * math.log(MASS_RANGE[0] / NOMINAL_MASS), 0.5 * math.log(MASS_RANGE[1] / NOMINAL_MASS))
+    # train_mass: draw the (startup, per env) masses inside that window, so the shape draw never falls back to an
+    # out-of-window object (an env keeps its masses for the whole run)
+    mr = tuple(train_mass) if train_mass else MASS_RANGE
+    alpha = (0.5 * math.log(mr[0] / NOMINAL_MASS), 0.5 * math.log(mr[1] / NOMINAL_MASS))
     for name, shape in zip(OBJ_NAMES2, SHAPES2, strict=True):
         events[f"{name}_mass"] = EventTermCfg(
             mode="startup", func=envs_mdp.dr.pseudo_inertia,

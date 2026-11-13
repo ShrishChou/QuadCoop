@@ -131,10 +131,21 @@ What changed from pilot 1, one item per review finding:
    `reset_counts.json` with every checkpoint. The distribution is read from these counts, never inferred from
    weights. Beam is no longer a held-out object for this executor.
 2. **The correction acts on the clipped base.** mean = clip(base, −1, 1) + gate × 0.3 × tanh(MLP)
-   (`resid_compose: clipped`; the walker clips again). A zero correction gives the same applied command as the
-   baseline, and a correction can now pull a saturated command back into range. `--resid-check` verifies this
-   through the walker terms before training. Checkpoints without `resid_compose` (pilot 1) still load with the
-   raw composition.
+   (`resid_compose: clipped`; the walker clips again). A correction can now pull a saturated command back into
+   range.
+   - **Action history (review of 9bacf23).** The executor reads its previous raw action (`last_action`), so the
+     wrapper must not replace a raw 4 with a clipped 1.
+     - **Env action:** per component, wherever the corrected command equals the base's applied command (gate off,
+       zero correction, or a push further into saturation), the env receives the base's raw output itself.
+       Otherwise it receives the corrected in-range command.
+     - **The base's history:** in residual envs, the base's `last_action` input (actor and critic groups) is
+       `resid_base_last`. It holds the base's own raw output from the previous step and is zeroed at reset. Where
+       the correction is off this equals the walker term's raw action, so the base's inputs and outputs are
+       identical to running alone, step after step.
+     - **Overridden actions:** in `contact_test.py`, robots whose action is overridden (idle, recipe, replay) get
+       the action actually sent as their history.
+   - Checkpoints without `resid_compose` (pilot 1) still load with the raw composition and their original action
+     history.
 3. **Phase gate.** Per robot, the gate is object ∈ `resid_objects` (beam) **and** front-to-contact distance
    ≤ 0.6 m (`--resid-gate-dist 0.6`; on-contact is 0.25 m). That covers the final approach, pressing, and
    recovery after slipping off, but not the walk around the object or repositioning to a far contact.
@@ -143,8 +154,13 @@ What changed from pilot 1, one item per review finding:
 4. **Fixed difficulty.** Level 4 (distances 3–6 m, turns up to 180°) with the finest tolerance (10 cm / 3°) are
    held, and the first episodes also start there. Mass is drawn from a fixed 20–80 kg window (the evaluation
    range) instead of the level's 50–90 kg. There are no replayed lower levels, and shape weights stay uniform.
-   Turn practice 0.3 and contact starts 0.5 are as before. The wide-heavy (`need_frac`) episodes are off, since
-   they draw other shapes.
+   - **Mass:** the physical per-env masses are drawn in that window at startup (uniform in mass, consistent
+     inertia scaling), and every training draw asserts that the selected object is eligible and inside the window.
+   - **Level and tolerance:** `--fixed-difficulty` requires `--fixed-level`. Level and finest tolerance are set
+     before the first episodes are drawn and re-applied after the warm start, which restores the checkpoint's
+     curriculum. Every running episode is asserted to use them.
+   - Turn practice 0.3 and contact starts 0.5 are as before. The wide-heavy (`need_frac`) episodes are off, since
+     they draw other shapes.
 
 ### Logged to wandb every iteration (`Resid/*`, per robot)
 
@@ -154,16 +170,46 @@ What changed from pilot 1, one item per review finding:
   - the mean applied command change of the deterministic and the sampled action;
 - on ungated rows: the largest applied change, which must be 0.
 
-### Before training (`--resid-check 600`, 512 envs)
+### Preflight (`--resid-check 400`, 512 envs, 400 steps per pass)
 
-A zero correction must reproduce the base's applied commands exactly. With a constant ±0.2 correction, on gated
-rows:
-- every in-range component changes;
-- every saturated component the correction pulls back changes;
-- ungated rows don't change.
+One short preflight replaces the earlier check. It fails on any missing coverage.
 
-The check also reports how often the turn_debug base is past ±1.3 on gated rows, and what the raw composition
-would have changed.
+**Zero correction:**
+- an independently built turn_debug actor, fed the same observation, gives bitwise the env action sent;
+- the walker term received exactly that;
+- the applied command is unchanged;
+- after every step, the `last_action` the base reads equals what it would read without the wrapper (reset rows
+  included).
+
+**±0.2 correction:**
+- every in-range component, and every saturated component the correction pulls back, changes its applied
+  command;
+- the base's history stays its own raw output;
+- ungated rows are bitwise the base, and so is their next `last_action`.
+
+**Draw:** only eligible shapes, and only inside 20–80 kg.
+
+**Coverage:** each pass needs at least 1,000 gated and 1,000 ungated rows, 1,000 in-range components, 100
+pulled-back components, and 1,000 protected-object rows when protected objects are eligible.
+
+It runs twice:
+- **A:** the training flags (beam only), job 28909676;
+- **B:** the same flags with all seven protected objects also eligible and gated off, job 28909677.
+
+Both passed (`logs/marl2/resid2_preflight_{beam,mixed}/resid_check.json`):
+
+| | A (beam only) | B (mixed) |
+|---|---|---|
+| gated / ungated rows, zero pass | 311k / 98k | 40k / 370k (356k protected) |
+| every exact-equality check | 0.0 difference | 0.0 difference |
+| in-range components changed (±) | 1.00 / 1.00 | 1.00 / 1.00 |
+| pulled-back saturated changed (±) | 1.00 / 1.00 | 1.00 / 1.00 |
+| raw composition would have changed those | 0.12 / 0.24 | 0.13 / 0.24 |
+| base past ±1.3 on gated rows | 0.36 (vx 0.57, vy 0.35, wz 0.16) | 0.37 |
+| episodes drawn | 95, all beam, all in 20–80 kg | 216, eligible shapes only, all in window |
+
+So on gated beam rows, the turn_debug base is past ±1.3 on 36% of command components. Under pilot 1's
+composition, only 12–24% of the saturated components a correction pulls back would have moved.
 
 ### Training check
 
@@ -184,5 +230,7 @@ ALGO=mappo SEED=0 RUN_NAME=resid2_beam_s0 ITERS=300 EXTRA="--pair anymal --partn
   - contact loss (share of requested time off contact);
   - falls;
   - success.
-- **Extend** the budget only if useful force and contact loss improve, with falls and success not worse. The
-  pilot 1 acceptance criteria and held-out seeds (5000–5002) are unchanged and come after that.
+- **Extend** the budget on matched success and falls (success up, falls not higher). Contact retention and
+  useful force explain the result but are not required to rise: better positioning can move the object with
+  less force. The pilot 1 acceptance criteria and held-out seeds (5000–5002) are unchanged and come after
+  that.

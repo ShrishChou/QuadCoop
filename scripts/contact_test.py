@@ -309,6 +309,7 @@ def main() -> int:
     else:
         resid_objects = tuple(x.strip() for x in a.resid_objects.split(",") if x.strip())
     a.resid_gate = list(resid_objects) if ck_cfg.get("residual") else None  # recorded in the summary
+    resid_ck = bool(ck_cfg.get("residual"))
     if a.resid_gate_dist is None:
         a.resid_gate_dist = float(ck_cfg.get("resid_gate_dist", 0.0) or 0.0)
     # recorded: composition as trained (checkpoints from before the fix used the raw base) and the phase gate
@@ -730,7 +731,7 @@ def main() -> int:
                 pushing, engaged, cdist, herr = [], [], [], []
                 if use_policy or stage4:
                     sync(); t0 = time.time()  # noqa: E702
-                    pol_act = policy(obs)
+                    pol_act = policy(obs, env=base)
                     sync(); t_pol += time.time() - t0  # noqa: E702
                 else:
                     pol_act = None
@@ -818,6 +819,11 @@ def main() -> int:
                         tm = terms_[k]
                         c_rec = torch.where(rwin.unsqueeze(-1), rcmd[:, ridx, k], torch.zeros_like(rcmd[:, ridx, k]))
                         act[:, 3 * k:3 * k + 3] = 2.0 * (c_rec - tm._lo) / (tm._hi - tm._lo) - 1.0
+                if pol_act is not None and resid_ck:  # robots whose policy action was overridden (idle, recipe,
+                    for k in range(2):  # replay) get the sent action as their history, as without the correction
+                        sl_ = slice(3 * k, 3 * k + 3)
+                        kept = (act[:, sl_] == pol_act[:, sl_]).all(-1, keepdim=True)
+                        g.resid_base_last[:, k] = torch.where(kept, g.resid_base_last[:, k], act[:, sl_])
                 sync(); t0 = time.time()  # noqa: E702
                 o_, _, _, _, _ = base.step(act)
                 sync(); t_env += time.time() - t0  # noqa: E702

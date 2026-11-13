@@ -249,6 +249,7 @@ class ResidualActor(torch.nn.Module):
     def forward(self, obs: TensorDict, stochastic_output: bool = False) -> torch.Tensor:
         with torch.no_grad():
             b_raw = self.base(obs)
+        self.b_raw_last = b_raw.detach()  # for env_action / the base's action history (residual_env_action)
         b = b_raw.clamp(-1.0, 1.0) if self.compose == "clipped" else b_raw
         mean = b + self.correction(obs)
         if stochastic_output:
@@ -259,6 +260,18 @@ class ResidualActor(torch.nn.Module):
             self.last = (gate.detach(), b_raw.detach(), mean.detach(), out.detach())
             return out
         return mean
+
+    def env_action(self, a: torch.Tensor) -> torch.Tensor:
+        """What is sent to the walker term for policy action `a` (from the last forward call). The walker applies
+        clip(a) either way; per component, where that equals the base's applied command (gate off, zero correction,
+        or a correction pushing further into saturation) the base's raw output itself is sent, so every consumer
+        of the raw action sees exactly what it sees without the correction; elsewhere the corrected command
+        clip(a). compose "raw" (pilot 1): `a` unchanged, as it was trained."""
+        if self.compose == "raw":
+            return a
+        b = self.b_raw_last
+        ac = a.clamp(-1.0, 1.0)
+        return torch.where(ac == b.clamp(-1.0, 1.0), b, ac)
 
     def update_normalization(self, obs: TensorDict) -> None:
         self.res.update_normalization(obs)
@@ -276,6 +289,24 @@ class ResidualActor(torch.nn.Module):
 
     def get_kl_divergence(self, old_params, new_params) -> torch.Tensor:
         return self.distribution.kl_divergence(old_params, new_params)
+
+
+def residual_env_action(env, actors: dict, acts: list) -> torch.Tensor:
+    """Residual policies: the env action for the per-agent policy actions `acts` (each from that actor's last
+    forward), after recording each base's raw output as its action history (mdp.resid_base_last_action), so the
+    base's next observation is what it would be with the base acting alone. Other actors: the actions unchanged."""
+    out = []
+    g = env.command_manager.get_term("goal")
+    for k, a in enumerate(AGENTS):
+        m_ = actors[a]
+        if isinstance(m_, ResidualActor):
+            ea = m_.env_action(acts[k])
+            # pilot 1 checkpoints (raw composition) saw the raw env action as last_action
+            g.resid_base_last[:, k] = ea if m_.compose == "raw" else m_.b_raw_last
+            out.append(ea)
+        else:
+            out.append(acts[k])
+    return torch.cat(out, -1)
 
 
 def clamp_sampling_mean(model, limit: float) -> None:
@@ -709,23 +740,46 @@ class MarlTrainer:
               f"(level {g.level}{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''})")
 
     @torch.no_grad()
-    def check_residual(self, steps: int = 600, bias: float = 0.2) -> dict:
-        """Command-interface check before training (deterministic policy, the env's own walker terms).
-        Pass 0, correction zero (as initialised): the applied walker command (the term's target_command of the
-        action actually sent) must equal the frozen base's, for every robot and step. Passes +/-: the correction
-        forced to a constant +-bias on every axis (last-layer bias); on gated rows, the share of components whose
-        applied command changes, split by where the base sits (inside (-1, 1), saturated on the side the bias
-        pulls away from, saturated on the side it pushes into), next to what the raw composition (base +
-        correction, clipped) would have changed; ungated rows must not change at all. Also the base saturation
-        on gated rows (|base| > 1 and > 1.3). Returns the numbers (also written to resid_check.json)."""
+    def check_residual(self, steps: int = 400, bias: float = 0.2, min_rows: int = 1000) -> dict:
+        """Preflight before training, through the env's own walker terms, deterministic policy. Three passes.
+
+        zero (correction as initialised): every step and robot, an independently built copy of the base
+        executor (loaded from cfg.residual) fed the same observation must give, bitwise, the env action that is
+        sent; the base's action history (resid_base_last, read as its last_action) must equal the walker term's
+        raw action, which is what last_action reads without the correction; the applied commands must match.
+        Each step's inputs and outputs are then those of the base acting alone, so the rollout is too.
+        minus / plus (correction forced to a constant -+bias on every axis): on gated rows, every in-range
+        component and every saturated component the bias pulls back into range must change its applied command,
+        the history must stay the base's raw output; on ungated rows the env action and the history must be the
+        base's raw output bitwise (protected objects are counted separately when any are drawn).
+        Every check needs coverage (at least min_rows gated and ungated rows, min_rows in-range and min_rows / 10
+        pulled-back components per sign, min_rows protected rows when protected objects are eligible), and the
+        draw (reset counts during the check) must hold only eligible shapes inside train_mass.
+        Returns the numbers and the failed checks (also written to resid_check.json)."""
+        from mjlab.envs import mdp as envs_mdp
+
+        from quadcoop.coop2 import mdp as cmdp
+
         assert self.cfg.residual
         env, dev = self.env, self.device
+        g = env.command_manager.get_term("goal")
         terms = {a: env.action_manager.get_term(f"walker_{a}") for a in AGENTS}
+        ck = torch.load(self.cfg.residual, map_location=dev, weights_only=False)
+        plain = {}
+        for a in AGENTS:  # the frozen executor as it runs without the residual wrapper
+            plain[a] = make_model(self.obs, actor_groups(a, self.cfg.variant), 3, (256, 128, 64), self.cfg.variant,
+                                  True).to(dev)
+            plain[a].load_state_dict(ck["actors"][a])
+            plain[a].eval()
         res_last = {a: [m for m in self.actors[a].res.mlp.modules() if isinstance(m, torch.nn.Linear)][-1]
                     for a in AGENTS}
         for m_ in self.actors.values():
             m_.eval()
-        obs, report = self.obs, {}
+        sel = torch.tensor([sh.name in self.cfg.resid_objects for sh in g.shape_list], device=dev) \
+            if self.cfg.resid_objects else torch.ones(len(g.shape_list), dtype=torch.bool, device=dev)
+        protected_eligible = bool((g.train_mask & ~sel).any())
+        counts0 = g.reset_counts.clone()
+        obs, report, fails = self.obs, {}, []
         for name, b in (("zero", 0.0), ("minus", -bias), ("plus", bias)):
             for a in AGENTS:  # tanh(x) x scale = b
                 res_last[a].bias.fill_(math.atanh(b / self.cfg.resid_scale) if b else 0.0)
@@ -734,73 +788,125 @@ class MarlTrainer:
                 acts, rows = [], {}
                 for a in AGENTS:
                     act = self.actors[a](obs)
-                    rows[a] = (act, self.actors[a].base(obs), obs[f"resid_gate_{a}"].squeeze(-1) > 0.5)
+                    rows[a] = (act, self.actors[a].b_raw_last.clone(), plain[a](obs),
+                               obs[f"resid_gate_{a}"].squeeze(-1) > 0.5, sel[g.shape])
                     acts.append(act)
-                o, _, term_, trunc_, _ = env.step(torch.cat(acts, -1))
+                env_act = residual_env_action(env, self.actors, acts)
+                hist = g.resid_base_last.clone()
+                o, _, term_, trunc_, _ = env.step(env_act)
                 live = ~(term_ | trunc_)  # envs reset in this step zero the term's stored action: skip them
-                for a in AGENTS:
-                    act, b_raw, on = rows[a]
-                    act, b_raw, on = act[live], b_raw[live], on[live]
+                for k, a in enumerate(AGENTS):
+                    act, b_raw, b_plain, on, obj_on = rows[a]
                     t = terms[a]
-                    applied = t.target_command(t.raw_action[live])  # what this step's walker term actually used
-                    base_cmd = t.target_command(b_raw)
-                    sent = (t.raw_action[live] - act).abs().max()
-                    acc["sent_vs_actor_max"] = max(acc["sent_vs_actor_max"], float(sent))
-                    span = (t._hi - t._lo) * 0.5  # back to command units ([-1, 1] per axis)
-                    d = (applied - base_cmd).abs() / span
-                    ch = d > 1e-5
-                    acc["ungated_change_max"] = max(acc["ungated_change_max"], float(d[~on].max()) if (~on).any() else 0.0)
-                    acc["rows"] += float(on.numel())
-                    acc["gated_rows"] += float(on.sum())
+                    # the last_action input the base reads next vs the one it reads without the wrapper (the walker
+                    # term's raw action; 0 after a reset): equal wherever the correction is off (all rows at zero)
+                    seen, orig = cmdp.resid_base_last_action(env, a), envs_mdp.last_action(env, f"walker_{a}")
+                    same_rows = torch.ones_like(on) if name == "zero" else ~on
+                    if same_rows.any():
+                        acc["next_obs_history_vs_original_max"] = max(
+                            acc["next_obs_history_vs_original_max"], float((seen[same_rows] - orig[same_rows]).abs().max()))
+                    sent = env_act[:, 3 * k:3 * k + 3]
+                    span = (t._hi - t._lo) * 0.5
+                    on_l, off_l = on & live, ~on & live
+                    acc["rows"] += float(live.sum())
+                    acc["gated_rows"] += float(on_l.sum())
+                    acc["ungated_rows"] += float(off_l.sum())
+                    acc["ungated_protected_rows"] += float((off_l & ~obj_on).sum())
+                    acc["ungated_resid_object_rows"] += float((off_l & obj_on).sum())
+                    # the walker received what was sent; the history the base reads next is its own raw output
+                    acc["sent_vs_term_max"] = max(acc["sent_vs_term_max"], float((t.raw_action[live] - sent[live]).abs().max()))
+                    acc["hist_vs_base_max"] = max(acc["hist_vs_base_max"], float((hist[live, k] - b_raw[live]).abs().max()))
+                    acc["wrapper_base_vs_plain_max"] = max(acc["wrapper_base_vs_plain_max"],
+                                                           float((b_raw - b_plain).abs().max()))
+                    if (~on).any():  # gate off: everything exactly as without the correction
+                        acc["ungated_sent_vs_base_max"] = max(acc["ungated_sent_vs_base_max"],
+                                                              float((sent[~on] - b_raw[~on]).abs().max()))
+                    applied = t.target_command(sent[live])
+                    d = (applied - t.target_command(b_raw[live])) / span
                     if name == "zero":
-                        acc["applied_minus_base_max"] = max(acc["applied_minus_base_max"], float(d.max()))
-                        bo = b_raw[on]
+                        acc["zero_sent_vs_plain_max"] = max(acc["zero_sent_vs_plain_max"],
+                                                            float((sent - b_plain).abs().max()))
+                        acc["zero_applied_change_max"] = max(acc["zero_applied_change_max"], float(d.abs().max()))
+                        bo = b_raw[on_l]
                         acc["base_past_1"] += float((bo.abs() > 1.0).float().sum())
                         acc["base_past_1p3"] += float((bo.abs() > 1.3).float().sum())
-                        for j, ax in enumerate(("vx", "vy", "wz")):
-                            acc[f"base_past_1p3_{ax}"] += float((bo[:, j].abs() > 1.3).float().sum())
+                        for j_, ax in enumerate(("vx", "vy", "wz")):
+                            acc[f"base_past_1p3_{ax}"] += float((bo[:, j_].abs() > 1.3).float().sum())
                         continue
+                    on_ = on[live].unsqueeze(-1).expand_as(d)
+                    bl = b_raw[live]
                     sg = 1.0 if b > 0 else -1.0
-                    inside = b_raw.abs() < 1.0
-                    away = (b_raw * sg <= -1.0)  # saturated where the bias pulls back into range
-                    into = (b_raw * sg >= 1.0)  # saturated where the bias pushes further out (no change possible)
-                    raw_ch = ((b_raw + b).clamp(-1.0, 1.0) - b_raw.clamp(-1.0, 1.0)).abs() > 1e-5
-                    on3 = on.unsqueeze(-1).expand_as(b_raw)
-                    for nm, msk in (("inside", inside), ("saturated_pull_back", away), ("saturated_push_out", into)):
-                        m_ = msk & on3
+                    ch = d.abs() > 1e-5
+                    raw_ch = ((bl + b).clamp(-1.0, 1.0) - bl.clamp(-1.0, 1.0)).abs() > 1e-5
+                    for nm, msk in (("inside", bl.abs() < 1.0), ("saturated_pull_back", bl * sg <= -1.0),
+                                    ("saturated_push_out", bl * sg >= 1.0)):
+                        m_ = msk & on_
                         acc[f"n_{nm}"] += float(m_.sum())
                         acc[f"changed_{nm}"] += float((ch & m_).sum())
                         acc[f"raw_would_change_{nm}"] += float((raw_ch & m_).sum())
-                    acc["mean_abs_change_gated"] += float(d[on].sum())
+                    acc["abs_change_gated"] += float(d.abs()[on_].sum())
                 obs = self._td(o)
-            r = {"rows": acc["rows"], "gated_share": acc["gated_rows"] / max(acc["rows"], 1.0),
-                 "sent_vs_actor_max": acc["sent_vs_actor_max"], "ungated_change_max": acc["ungated_change_max"]}
-            ng = max(acc["gated_rows"] * 3.0, 1.0)
+            r = {k_: acc[k_] for k_ in ("rows", "gated_rows", "ungated_rows", "ungated_protected_rows",
+                                         "ungated_resid_object_rows", "sent_vs_term_max", "hist_vs_base_max",
+                                         "wrapper_base_vs_plain_max", "ungated_sent_vs_base_max",
+                                         "next_obs_history_vs_original_max")}
+            ng3 = max(acc["gated_rows"] * 3.0, 1.0)
+            need = [("gated_rows", acc["gated_rows"] >= min_rows), ("ungated_rows", acc["ungated_rows"] >= min_rows),
+                    ("sent_vs_term", acc["sent_vs_term_max"] == 0.0), ("history_is_base_output", acc["hist_vs_base_max"] == 0.0),
+                    ("wrapper_base_is_plain_base", acc["wrapper_base_vs_plain_max"] == 0.0),
+                    ("ungated_unchanged", acc["ungated_sent_vs_base_max"] == 0.0),
+                    ("next_obs_history_as_original", acc["next_obs_history_vs_original_max"] == 0.0)]
+            if protected_eligible:
+                need.append(("protected_coverage", acc["ungated_protected_rows"] >= min_rows))
             if name == "zero":
-                r["applied_minus_base_max"] = acc["applied_minus_base_max"]
-                r["base_past_1"] = acc["base_past_1"] / ng
-                r["base_past_1p3"] = acc["base_past_1p3"] / ng
+                r["zero_sent_vs_plain_max"] = acc["zero_sent_vs_plain_max"]
+                r["zero_applied_change_max"] = acc["zero_applied_change_max"]
+                r["base_past_1"] = acc["base_past_1"] / ng3
+                r["base_past_1p3"] = acc["base_past_1p3"] / ng3
                 for ax in ("vx", "vy", "wz"):
                     r[f"base_past_1p3_{ax}"] = acc[f"base_past_1p3_{ax}"] / max(acc["gated_rows"], 1.0)
+                need += [("zero_sent_is_plain_base", acc["zero_sent_vs_plain_max"] == 0.0),
+                         ("zero_applied_unchanged", acc["zero_applied_change_max"] == 0.0)]
             else:
                 r["bias"] = b
-                r["mean_abs_change_gated"] = acc["mean_abs_change_gated"] / ng
+                r["mean_abs_change_gated"] = acc["abs_change_gated"] / ng3
                 for nm in ("inside", "saturated_pull_back", "saturated_push_out"):
                     n_ = max(acc[f"n_{nm}"], 1.0)
-                    r[f"share_{nm}"] = acc[f"n_{nm}"] / ng
+                    r[f"n_{nm}"] = acc[f"n_{nm}"]
                     r[f"changed_{nm}"] = acc[f"changed_{nm}"] / n_
                     r[f"raw_would_change_{nm}"] = acc[f"raw_would_change_{nm}"] / n_
+                need += [("inside_coverage", acc["n_inside"] >= min_rows),
+                         ("inside_changed", r["changed_inside"] > 0.999),
+                         ("pull_back_coverage", acc["n_saturated_pull_back"] >= min_rows // 10),
+                         ("pull_back_changed", r["changed_saturated_pull_back"] > 0.999)]
+            r["failed"] = [k_ for k_, ok in need if not ok]
+            fails += [f"{name}:{k_}" for k_ in r["failed"]]
             report[name] = r
-            print(f"[marl2] residual check, correction {name} ({b:+g}): " + json.dumps(r), flush=True)
+            print(f"[marl2] preflight, correction {name} ({b:+g}): " + json.dumps(r), flush=True)
         for a in AGENTS:
             res_last[a].bias.zero_()
-        z = report["zero"]
-        report["pass"] = bool(z["applied_minus_base_max"] == 0.0 and all(
-            report[k]["ungated_change_max"] == 0.0 for k in ("zero", "minus", "plus")) and all(
-            report[k]["changed_inside"] > 0.99 and report[k]["changed_saturated_pull_back"] > 0.99
-            for k in ("minus", "plus") if report[k]["share_inside"] > 0))
+        drawn = g.reset_counts - counts0
+        edges = g.reset_mass_edges
+        bad_shape = float(drawn[~g.train_mask].sum())
+        bad_mass = 0.0
+        if self.cfg.train_mass:
+            lo, hi = self.cfg.train_mass
+            out_bins = (edges[1:] <= lo) | (edges[:-1] >= hi)
+            bad_mass = float(drawn[:, out_bins].sum())
+        report["draw"] = {"episodes": float(drawn.sum()), "ineligible_shape": bad_shape, "outside_mass": bad_mass,
+                          "by_shape": {sh.name: float(drawn[i].sum()) for i, sh in enumerate(g.shape_list)
+                                       if float(drawn[i].sum()) > 0}}
+        if float(drawn.sum()) < 1:
+            fails.append("draw:no_episodes")
+        if bad_shape or bad_mass:
+            fails.append("draw:outside_declared")
+        report["protected_eligible"] = protected_eligible
+        report["failed"] = fails
+        report["pass"] = not fails
         (self.log_dir / "resid_check.json").write_text(json.dumps(report, indent=1))
-        print(f"[marl2] residual check {'PASSED' if report['pass'] else 'FAILED'} -> {self.log_dir / 'resid_check.json'}")
+        print(f"[marl2] preflight draw: {json.dumps(report['draw'])}")
+        print(f"[marl2] preflight {'PASSED' if report['pass'] else 'FAILED ' + str(fails)} -> "
+              f"{self.log_dir / 'resid_check.json'}", flush=True)
         return report
 
     def _expand(self, model, old: dict, groups: list[str], what: str) -> None:
@@ -924,10 +1030,11 @@ class MarlTrainer:
                         if cfg.residual:
                             self._residual_stats(rstat, a, *self.actors[a].last)
                     action = torch.cat(acts, -1)
-                    act[t] = action
+                    act[t] = action  # policy actions (log-probabilities are over these)
                     v = self.values(obs)
                     val[t] = v
-                    o, _, term, trunc, extras = self.env.step(action)
+                    env_act = residual_env_action(self.env, self.actors, acts) if cfg.residual else action
+                    o, _, term, trunc, extras = self.env.step(env_act)
                     r_i = self.agent_rewards()
                     if video is not None:
                         if not video.active and self.it % cfg.video_interval == 0 and t == 0:
@@ -1176,5 +1283,11 @@ class PairPolicy:
             self.actors[a].eval()
 
     @torch.no_grad()
-    def __call__(self, obs: TensorDict) -> torch.Tensor:
-        return torch.cat([self.actors[a](obs) for a in AGENTS], -1)
+    def __call__(self, obs: TensorDict, env=None) -> torch.Tensor:
+        """The env action. Residual checkpoints need `env` (the base's action history is kept there)."""
+        acts = [self.actors[a](obs) for a in AGENTS]
+        if any(isinstance(m_, ResidualActor) for m_ in self.actors.values()):
+            if env is None:
+                raise ValueError("residual checkpoint: call the policy with env=")
+            return residual_env_action(env, self.actors, acts)
+        return torch.cat(acts, -1)

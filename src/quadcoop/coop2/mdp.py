@@ -292,6 +292,10 @@ class CoopPush2Command(Push2Command):
         self.c_slow_wait = torch.zeros(n, device=dev)  # s until a slow-arrival re-plan may fire again (slow_min_s)
         self.c_rhist = torch.zeros(n, 2, RESID_H, RESID_HF, device=dev)  # resid: per robot, newest first
         self.c_rhist_t = torch.zeros(n, device=dev)
+        # resid: each robot's frozen base output (raw, unclipped) from the last step, written by the residual policy
+        # wrapper before env.step and zeroed at reset, like the walker term's raw action. The base reads this as
+        # its last_action, so it gets the same action history as when it runs alone.
+        self.resid_base_last = torch.zeros(n, 2, 3, device=dev)
         self.c_replan_weak = torch.zeros(n, device=dev)  # and no progress the force model expects (pair at its limit)
         self.c_weak = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress, pair at its limit
         self.c_strength = torch.full((n,), 1e6, device=dev)  # current pair: most push along the wanted motion / sliding force
@@ -1608,6 +1612,11 @@ class CoopPush2Command(Push2Command):
         m_sel = masses.gather(1, shape.unsqueeze(-1)).squeeze(-1)
         b_ = (torch.bucketize(m_sel, self.reset_mass_edges, right=True) - 1).clamp(0, self.reset_counts.shape[1] - 1)
         self.reset_counts.index_put_((shape, b_), torch.ones_like(m_sel), accumulate=True)
+        if c.train_mass and c.only is None and (sc is None or "shape" not in sc):  # training draw: in the window
+            bad = (m_sel < c.train_mass[0] - 1e-3) | (m_sel > c.train_mass[1] + 1e-3) | ~self.train_mask[shape]
+            if bool(bad.any()):
+                raise RuntimeError(f"train_mass {c.train_mass} / train_shapes: drew shape "
+                                   f"{SHAPES2[int(shape[bad][0])].name} at {float(m_sel[bad][0]):.1f} kg")
 
         def U(a, b):
             return a + torch.rand(m, device=dev) * (b - a)
@@ -1708,6 +1717,7 @@ class CoopPush2Command(Push2Command):
                 self.c_slow_wait[env_ids] = 0.0
                 self.c_rhist[env_ids] = 0.0
                 self.c_rhist_t[env_ids] = 0.0
+                self.resid_base_last[env_ids] = 0.0
                 self.c_replan_weak[env_ids] = 0.0
                 self.c_weak[env_ids] = False
                 self.c_strength[env_ids] = 1e6
@@ -2603,6 +2613,12 @@ def resid_obs(env, robot: str) -> torch.Tensor:
         g.c_rhist[:, k].reshape(g.num_envs, -1),
     ], -1)
     return out
+
+
+def resid_base_last_action(env, robot: str) -> torch.Tensor:
+    """Residual envs: the frozen base's own last raw output (n, 3), in place of the walker term's raw action. With the
+    correction off, or not changing the applied command, the two are identical."""
+    return _g(env).resid_base_last[:, AGENTS.index(robot)]
 
 
 def resid_gate(env, robot: str) -> torch.Tensor:
