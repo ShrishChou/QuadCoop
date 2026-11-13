@@ -262,6 +262,15 @@ def main() -> int:
                          "each actor learns a bounded correction (zero at the start) from extra force / motion inputs; "
                          "critic and curriculum state carried over")
     ap.add_argument("--resid-scale", type=float, default=0.3, help="--residual: correction bound (command units)")
+    ap.add_argument("--resid-scale-axes", default="",
+                    help="--residual: per-axis correction bound 'vx,vy,wz' (overrides --resid-scale), e.g. 1.2,0.3,0.3 "
+                         "so the forward correction can bring a saturated forward command to a stop")
+    ap.add_argument("--track", action="store_true",
+                    help="--residual: request-tracking pilot (docs/request_tracking.md): per-robot force-target band "
+                         "cost and the targets as correction inputs")
+    ap.add_argument("--track-w", type=float, default=0.5, help="--track: weight of the tracking cost (per second)")
+    ap.add_argument("--short-tasks", action="store_true",
+                    help="one level of 1-2 m segments, goal turn up to +-30 deg, 25 s episodes (with --fixed-level 0)")
     ap.add_argument("--resid-std", type=float, default=0.15, help="--residual: initial exploration std")
     ap.add_argument("--resid-objects", default="", help="--residual: shapes with the correction enabled (default all)")
     ap.add_argument("--resid-gate-dist", type=float, default=0.0,
@@ -379,6 +388,10 @@ def main() -> int:
     for k, v in models["selection"].items():
         print(f"  {k:15s} {v}")
 
+    if a.track and not a.residual:
+        raise SystemExit("--track needs --residual")
+    if a.resid_scale_axes and len(a.resid_scale_axes.split(",")) != 3:
+        raise SystemExit("--resid-scale-axes takes three values: vx,vy,wz")
     random.seed(a.seed)
     torch.manual_seed(a.seed)
     import quadcoop  # noqa: F401
@@ -402,7 +415,8 @@ def main() -> int:
                                  acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                                  resid=bool(a.residual), resid_objects=resid_objects, shape_bias=shape_bias,
                                  resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes, train_mass=train_mass,
-                                 fixed_difficulty=a.fixed_difficulty)
+                                 fixed_difficulty=a.fixed_difficulty, track=a.track, track_w=a.track_w,
+                                 short_tasks=a.short_tasks)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -435,7 +449,9 @@ def main() -> int:
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
                   resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std,
                   resid_compose=a.resid_compose, resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes,
-                  train_mass=train_mass, fixed_difficulty=a.fixed_difficulty)
+                  train_mass=train_mass, fixed_difficulty=a.fixed_difficulty,
+                  resid_scale_axes=tuple(float(x) for x in a.resid_scale_axes.split(",")) if a.resid_scale_axes else (),
+                  track=a.track, track_w=a.track_w, short_tasks=a.short_tasks)
     trainer = MarlTrainer(env, cfg, log_dir, device, logger="tensorboard" if a.check else a.logger,
                           wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)

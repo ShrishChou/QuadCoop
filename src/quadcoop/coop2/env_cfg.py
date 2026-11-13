@@ -78,6 +78,11 @@ SPECS = {a: {"anymal_c": ANYMAL_C, "spot": SPOT}[ROBOT_TYPE[a]] for a in AGENTS}
 MASS_RANGE = (10.0, 90.0)  # kg per object copy per env (uniform); the level picks a window
 FRICTION_RANGE = (0.4, 0.6)  # Stage 2's
 EPISODE_S = float(os.environ.get("QUADCOOP_COOP_EPISODE_S", "80"))
+# request-tracking pilot (short_tasks): 1-2 m segments from an engaged start, beam broadside within +-15 deg, goal
+# turn up to +-30 deg (columns as CoopPush2CommandCfg.levels: d_lo, d_hi, robot spread, behind offset, object start
+# yaw, goal yaw change, pos tol, yaw tol, hold, max mass, min mass)
+SHORT_LEVEL = (1.0, 2.0, 0, 0, 15, 30, 0.10, 3, 1.0, 60, 40)
+SHORT_EPISODE_S = 25.0
 BONUS = 50.0  # Stage 2's success bonus (for an immediate success)
 KEEP_EVENTS = ("foot_friction", "base_com", "encoder_bias", "reset_base", "reset_robot_joints")
 START_OFFSET = {AGENTS[0]: (0.0, -2.0), AGENTS[1]: (0.0, 2.0)}  # before the first reset places them
@@ -193,7 +198,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        contact_sense: bool = False, acq_bonus: float = 0.0, time_cost: float = 0.0,
                        touch_cost: float = 0.0, resid: bool = False, resid_objects: tuple = (),
                        shape_bias: tuple = (), resid_gate_dist: float = 0.0, train_shapes: tuple = (),
-                       train_mass: tuple = (), fixed_difficulty: bool = False) -> ManagerBasedRlEnvCfg:
+                       train_mass: tuple = (), fixed_difficulty: bool = False, track: bool = False,
+                       track_w: float = 0.5, short_tasks: bool = False) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -328,9 +334,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         resid=resid and contacts and push_cmd, resid_objects=tuple(resid_objects),
         shape_bias=tuple(tuple(x) for x in shape_bias), resid_gate_dist=float(resid_gate_dist),
         train_shapes=tuple(train_shapes), train_mass=tuple(float(x) for x in train_mass),
-        fixed_difficulty=bool(fixed_difficulty))
+        fixed_difficulty=bool(fixed_difficulty), track_on=bool(track) and contacts and push_cmd)
     if fixed_difficulty:  # no replayed lower levels either
         cfg.commands["goal"].replay_frac = 0.0
+    if track:
+        assert resid and contacts and push_cmd, "request tracking builds on the residual pilot (Stage 4e contacts)"
+    if short_tasks:  # request-tracking pilot: one level of short segments (docs/request_tracking.md)
+        cfg.commands["goal"].levels = (SHORT_LEVEL,)
+        cfg.episode_length_s = SHORT_EPISODE_S
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
@@ -362,6 +373,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                 obs[grp].terms["last_action"] = T(func=mdp.resid_base_last_action, params={"robot": a})
             obs[f"resid_gate_{a}"] = ObservationGroupCfg(terms={"gate": T(func=mdp.resid_gate, params={"robot": a})},
                                                          concatenate_terms=True, enable_corruption=False)
+            if track:  # request tracking: the correction sees its force target band (the base's input is unchanged)
+                obs[f"resid_{a}"].terms["track"] = T(func=mdp.track_obs, params={"robot": a})
     cfg.observations = obs
 
     # -- events: each robot's walker randomization; object geometry, mass and friction -------------
@@ -476,6 +489,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                     rewards[f"over_push_{a}"] = R(func=mdp.over_push, weight=-over_push_w, params={"robot": a})
             else:
                 rewards[f"contact_work_{a}"] = R(func=mdp.contact_work, weight=work_w, params={"robot": a})
+    if track:  # request tracking: a cost for delivered force outside the request's band (0 inside it)
+        for a in AGENTS:
+            rewards[f"track_{a}"] = R(func=mdp.track_cost, weight=-track_w, params={"robot": a})
     if acq_bonus > 0:  # contact curriculum: a one-time bonus per assignment for reaching real contact (30 N+)
         for a in AGENTS:
             rewards[f"contact_acquired_{a}"] = R(func=mdp.contact_acquired, weight=acq_bonus / step_dt, params={"robot": a})

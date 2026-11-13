@@ -282,6 +282,16 @@ class CoopPush2Command(Push2Command):
         self.fs_idx = torch.full((n, 2), -1, dtype=torch.long, device=dev)
         self.fs_dir = torch.zeros(n, 2, 2, device=dev)
         self._fs_sensors = None
+        # request tracking (cfg.track_on): per robot target band (N along its push direction) and phase
+        self.tr_lo = torch.zeros(n, 2, device=dev)  # lower limit (0 outside transport)
+        self.tr_hi = torch.zeros(n, 2, device=dev)  # upper limit
+        self.tr_target = torch.zeros(n, 2, device=dev)  # nominal target (transport: share x F_need, limited)
+        self.tr_phase = torch.zeros(n, 2, dtype=torch.long, device=dev)  # 0 transition, 1 transport, 2 settle, 3 stop
+        self.tr_deliv = torch.zeros(n, 2, device=dev)  # gait-filtered force along the push direction (N)
+        self.tr_err = torch.zeros(n, 2, device=dev)  # normalised error, 0..1 (0 inside the band / in transition)
+        self.tr_limited = torch.zeros(n, dtype=torch.bool, device=dev)  # targets scaled down (split kept) to the cap
+        self.tr_marginal = torch.zeros(n, dtype=torch.bool, device=dev)  # mu m g above tr_marginal_n
+        self.tr_sum = torch.zeros(n, 4, 3, device=dev)  # per phase: samples, sum error, sum delivered/target
         self.c_resid = torch.zeros(n, device=dev)  # part of the wanted push the current pair cannot make (0..1)
         self.c_res_t = torch.zeros(n, device=dev)  # s the residual has been above resid_bad
         self.c_prev_pose = torch.zeros(n, device=dev)  # distance + rho_g x angle error, last step (pose_progress)
@@ -841,10 +851,14 @@ class CoopPush2Command(Push2Command):
         self.push_dir_obj[:] = torch.where(want.view(-1, 1, 1), blend, self.push_dir_obj)
         share = mag / mag.sum(-1, keepdim=True).clamp(min=1e-9)
         self.push_share_nom[:] = torch.where(want.unsqueeze(-1), share, self.push_share_nom)
+        if c.share_adapt or c.share_perturb != 0.0 or c.track_on:
+            self._force_filter()
         if c.share_adapt or c.share_perturb != 0.0:
             self._share_measure(want)  # (measured against the share sent last step)
             share = self._share_correct(share)
         self.push_share[:] = torch.where(want.unsqueeze(-1), share, self.push_share)
+        if c.track_on:
+            self._update_track(want)
         self.c_resid[:] = torch.where(want, r, torch.zeros_like(r))
         self.c_res_t[:] = torch.where(self.c_resid > c.resid_bad, self.c_res_t + dt, torch.zeros_like(self.c_res_t))
 
@@ -867,6 +881,68 @@ class CoopPush2Command(Push2Command):
         w_a = (wz + dw).clamp(-c.push_wmax, c.push_wmax)
         return torch.where(want.unsqueeze(-1), v_a, v_w), torch.where(want, w_a, wz)
 
+    def _force_filter(self) -> None:
+        """Gait filter (fs_tau) of each robot's contact force on the object and of its touching; once per step."""
+        c, dt = self.cfg, self._env.step_dt
+        if self._fs_sensors is None:
+            try:
+                self._fs_sensors = all(self._env.scene[f"push_{a}"] is not None for a in AGENTS)
+            except KeyError:
+                self._fs_sensors = False
+        if not self._fs_sensors:
+            raise RuntimeError("share_adapt / share_perturb / track_on need the robot-object force sensors (push_sensors)")
+        a = min(1.0, dt / max(c.fs_tau, 1e-6))
+        for k, ag in enumerate(AGENTS):
+            self.fs_force[:, k] += a * (object_force_from(self._env, ag) - self.fs_force[:, k])
+            touch = self._env.scene[f"push_{ag}"].data.found.view(self.num_envs, -1).any(-1).float()
+            self.fs_touch[:, k] += a * (touch - self.fs_touch[:, k])
+
+    def _update_track(self, want: torch.Tensor) -> None:
+        """Request tracking: each robot's force target band from the request just sent (push_share, push_dir) and
+        the gait-filtered force it delivers along its push direction. Phases, per robot:
+          0 transition  not engaged on its (newly) assigned contact yet: not scored
+          1 transport   motion wanted, pose error >= tr_settle_d, its share >= tr_withdraw_share: target
+                        share x F_need (F_need = tr_margin x mu m g), on target inside tr_band; if a target exceeds
+                        robot_push_force both robots' targets are scaled by the same factor (split kept, tr_limited)
+          2 settle      motion wanted, pose error < tr_settle_d: only an upper limit, the transport upper limit
+                        tapered with pose error (down to tr_settle_min of it): pushing less to settle is fine
+          3 stop        nothing wanted, or its share < tr_withdraw_share (withdraw): upper limit tr_stop_allow
+        Once engaged, losing touch is not an exemption: delivery decays and is scored as missing."""
+        c = self.cfg
+        along = torch.stack([(self.fs_force[:, k] * self.push_dir_world(k)).sum(-1).clamp(min=0.0) for k in range(2)], -1)
+        self.tr_deliv[:] = along
+        f_need = c.tr_margin * self.c_mu * self.c_mass * 9.81  # (n,)
+        self.tr_marginal[:] = (self.c_mu * self.c_mass * 9.81) > c.tr_marginal_n
+        sh = self.push_share
+        tgt = sh * f_need.unsqueeze(-1)  # (n, 2)
+        cap = torch.full_like(f_need, c.robot_push_force)
+        over = tgt.max(-1).values / cap
+        self.tr_limited[:] = over > 1.0
+        tgt = tgt / over.clamp(min=1.0).unsqueeze(-1)  # same factor for both: the split is kept
+        self.tr_target[:] = tgt
+        pe = self.pose_error()
+        settle = want & (pe < c.tr_settle_d)
+        lo_b, hi_b = c.tr_band
+        taper = (pe / c.tr_settle_d).clamp(c.tr_settle_min, 1.0).unsqueeze(-1)
+        withdraw = sh < c.tr_withdraw_share
+        phase = torch.where(~want.unsqueeze(-1) | withdraw, torch.full_like(self.tr_phase, 3),
+                            torch.where(settle.unsqueeze(-1), torch.full_like(self.tr_phase, 2), torch.ones_like(self.tr_phase)))
+        phase = torch.where(self.c_engaged, phase, torch.zeros_like(phase))
+        self.tr_phase[:] = phase
+        lo = torch.where(phase == 1, lo_b * tgt, torch.zeros_like(tgt))
+        hi = torch.where(phase == 1, hi_b * tgt, torch.where(phase == 2, hi_b * tgt * taper,
+                                                             torch.full_like(tgt, c.tr_stop_allow)))
+        self.tr_lo[:], self.tr_hi[:] = lo, hi
+        norm = torch.maximum(torch.where(phase == 1, tgt, hi), torch.full_like(tgt, c.tr_floor))
+        err = ((lo - along).clamp(min=0.0) + (along - hi).clamp(min=0.0)) / norm
+        self.tr_err[:] = torch.where(phase == 0, torch.zeros_like(err), err.clamp(max=1.0))
+        ratio = along / tgt.clamp(min=1.0)
+        for ph in range(4):
+            m = (phase == ph).float()
+            self.tr_sum[:, ph, 0] += m.sum(-1)
+            self.tr_sum[:, ph, 1] += (m * self.tr_err).sum(-1)
+            self.tr_sum[:, ph, 2] += (m * ratio).sum(-1)
+
     def _share_measure(self, want: torch.Tensor) -> None:
         """Gait-filtered delivered force share and the bounded estimate of delivered - requested share (robot 0).
         Samples count only while the push is wanted, both robots are engaged on their contacts and physically
@@ -879,14 +955,7 @@ class CoopPush2Command(Push2Command):
                 self._fs_sensors = all(self._env.scene[f"push_{a}"] is not None for a in AGENTS)
             except KeyError:
                 self._fs_sensors = False
-        if not self._fs_sensors:
-            raise RuntimeError("share_adapt / share_perturb need the robot-object force sensors (push_sensors)")
         from quadcoop import falls
-        a = min(1.0, dt / max(c.fs_tau, 1e-6))
-        for k, ag in enumerate(AGENTS):
-            self.fs_force[:, k] += a * (object_force_from(self._env, ag) - self.fs_force[:, k])
-            touch = self._env.scene[f"push_{ag}"].data.found.view(self.num_envs, -1).any(-1).float()
-            self.fs_touch[:, k] += a * (touch - self.fs_touch[:, k])
         along = torch.stack([(self.fs_force[:, k] * self.push_dir_world(k)).sum(-1).clamp(min=0.0) for k in range(2)], -1)
         tot = along.sum(-1)
         self.fs_meas[:] = torch.where(tot > 1e-6, along[:, 0] / tot.clamp(min=1e-6), torch.full_like(tot, 0.5))
@@ -924,6 +993,21 @@ class CoopPush2Command(Push2Command):
         corr = corr + c.share_perturb
         s0 = torch.where(interior, (share[:, 0] + corr).clamp(lo, hi), share[:, 0])
         return torch.stack([s0, 1.0 - s0], -1)
+
+    def track_metrics(self) -> dict:
+        """Request tracking, per env so far this episode: share of scored robot-samples per phase and their mean error;
+        mean delivered / target in transport; marginal and limited flags."""
+        s = self.tr_sum
+        tot = s[:, :, 0].sum(-1).clamp(min=1.0)
+        out = {}
+        for ph, nm in ((1, "transport"), (2, "settle"), (3, "stop")):
+            n_ = s[:, ph, 0]
+            out[f"track_{nm}_frac"] = n_ / tot
+            out[f"track_{nm}_err"] = s[:, ph, 1] / n_.clamp(min=1.0)
+        out["track_transport_ratio"] = s[:, 1, 2] / s[:, 1, 0].clamp(min=1.0)
+        out["track_marginal"] = self.tr_marginal.float()
+        out["track_limited"] = self.tr_limited.float()
+        return out
 
     def robot_cap(self, ids=None):
         """Expert envs: the normal (pushing) force one robot can apply, as a share of the force that
@@ -1444,6 +1528,9 @@ class CoopPush2Command(Push2Command):
         # turn practice: turn-in-place success rate = turn_success / turn_task (episode means)
         self.metrics["turn_task"][:] = self.turn_episode.float()
         self.metrics["turn_success"][:] = ((self.metrics["success"] > 0.5) & self.turn_episode).float()
+        if self.cfg.contact_mode and self.cfg.track_on:  # request tracking: per-episode stats (Metrics/goal/track_*)
+            for k_, v_ in self.track_metrics().items():
+                self.metrics[k_] = v_
 
     # -- per-robot geometry -------------------------------------------------------------------
     def obs_rel_yaw(self, robot: str = AGENTS[0]) -> torch.Tensor:
@@ -1803,6 +1890,10 @@ class CoopPush2Command(Push2Command):
             self.fs_hold[env_ids] = 0.0
             self.fs_idx[env_ids] = -1
             self.fs_dir[env_ids] = -cn
+            self.tr_deliv[env_ids] = 0.0
+            self.tr_err[env_ids] = 0.0
+            self.tr_phase[env_ids] = 0
+            self.tr_sum[env_ids] = 0.0
             if c.exec_v2:
                 self.c_cmd[env_ids] = 0
                 self.c_ready_t[env_ids] = 0.0
@@ -2101,6 +2192,18 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     fs_corr_max: float = 0.15
     fs_bias_max: float = 0.5
     share_perturb: float = 0.0  # response preflight only: added to robot 0's requested share (interior shares)
+    # Request tracking (2026-11-13, docs/request_tracking.md): per-robot force targets from the planner's request,
+    # for the request-tracking pilot's reward and its correction's inputs. Off by default (nothing changes).
+    # The total push F_need = tr_margin x mu m g is an initial scale, not a measured threshold.
+    track_on: bool = False
+    tr_margin: float = 1.0
+    tr_band: tuple[float, float] = (0.8, 1.25)  # transport: delivered within this band of the target is on target
+    tr_settle_d: float = 0.3  # m of pose error (distance + rho_g x angle) below which the request is settling
+    tr_settle_min: float = 0.3  # settling: the upper limit tapers with pose error down to this share of transport's
+    tr_stop_allow: float = 20.0  # N: stop / withdraw: force along the push above this is off target
+    tr_withdraw_share: float = 0.05  # a requested share below this is a withdraw request
+    tr_floor: float = 50.0  # N: error normaliser floor (a small target is not scored in tiny units)
+    tr_marginal_n: float = 320.0  # N: mu m g above this marks the condition marginal (beyond demonstrated delivery)
     resid_bad: float = 0.5  # the pair cannot do the job above this residual ...
     resid_dwell_s: float = 1.0  # ... for this long: re-choose now
     resid_margin: float = 0.25  # residual a new pair must gain (hysteresis)
@@ -2857,3 +2960,25 @@ def box_lost(env, max_dist: float = 12.0) -> torch.Tensor:
     d = torch.stack([torch.linalg.norm(g.box_pos()[:, :2] - env.scene[a].data.root_link_pos_w[:, :2], dim=-1)
                      for a in AGENTS], -1)
     return d.min(-1).values > max_dist
+
+
+def track_cost(env, robot: str) -> torch.Tensor:
+    """Request tracking, per robot: normalised error of its gait-filtered force along its push direction against
+    the request's target band (0..1 per second; see CoopPush2Command._update_track). A cost only: being inside the
+    band pays nothing, so standing and pressing is never rewarded by this term."""
+    g = _g(env)
+    return g.tr_err[:, AGENTS.index(robot)]
+
+
+def track_obs(env, robot: str) -> torch.Tensor:
+    """Request tracking inputs of the correction (resid_<robot> group; the frozen base's input is unchanged), (n, 11):
+    own target band lo / hi and the partner's (/ 200 N), own phase one-hot (transition, transport, settle, stop),
+    own delivered force (/ 200 N), marginal and limited flags."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    o = 1 - k
+    ph = torch.nn.functional.one_hot(g.tr_phase[:, k], 4).float()
+    return torch.cat([torch.stack([g.tr_lo[:, k], g.tr_hi[:, k], g.tr_lo[:, o], g.tr_hi[:, o]], -1) / 200.0, ph,
+                      (g.tr_deliv[:, k] / 200.0).unsqueeze(-1), g.tr_marginal.float().unsqueeze(-1),
+                      g.tr_limited.float().unsqueeze(-1)], -1)
+

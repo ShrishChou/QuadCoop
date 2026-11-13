@@ -541,7 +541,8 @@ def main() -> int:
             wrench="wrench" in rules or "expert" in rules, walk_cost=float(ck_cfg.get("walk_cost", 0.3)),
             reselect_min_dist=min_dist, expert="expert" in rules, exec_v2=bool(ck_cfg.get("exec_v2", False)),
             effort=bool(ck_cfg.get("effort", False)), contact_sense=bool(ck_cfg.get("contact_sense", False)),
-            resid=bool(ck_cfg.get("residual")), resid_objects=resid_objects, resid_gate_dist=a.resid_gate_dist)
+            resid=bool(ck_cfg.get("residual")), resid_objects=resid_objects, resid_gate_dist=a.resid_gate_dist,
+            track=bool(ck_cfg.get("track", False)))
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -1140,6 +1141,11 @@ def main() -> int:
                                      g.fs_bias[ti], g.fs_valid[ti].float()]
                         else:
                             cols += [torch.full_like(hd, float("nan"))] * 15
+                        if has_sh and getattr(g.cfg, "track_on", False):  # request tracking: target band, phase, delivery
+                            cols += [x_[ti, k] for x_ in (g.tr_target, g.tr_lo, g.tr_hi, g.tr_deliv, g.tr_err) for k in range(2)]
+                            cols += [g.tr_phase[ti, k].float() for k in range(2)] + [g.tr_marginal[ti].float(), g.tr_limited[ti].float()]
+                        else:
+                            cols += [torch.full_like(hd, float("nan"))] * 14
                         tr_rows.append(torch.stack(cols, -1).cpu().numpy())
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
@@ -1246,7 +1252,9 @@ def main() -> int:
                         f"{x}_{ag}" for ag in AGENTS for x in ("wcmd_vx", "wcmd_vy", "wcmd_wz", "vx", "vy", "wz", "fell")] + [
                         f"cidx_{ag}" for ag in AGENTS] + ["plan_reason", "plan_n"] + [
                         "want_vx", "want_vy", "obj_vx", "obj_vy", "fb_vx", "fb_vy", "fb_wz", "meas_vx", "meas_vy", "meas_wz",
-                        f"share_nom_{AGENTS[0]}", f"share_nom_{AGENTS[1]}", "fs_meas_share", "fs_bias", "fs_valid"]
+                        f"share_nom_{AGENTS[0]}", f"share_nom_{AGENTS[1]}", "fs_meas_share", "fs_bias", "fs_valid"] + [
+                        f"{x}_{ag}" for x in ("tr_target", "tr_lo", "tr_hi", "tr_deliv", "tr_err", "tr_phase") for ag in AGENTS] + [
+                        "tr_marginal", "tr_limited"]
             for rule_ in dict.fromkeys(cases[j][0] for j in tr_ids):
                 pth = ROOT / "logs" / "evals" / f"{prefix}-{rule_}" / "pair" / f"trace_{mass:g}kg.csv.gz"
                 pth.parent.mkdir(parents=True, exist_ok=True)

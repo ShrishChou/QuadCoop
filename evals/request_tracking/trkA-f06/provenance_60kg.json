@@ -1,0 +1,8 @@
+{
+ "requested_kg": 60.0,
+ "applied_kg_min": 60.000003814697266,
+ "applied_kg_max": 60.000003814697266,
+ "requested_friction": 0.6,
+ "applied_friction_min": 0.6000000238418579,
+ "applied_friction_max": 0.6000000238418579
+}

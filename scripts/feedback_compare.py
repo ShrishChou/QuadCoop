@@ -94,6 +94,17 @@ def trace_metrics(rows, scenario):
         m["yaw_unint"] = float(np.max(np.abs(d)))
     else:
         m["yaw_unint"] = np.nan
+    if "tr_phase_anymal1" in rows[0] and not np.all(np.isnan(g("tr_phase_anymal1"))):  # request tracking columns
+        ph = np.concatenate([g(f"tr_phase_{a}")[live] for a in AG])
+        er = np.concatenate([g(f"tr_err_{a}")[live] for a in AG])
+        dv = np.concatenate([g(f"tr_deliv_{a}")[live] for a in AG])
+        tg = np.concatenate([g(f"tr_target_{a}")[live] for a in AG])
+        tr, st = ph == 1, (ph == 2) | (ph == 3)
+        m["trk_ratio"] = float(np.mean(dv[tr] / np.maximum(tg[tr], 1.0))) if tr.any() else np.nan
+        m["trk_err_transport"] = float(np.mean(er[tr])) if tr.any() else np.nan
+        m["trk_err_stop"] = float(np.mean(er[st])) if st.any() else np.nan
+    else:
+        m["trk_ratio"] = m["trk_err_transport"] = m["trk_err_stop"] = np.nan
     raw = [g(f"touching_{a}") > .5 for a in AG]
     m["duty_both"] = float((raw[0] & raw[1])[live].mean()) if live.any() else np.nan
     m["duty_each"] = float(np.mean([r_[live].mean() for r_ in raw])) if live.any() else np.nan
@@ -164,7 +175,8 @@ def response(arms):
 
 
 METRICS = ("success", "pos_err", "yaw_err", "yaw_unint", "fell", "time", "settled", "share_req", "share_deliv",
-           "share_err", "v_err", "w_err", "duty_both", "duty_each", "switches", "share_corr", "v_corr")
+           "share_err", "v_err", "w_err", "duty_both", "duty_each", "switches", "share_corr", "v_corr",
+           "trk_ratio", "trk_err_transport", "trk_err_stop")
 
 
 def compare(arms):
@@ -183,7 +195,8 @@ def compare(arms):
             print(f"| {gname} | {a} | {len(ks)} | " + " | ".join(
                 f"{mean([data[a][k].get(m, np.nan) for k in ks]):.3f}" for m in METRICS) + " |")
     print(f"\nPaired differences vs {base} (mean [95% CI]): success / fell in points, errors in m and deg, time in s")
-    pm = ("success", "fell", "pos_err", "yaw_err", "yaw_unint", "time", "share_err", "v_err", "w_err", "duty_both", "switches")
+    pm = ("success", "fell", "pos_err", "yaw_err", "yaw_unint", "time", "share_err", "v_err", "w_err", "duty_both", "switches",
+          "trk_ratio", "trk_err_transport", "trk_err_stop")
     print("| group | arm | " + " | ".join(pm) + " |")
     print("|---" * (2 + len(pm)) + "|")
     for gname, f in groups:
