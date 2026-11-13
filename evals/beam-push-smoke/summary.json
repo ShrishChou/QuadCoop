@@ -1,0 +1,38 @@
+{
+ "name": "beam-push-smoke",
+ "speeds": [
+  0.6
+ ],
+ "masses": [
+  60.0
+ ],
+ "mus": [
+  0.5
+ ],
+ "horizon_s": 4.0,
+ "settle_s": 2.0,
+ "slot_m": 0.7,
+ "gap_m": 0.05,
+ "cells": {
+  "60 kg / 0.6 m/s": {
+   "dx": 0.916,
+   "v_mean": 0.229,
+   "v_last": 0.23,
+   "yaw_drift": 5.1,
+   "lat": 0.206,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "F_x": 283.7,
+   "F_x_p90": 311.0,
+   "duty_anymal1": 0.83,
+   "duty_anymal2": 0.7,
+   "duty_both": 0.59,
+   "mu_m_g": 294.3,
+   "transported": 0,
+   "n": 1,
+   "dx_by_mu": {
+    "0.5": 0.916
+   }
+  }
+ }
+}

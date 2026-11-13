@@ -1,0 +1,2 @@
+speed,mass,mu_set,rep,mu_obj,mu_floor,prio_obj,prio_floor,mu_eff,mass_sim,mu_m_g,dx,v_mean,v_last,yaw_drift,lat,fell_anymal1,fell_anymal2,t_fall,tipped,measured_s,F_x,F_x_p10,F_x_p50,F_x_p90,F_x_anymal1,impulse_anymal1,duty_anymal1,cy_mean_anymal1,cy_sd_anymal1,F_x_anymal2,impulse_anymal2,duty_anymal2,cy_mean_anymal2,cy_sd_anymal2,duty_both,duty_any
+0.6,60.0,0.5,0,0.5,1.0,2,0,0.5,60.0,294.3,0.916,0.229,0.23,5.1,0.206,0,0,,0,2.0,283.7,259.7,296.1,311.0,163.9,327.9,0.83,0.757,0.028,119.7,239.5,0.7,-0.652,0.06,0.59,0.94

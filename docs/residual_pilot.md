@@ -264,7 +264,7 @@ with its output). wandb: `resid2_beam_s0` (one run, 600 iterations).
 - Reading: success had plateaued with exploration at its floor. The curves alone can't separate a plateau from a
   reward that pays for the wrong behaviour.
 
-**Why requested joint pushes end (`scripts/push_endings.py`, existing traces, CPU only)**
+**Joint force delivery on requested pushes (`scripts/push_endings.py`, existing traces, CPU only)**
 
 Denominator: time when the planner wants motion and engages both robots, each with a commanded share ≥ 0.15.
 Time when only one robot is wanted is excluded.
@@ -273,34 +273,88 @@ Definitions matter here:
 - The raw 10 Hz contact force pulses with the gait, roughly on and off every 0.3–0.5 s.
 - Robots often press 0.25–0.4 m from their assigned point, outside on_contact's 0.25 m drift radius. That happens
   27% of the time at 20 kg and 63% at 80 kg, so the on_contact flag flickers while force is delivered.
-- `push_endings.py` therefore uses physical contact and force, each averaged over 1 s.
+- The script therefore measures **gait-averaged joint force delivery**: each robot touching ≥ 50% of a 1 s window
+  and pushing ≥ 30 N along the command on its 1 s mean.
+- This is not continuous simultaneous contact. Two robots touching in strict alternation form one long delivery
+  bout, a 9 s bout in a 10 s synthetic test with 0 s simultaneous. The "simultaneous %" column reports
+  both-touching at the same sample, unsmoothed.
 - The earlier `heavy.py` reading ("both robots press only 3–6% of the time, never longer than 1 s") came from the
   raw signals and is retracted.
 
-With those definitions, for the baseline on seeds 4000–4002:
-- **Sustained joint pushing happens on heavy beams.** Both robots press together for 31% of the requested time at
-  60 kg and 45% at 80 kg. Pushes of 2 s or more fill 22% and 38% of it, with a 90th-percentile bout of 3.4 s and
-  7.2 s. On 80 kg beams that is about 16 s of sustained joint pushing per episode.
-- **When joint pushes end, a robot has mostly lost touch.** That accounts for 70–81% of endings at every mass. A
-  robot's force drops while it is still touching in 6–21%. Planner reassignment, falls and request changes
-  contribute little. During 76–91% of joint-push time at 40–80 kg, at least one robot is off its assigned point.
-- **Delivered force levels off.** Inside sustained joint pushes, total force along the command is 184 / 209 / 222 N
+What the baseline shows on seeds 4000–4002 (`evals/resid2_pilot/push_endings.md`):
+- **Delivery and simultaneous contact.** Both rise with mass. At 60 kg, delivery fills 31% of the requested time
+  and simultaneous contact 24%; at 80 kg, 45% and 35%. Bouts of 2 s or more fill 22% (60 kg) and 38% (80 kg) of
+  requested time, about 16 s per episode at 80 kg.
+- **How bouts end.** Most end with a robot losing touch: 70–81%. A robot's force drops while touching in 6–21%,
+  and planner request changes account for 4–20%. Reassignment ends none.
+- **Falls.** A robot about to fall loses touch for ≥ 0.3 s first. So falls show up as "touch" endings followed by
+  a fall, 0–11% of them, not as "fell" endings.
+- **Bout-label caveat.** The first version of the script checked the request before falls, so a fall that ended
+  the episode was labelled "request"; that is fixed. Because of the 1 s smoothing, the bout labels describe
+  gait-averaged delivery, not causal events.
+- **Average delivered force.** Inside bouts of 2 s or more, total force along the command is 184 / 209 / 222 N
   (median) at 40 / 60 / 80 kg, with a 90th percentile of 255 / 293 / 294 N.
-- **Per robot, force stays near 120 N at the command limit.** With the forward command held at the walker's 0.8 m/s
-  limit, each robot delivers 114–121 N (median) and 167–171 N (90th percentile) at 60–80 kg. About 14% of the force
-  is lost to misalignment.
-- **Comparison with friction.** Beam friction is randomised over 0.4–0.6, so sliding needs about 235–353 N at 60 kg
-  and 314–471 N at 80 kg. The beam moves (≥ 0.03 m/s) in 41% of sustained-push samples at 80 kg, against 98% at
-  40 kg.
-- Checkpoint 600 shows the same pattern: 225 N median at 60 and 80 kg, and per-robot 118–122 N at the limit.
+- **Force at the command limit.** With the forward command held at the walker's 0.8 m/s limit, each robot delivers
+  114–121 N (median) and 167–171 N (90th percentile) at 60–80 kg. About 14% is lost to misalignment.
+- **Beam motion.** The beam moves (≥ 0.03 m/s) in 41% of sustained-delivery samples at 80 kg, against 98% at 40 kg.
+- Checkpoint 600 shows the same pattern.
 
-Reading, narrowed:
-- At 60–80 kg, failures happen despite sustained joint pushes. Those pushes deliver less force than sliding needs.
-- That force is what the frozen walker produces through its velocity-command interface at its forward limit, in
-  these behaviours. It is not the robot's physical capacity, and a walker or interface trained to push harder could
-  do more.
-- Contact maintenance is still a real loss: lost touch ends most joint pushes, and robots press off their assigned
-  points.
-- At 80 kg, though, better contact maintenance alone would at best deliver about 2 × 170 N, the bottom of the
-  required range.
+What this does and does not establish:
+- These are distributions of the force delivered in these behaviours. They are not capacity:
+  - A 90th percentile is not a maximum.
+  - The maximum forward command doesn't necessarily give the most force. The solo wall test `evals/wf-test`
+    measured about 200 N at 0.6 m/s against 174 N at 0.8 m/s, square to an immovable object, with large swings;
+    its provenance against the current stack is unchecked.
+- μ m g with friction 0.4–0.6 (235–353 N at 60 kg, 314–471 N at 80 kg) is a scale estimate. It isn't a measured
+  sliding threshold: normal loading, force direction and MuJoCo's soft contacts all affect the real one.
+- At 60–80 kg, failures happen while gait-averaged joint delivery is common. Whether different commands with
+  maintained, aligned contact can transport these beams is untested, which is what the next test checks.
 
+**Next: engaged-start beam push test (`scripts/beam_push_test.py`, decided 2026-11-13)**
+- **Setup:** the two ANYmals, frozen walker, unchanged physics, with the beam's friction set per repeat. They start
+  engaged, broadside at ±0.7 m.
+- **Commands:** a constant forward command of 0.4 / 0.6 / 0.8 m/s, with lateral-slot and heading correction.
+- **Cases:** 40 / 60 / 80 kg, friction 0.4 / 0.5 / 0.6 as the three repeats: 27 cases of 20 s.
+- **Measured:** displacement, speed, yaw drift, falls, net force along +x averaged over gait cycles (impulse / time),
+  per-robot impulse, contact duty (each robot, simultaneous), contact positions along the beam, and the recorded
+  friction and mass.
+- **Decision:**
+
+| result | next step |
+|---|---|
+| simple commands transport 60 kg reliably | short engaged-start 40–60 kg training |
+| they also transport 80 kg | keep 80 kg as an execution-learning target |
+| no 60 kg transport despite maintained, aligned contact | investigate the walker command interface before more executor training |
+| contact repeatedly breaks | train acquisition and maintenance, starting from the successful command conditions |
+
+**Engaged-start beam push: results (job 28966157, `evals/beam-push/`)**
+
+Each cell is 3 cases, one per beam friction (0.4 / 0.5 / 0.6); "moved ≥ 1 m" is within 20 s. There were no falls in
+any of the 27 cases. Force is the net force along +x (impulse / time). Simultaneous contact is the share of time
+both robots touch the beam.
+
+| mass | moved ≥ 1 m | speed over the last 10 s at friction 0.4 / 0.5 / 0.6 (m/s) | net force (N) | simultaneous contact | μ m g at 0.4 / 0.5 / 0.6 (N) |
+|---|---|---|---|---|---|
+| 40 kg | 9/9 | 0.44–0.69 / 0.15–0.56 / 0.22–0.43 | 105–237 | 0.27–0.49 | 157 / 196 / 235 |
+| 60 kg | 8/9 | 0.33–0.53 / 0.16–0.33 / 0.03–0.10 | 157–315 | 0.51–0.68 | 235 / 294 / 353 |
+| 80 kg | 4/9 | 0.13–0.36 / 0.02–0.05 / 0.01 | 272–331 | 0.71–0.80 | 314 / 392 / 471 |
+
+- **60 kg:** commanded at 0.4–0.8 m/s, simple pushing transports it at friction 0.4–0.5. At 0.6 the beam moves
+  only 0.03–0.10 m/s, and one case reached 0.89 m.
+- **Delivered force vs the learned executor.** Engaged scripted pushing delivers about 250–315 N at 60 kg. The
+  learned executor's sustained delivery bouts reached 209 N (median) on 60 kg beams.
+- **80 kg:**
+  - The beam moves only at friction 0.4: 2.7–5.9 m.
+  - At 0.5 and 0.6 it stalls, with net force 272–331 N against μ m g of 392–471 N.
+  - Contact is maintained and aligned throughout: both robots touch 71–80% of the time, and each robot's position
+    along the beam stays within about 0.1 m (standard deviation) of its slot.
+  - The force doesn't rise with the speed command: 0.4 m/s delivers about as much as 0.8 m/s.
+- **0.8 m/s on lighter beams** sometimes turns the beam 63–75° as a robot slides off its slot.
+- **Limits:** μ m g is still only a scale. At 40 kg / friction 0.4 the beam slid at 0.44 m/s with 147 N, below the
+  157 N μ m g. There is one case per friction and speed, and the GPU runs are not bit-reproducible.
+
+Decision table:
+- **60 kg (40–60 kg):** row 1 applies. A demonstrated pushing behaviour exists, so short engaged-start 40–60 kg
+  training is justified.
+- **80 kg:** row 3 applies. The beam is not transported at friction ≥ 0.5 despite maintained, aligned contact, so
+  80 kg needs a look at the walker command interface before it is treated as an execution-learning target.

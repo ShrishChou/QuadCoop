@@ -8,7 +8,8 @@ Decision and reading: `docs/residual_pilot.md`, section "Pilot 2 outcome".
   restarts on resume. All starts are beam, 20–80 kg.
 - `push_endings.md`: output of
   `python scripts/push_endings.py r2dev-base:4000,4001,4002 r2dev-resid:4000 r2dev-resid600:4001,4002 --objects=beam`.
-  It shows why requested joint pushes end, and the force delivered in sustained joint pushes.
+  Gait-averaged joint force delivery on requested pushes, how its bouts end, simultaneous contact, and the force
+  delivered in sustained bouts (see the script docstring for what the bout labels do and do not mean).
 - `heavy.py`, `heavy_s4000.md`: the first 80 kg check. **Superseded**: it used the raw 10 Hz force and the
   on_contact flag, and its "no sustained joint pressing" reading is retracted (see the script docstring).
 

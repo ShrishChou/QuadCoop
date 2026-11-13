@@ -196,6 +196,11 @@ class CoopPush2Command(Push2Command):
         self.env_tol_level = torch.zeros(n, dtype=torch.long, device=dev)
         self.tol_pos = torch.full((n,), cfg.success_pos_tol, device=dev)
         self.tol_yaw = torch.full((n,), math.radians(cfg.success_yaw_tol_deg), device=dev)
+        # resid: each robot's frozen base output (raw, unclipped) from the last step, written by the residual policy
+        # wrapper before env.step and zeroed at reset, like the walker term's raw action. The base reads this as
+        # its last_action, so it gets the same action history as when it runs alone. Created in every mode, since
+        # _resample_command zeroes it on any reset (it used to live in _build_contact_tables: non-contact envs crashed).
+        self.resid_base_last = torch.zeros(n, 2, 3, device=dev)
         if cfg.contact_mode:
             self._build_contact_tables(nom, nom_rest)
 
@@ -292,10 +297,6 @@ class CoopPush2Command(Push2Command):
         self.c_slow_wait = torch.zeros(n, device=dev)  # s until a slow-arrival re-plan may fire again (slow_min_s)
         self.c_rhist = torch.zeros(n, 2, RESID_H, RESID_HF, device=dev)  # resid: per robot, newest first
         self.c_rhist_t = torch.zeros(n, device=dev)
-        # resid: each robot's frozen base output (raw, unclipped) from the last step, written by the residual policy
-        # wrapper before env.step and zeroed at reset, like the walker term's raw action. The base reads this as
-        # its last_action, so it gets the same action history as when it runs alone.
-        self.resid_base_last = torch.zeros(n, 2, 3, device=dev)
         self.c_replan_weak = torch.zeros(n, device=dev)  # and no progress the force model expects (pair at its limit)
         self.c_weak = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress, pair at its limit
         self.c_strength = torch.full((n,), 1e6, device=dev)  # current pair: most push along the wanted motion / sliding force
