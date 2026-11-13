@@ -237,3 +237,43 @@ for tracking feasible requests."
     no-regression on the A tasks above.
   - Only after that would the planner feedback (B, then C) be re-tested, on the same tasks and seed.
 - No training has been started.
+
+## Diagnostic: where the share request is lost (2026-11-13, after review of 2bc7fe1)
+
+**1. Applied commands in the P1 traces** (closed loop, 12 matched tasks)
+- Robot 1's (anymal1's) requested share changed by +0.377 between the −0.2 and +0.2 arms.
+- Its walker forward command changed by −0.009 m/s on average. Robot 2's changed by −0.056 m/s.
+- Task-level spread was ±0.1–0.4 m/s in both directions, which is closed-loop divergence.
+- Lateral and turn commands didn't move consistently either.
+- So the request is lost before the walker.
+
+**2. Open-loop probe** (`contact_test.py --share-probe 0.2`; `evals/planner_feedback/probe-share/summary.json`)
+- Setup: the same tasks as P1, contacts fixed, 1,130 samples at 10 Hz. Only samples where the planner requests
+  both robots count.
+- At each sample, the executor is rerun on the same observation with only its share input changed: robot 1 ±0.2,
+  robot 2 the opposite. As a control, both push-direction inputs are instead rotated ±15°.
+
+| per robot, mean over samples | ±0.2 share (40 / 60 kg) | ±15° direction (control) |
+|---|---|---|
+| raw actor output change, vx / vy / wz | 0.04–0.05 / 0.02–0.03 / 0.02 | 0.05–0.07 / 0.28–0.46 / 0.19–0.21 |
+| clipped action change, vx | 0.02–0.03 | 0.02–0.03 |
+| walker command change, vx | 0.015–0.024 m/s | 0.011–0.019 m/s |
+| walker command change, vy / wz | 0.004–0.008 | 0.08–0.11 |
+| raw vx output already past ±1 | 57–69% of samples | — |
+
+- **Signs are right.** A higher share for a robot raises its forward command, by +0.04–0.06 m/s per unit share,
+  and the partner's falls.
+- **The response is negligible.** A 0.4 share swing moves the forward command by about 0.02 m/s, out of the
+  walker's 1.4 m/s range.
+- **The probe isn't blind.** The same probe finds the executor ten times more sensitive to its push-direction
+  input, but that sensitivity is in lateral and turning commands, not forward.
+- **Clipping is a secondary loss.** The forward output is saturated past ±1 on about 60% of samples, and clipping
+  removes about 40% of the already small raw change. It isn't the main cause.
+
+**3. Delivered force** (P1): no measurable change, consistent with the commands not changing.
+
+**Diagnosis.** The executor's actor barely responds to the share input; the loss is at stage 2 (executor).
+- Responsiveness has to be trained.
+- Any trained forward response must act below the clip: the forward output is usually saturated, and the base's
+  saturation would otherwise hide it. The residual's clipped composition (pilot 2) handles this.
+- The command interface itself doesn't need changing first.

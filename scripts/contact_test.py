@@ -115,6 +115,86 @@ SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the forc
 
 
 PLANNER_CHECK: dict = {}  # --planner-check: per mass, steps checked and the largest output difference
+SHARE_PROBE: dict = {}  # --share-probe: per mass, accumulated response statistics
+
+
+def share_probe_step(policy, obs, base, g, agents, delta, mass) -> None:
+    """--share-probe: open-loop sensitivity of the executor to its push-share input (and, as a control, to its push
+    direction input) on the current observation. Counts only samples where the planner requests both robots (motion
+    wanted, both engaged, interior shares). Per robot and command component: mean |change| of the raw actor output, of
+    the clipped action and of the walker command (m/s, rad/s), the mean signed command change per +1 share, and the share
+    of samples with the raw output already past +/-1 (where clipping hides any change)."""
+    import torch
+    om = base.observation_manager
+    want = (torch.linalg.norm(g.c_vdes, dim=-1) > 0.02) | (g.c_wdes.abs() > 0.02)
+    sel = want & g.c_engaged.all(-1) & (g.push_share.min(-1).values >= 0.15)
+    if not bool(sel.any()):
+        return
+    rec = SHARE_PROBE.setdefault(f"{mass:g}", {"samples": 0})
+    terms_ = [base.action_manager.get_term(f"walker_{ag}") for ag in agents]
+    half = [(t_._hi - t_._lo) * 0.5 for t_ in terms_]
+    offs = {}
+    for ag in agents:
+        grp = f"actor_{ag}"
+        names, dims = om.active_terms[grp], om.group_obs_term_dim[grp]
+        o_ = 0
+        for nm, dm in zip(names, dims):
+            sz = 1
+            for x in dm:
+                sz *= int(x)
+            if nm == "push":
+                assert sz == 4, f"push term has {sz} entries (history?)"
+                offs[ag] = o_
+            o_ += sz
+    def run(mod):
+        ob = obs.clone()
+        for k, ag in enumerate(agents):
+            x = ob[f"actor_{ag}"].clone()
+            mod(k, x[:, offs[ag]:offs[ag] + 4])
+            ob[f"actor_{ag}"] = x
+        with torch.no_grad():
+            return [policy.actors[ag](ob) for ag in agents]
+    def share(sign):
+        def f(k, v):
+            v[:, 2] = (v[:, 2] + (sign if k == 0 else -sign) * delta).clamp(0.0, 1.0)
+        return f
+    def turn(deg):
+        def f(k, v):
+            c_, s_ = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+            x0, y0 = v[:, 0].clone(), v[:, 1].clone()
+            v[:, 0], v[:, 1] = c_ * x0 - s_ * y0, s_ * x0 + c_ * y0
+        return f
+    base_a = run(lambda k, v: None)
+    for name, plus, minus, scale in (("share", share(1.0), share(-1.0), 2.0 * delta), ("dir", turn(15.0), turn(-15.0), 30.0)):
+        ap_, am_ = run(plus), run(minus)
+        for k, ag in enumerate(agents):
+            d_raw = (ap_[k] - am_[k])[sel]
+            d_clip = (ap_[k].clamp(-1, 1) - am_[k].clamp(-1, 1))[sel]
+            d_cmd = d_clip * half[k]
+            r = rec.setdefault(f"{name}_{ag}", {"abs_raw": [0.0] * 3, "abs_clip": [0.0] * 3, "abs_cmd": [0.0] * 3,
+                                               "signed_cmd_per_unit": [0.0] * 3, "past1": [0.0] * 3, "n": 0})
+            nn_ = int(sel.sum())
+            for c_ in range(3):
+                r["abs_raw"][c_] += float(d_raw[:, c_].abs().sum())
+                r["abs_clip"][c_] += float(d_clip[:, c_].abs().sum())
+                r["abs_cmd"][c_] += float(d_cmd[:, c_].abs().sum())
+                r["signed_cmd_per_unit"][c_] += float(d_cmd[:, c_].sum()) / scale
+                r["past1"][c_] += float((base_a[k][sel][:, c_].abs() > 1.0).float().sum())
+            r["n"] += nn_
+    rec["samples"] += int(sel.sum())
+
+
+def share_probe_summary() -> dict:
+    out = {}
+    for m, rec in SHARE_PROBE.items():
+        out[m] = {"samples": rec["samples"]}
+        for key, r in rec.items():
+            if key == "samples":
+                continue
+            n_ = max(r["n"], 1)
+            out[m][key] = {k2: [round(v / n_, 4) for v in r[k2]] for k2 in ("abs_raw", "abs_clip", "abs_cmd",
+                                                                           "signed_cmd_per_unit", "past1")}
+    return out
 
 
 def ref_update_push(self) -> None:
@@ -305,6 +385,11 @@ def main() -> int:
     ap.add_argument("--planner-check", action="store_true",
                     help="stage4: every step also run the reference force split (_update_push as of 7a8b7c6) on the same "
                          "state and record the largest difference of its outputs (flag-off equivalence check)")
+    ap.add_argument("--share-probe", type=float, default=0.0,
+                    help="stage4: at every 10 Hz sample, also run the executor on the same observation with only its push-share "
+                         "input changed (anymal1 +/- this, anymal2 the opposite) and, as a control, with both push directions "
+                         "rotated +/- 15 deg; record the change of the raw actor output, the clipped action and the walker "
+                         "command (summary.json: share_probe). Open loop: the env still steps with the unperturbed action")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -803,6 +888,8 @@ def main() -> int:
                     sync(); t0 = time.time()  # noqa: E702
                     pol_act = policy(obs, env=base)
                     sync(); t_pol += time.time() - t0  # noqa: E702
+                    if a.share_probe > 0 and stage4 and i % 5 == 0:
+                        share_probe_step(policy, obs, base, g, AGENTS, a.share_probe, mass)
                 else:
                     pol_act = None
                 c_o, s_o = torch.cos(obj_yaw), torch.sin(obj_yaw)
@@ -1606,7 +1693,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
                "settle_s": a.settle_s, "slow_min_s": a.slow_min_s, "coordinator": a.coordinator,
                "friction": getattr(a, "friction", None), "scenarios": getattr(a, "scenarios", ""),
-               "planner_check": PLANNER_CHECK or None,
+               "planner_check": PLANNER_CHECK or None, "share_probe": share_probe_summary() or None,
                "coord_ckpt": a.coord_ckpt, "coord_mode": a.coord_mode, "seed": a.seed,
                "resid_objects": getattr(a, "resid_gate", None),
                "resid_gate_dist": a.resid_gate_dist, "resid_compose": getattr(a, "resid_compose", None),
