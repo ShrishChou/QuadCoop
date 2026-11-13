@@ -1670,6 +1670,7 @@ class CoopPush2Command(Push2Command):
             yaw_noise = sc.get("yaw_noise", yaw_noise)
             park = sc.get("park", park)  # eval "solo": the other robot stands far away
         cpose = None
+        self.resid_base_last[env_ids] = 0.0  # residual: the base's action history restarts with the episode (any planner)
         if c.contact_mode:
             forced = sc.get("contact_idx") if sc is not None else None
             forced_rule = sc.get("contact_rule") if sc is not None else None
@@ -1717,7 +1718,6 @@ class CoopPush2Command(Push2Command):
                 self.c_slow_wait[env_ids] = 0.0
                 self.c_rhist[env_ids] = 0.0
                 self.c_rhist_t[env_ids] = 0.0
-                self.resid_base_last[env_ids] = 0.0
                 self.c_replan_weak[env_ids] = 0.0
                 self.c_weak[env_ids] = False
                 self.c_strength[env_ids] = 1e6
