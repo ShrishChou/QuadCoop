@@ -1,6 +1,6 @@
 # Request-tracking pilot: teach the executor to follow feasible pushing requests
 
-Status: preflight passed; training `track_beam_s0` (job 28988820, 300 iterations) running. Written 2026-11-13, before any preflight or training result. Changes after
+Status: **closed, failed the declared criteria (2026-11-13).** Checkpoint 300 did not learn to follow requests. Recommendation at the end. Written 2026-11-13, before any preflight or training result. Changes after
 results go under "Amendments", with a reason.
 
 **Why.** `docs/planner_feedback.md` found that the frozen executor (turn_debug) barely responds to the planner's
@@ -170,3 +170,81 @@ Both use the same tasks as `docs/planner_feedback.md`: seed 4200, beam, S_straig
 
 - The frozen executor under-delivers in transport (median 0.6 of target).
 - It over-delivers when asked to stop or withdraw (stop error 0.38).
+
+## Results: checkpoint 300 (`evals/request_tracking/`)
+
+- Training: `track_beam_s0`, job 28988820, 48 min, wandb run `track_beam_s0`.
+- All 33,325 episode starts were beam, in 40–60 kg (`reset_counts.json`).
+- Evals: jobs 28994475 (comparison) and 28994476 (response).
+
+**R1, responsiveness (held out): FAIL** (`r1_share_response.md`; 12 matched tasks, contacts fixed)
+
+| group | requested change, robot 1 (anymal1) | delivered change [95% CI] |
+|---|---|---|
+| all | +0.376 | −0.018 [−0.053, +0.016] |
+| 40 kg | +0.364 | −0.005 [−0.062, +0.050] |
+| 60 kg | +0.388 | −0.031 [−0.069, −0.006] |
+
+That is no response, the same as the frozen executor (P1: +0.000).
+
+**Main condition, T vs A** (32 tasks; `compare_f05.md`)
+
+| criterion | A | T | T − A [95% CI] | verdict |
+|---|---|---|---|---|
+| F1 transport delivered / target (task means) | 0.63 | 0.63 | +0.00 [−0.04, +0.04] | FAIL (≥ 0.8 needed) |
+| F1 transport error | 0.291 | 0.302 | +0.01 [−0.01, +0.04] | FAIL (≤ A needed) |
+| F2 settle + stop error | 0.331 | 0.318 | −0.00 [−0.12, +0.10] | pass (≤ A + 0.02) |
+| P1 success | 7/32 | 5/32 | −6.25 pts [−21.9, +9.4] | FAIL (≥ 0 needed) |
+| P2 falls | 6/32 | 4/32 | −6.25 pts [−21.9, +9.4] | pass (≤ +2 tasks) |
+| P3 final position error (m) | 0.343 | 0.349 | +0.01 [−0.08, +0.09] | pass (≤ +0.05) |
+
+- By task: T gained 2 tasks (S_straight 40 kg) and lost 4 (1 at 40 kg, 3 at 60 kg, one of them a fall).
+- Straight: 7 → 5 successes.
+- Turning: 0 → 0 successes; final heading error 7.7° → 5.6° (−2.1° [−4.5, −0.0]).
+- Finishing: settled after success 7 → 5.
+- Stress (60 kg, friction 0.6, marginal, 16 tasks): success 1 → 0, falls 2 → 5. Stop error 0.14 → 0.01, but that
+  phase is rare there.
+- Note: arm A was rerun with the current code on the same seed. Its falls went from 3 (`fbA-f05`) to 6, so the GPU
+  runs aren't bit-reproducible. Both arms here come from the current code.
+
+**Why: the correction did not learn the skill** (`learning_curves_by50.md`)
+
+| iterations | std | mean command change | transport error | delivered / target | stop error |
+|---|---|---|---|---|---|
+| 1–50 | 0.150 | 0.000 | 0.315 | 0.56 | 0.33 |
+| 151–200 | 0.050 | 0.040 | 0.357 | 0.55 | 0.33 |
+| 251–300 | 0.050 | 0.044 | 0.366 | 0.54 | 0.33 |
+
+- The correction stayed tiny: a mean change of 0.044 action units, about 0.03 m/s, against a ±1.2 forward bound
+  shown to be expressible.
+- Exploration reached its 0.05 floor by iteration ~150.
+- The tracking error didn't fall during training: transport error slightly rose, and delivered / target and stop
+  error were flat.
+- The tracking cost was of the same order as the progress terms (per-step episode means: tracking −0.10, pose
+  progress +0.12, contact work +0.08), so it wasn't negligible. Yet PPO did not find corrections that reduced it.
+- Training success settled at 0.41–0.45 after the first ~50 iterations, which are biased toward quick episodes.
+
+Reading:
+- This is a learning failure, not evidence that the skill can't be expressed: the preflight shows the controller can
+  reach maintain, reduce and stop.
+- Candidate causes, none tested:
+  - exploration too small for a ±1.2 bound (std 0.15 → 0.05 in action units);
+  - a sparse, delayed signal (1 s filtered force);
+  - little variation in requests within these tasks (requested share mean 0.50–0.52).
+
+## Recommendation
+
+- Do not extend this run or adopt checkpoint 300. Keep the code (off by default).
+- Before more RL, establish that request tracking is achievable through the frozen walker's command interface, as
+  was done for transport with `beam_push_test.py`. Run a scripted request-following controller:
+  - the frozen executor plus a hand-written forward correction;
+  - e.g. Δvx = k (target − delivered force) along the push, bounded by the ±1.2 range;
+  - on P1's protocol (±0.2 share, contacts fixed) and on the A tasks.
+- Decision:
+  - **If the scripted tracker makes the delivered share follow requests** (R1) and keeps transport (P1–P3): the RL
+    failure is a learning problem. The next run should start from that behaviour (e.g. initialise or regularise the
+    correction toward the scripted tracker) or explore more, with the same declared criteria.
+  - **If even the scripted tracker cannot move delivered force with the forward command:** the walker's velocity
+    interface doesn't regulate push force in these contacts. Investigate the command interface (e.g. the force at a
+    given command and contact, as the earlier `wf-test` wall test began to do) before any more executor training.
+- No further training has been started.
