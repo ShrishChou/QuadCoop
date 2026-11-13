@@ -1,6 +1,6 @@
 # Beam-focused residual execution pilot
 
-Status: implemented; 2-iteration check passed (job 28878832: base weights unchanged, correction updated); pilot trained (1,500 iterations), but found invalid on review (see Amendments); development evaluation cancelled. Written 2026-11-12, before any training. Changes after results go
+Status: **closed without adoption (2026-11-13)**; see "Pilot 2 outcome" at the end. Pilot 1 (1,500 iterations) was found invalid on review (see Amendments). The frozen turn_debug executor stays the reference; seeds 5000–5002 remain unused. Written 2026-11-12, before any training. Changes after results go
 under "Amendments", with a reason.
 
 ## Why beam, and what fails
@@ -234,3 +234,73 @@ ALGO=mappo SEED=0 RUN_NAME=resid2_beam_s0 ITERS=300 EXTRA="--pair anymal --partn
   useful force explain the result but are not required to rise: better positioning can move the object with
   less force. The pilot 1 acceptance criteria and held-out seeds (5000–5002) are unchanged and come after
   that.
+
+## Pilot 2 outcome (closed 2026-11-13, written after the results)
+
+Evidence: `evals/resid2_pilot/` (learning curves 0–600, reset counts, `push_endings.md`, the superseded `heavy.py`
+with its output). wandb: `resid2_beam_s0` (one run, 600 iterations).
+
+**Results against the frozen baseline (matched beam tasks, 20–80 kg, start behind, 3 reps)**
+
+| checkpoint | seeds | tasks | success base → resid | paired Δ success [95% CI] | falls base → resid | paired Δ falls [95% CI] |
+|---|---|---|---|---|---|---|
+| 300 | 4000 | 48 | 14 → 18 (29.2% → 37.5%) | +8.3 [−6.2, +22.9] | 18 → 14 | −8.3 [−22.9, +8.3] |
+| 600 (preselected) | 4001, 4002 | 96 | 25 → 25 (26.0% → 26.0%) | +0.0 [−7.3, +7.3] | 32 → 27 | −5.2 [−13.5, +3.1] |
+
+- At checkpoint 300, 8 failures became successes and 4 successes were lost; 10 falls were avoided and 6 were new.
+- At checkpoint 600, 7 failures became successes and 7 successes were lost; 11 falls were avoided and 6 were new.
+- At checkpoint 600, 80 kg had no successes in either arm, and 60 kg went from 0/24 to 1/24.
+- After the settling window, 14 of 25 checkpoint-600 successes stayed in tolerance, against 12 of 25 for the baseline.
+- The two checkpoints were evaluated on different seeds, so this doesn't show that 300 → 600 made the policy worse.
+- Decision: checkpoint 600 doesn't beat its matched baseline and stays below the >40% beam target. The pilot closes
+  without adoption: no further extension, and no confirmation evaluation on 5000–5002.
+
+**Training curves (`learning_curves_by50.md`)**
+- Iterations 301–600 repeat the shape of iterations 1–300. Early success is high (biased toward episodes that end
+  quickly) and settles at 0.35–0.37 (iterations 251–300 and 551–600).
+- Falls settle at 0.13–0.16 per robot.
+- The policy std reached its 0.05 floor by about iteration 250 and stayed there.
+- The mean command change kept creeping up (0.060 → 0.069).
+- Reading: success had plateaued with exploration at its floor. The curves alone can't separate a plateau from a
+  reward that pays for the wrong behaviour.
+
+**Why requested joint pushes end (`scripts/push_endings.py`, existing traces, CPU only)**
+
+Denominator: time when the planner wants motion and engages both robots, each with a commanded share ≥ 0.15.
+Time when only one robot is wanted is excluded.
+
+Definitions matter here:
+- The raw 10 Hz contact force pulses with the gait, roughly on and off every 0.3–0.5 s.
+- Robots often press 0.25–0.4 m from their assigned point, outside on_contact's 0.25 m drift radius. That happens
+  27% of the time at 20 kg and 63% at 80 kg, so the on_contact flag flickers while force is delivered.
+- `push_endings.py` therefore uses physical contact and force, each averaged over 1 s.
+- The earlier `heavy.py` reading ("both robots press only 3–6% of the time, never longer than 1 s") came from the
+  raw signals and is retracted.
+
+With those definitions, for the baseline on seeds 4000–4002:
+- **Sustained joint pushing happens on heavy beams.** Both robots press together for 31% of the requested time at
+  60 kg and 45% at 80 kg. Pushes of 2 s or more fill 22% and 38% of it, with a 90th-percentile bout of 3.4 s and
+  7.2 s. On 80 kg beams that is about 16 s of sustained joint pushing per episode.
+- **When joint pushes end, a robot has mostly lost touch.** That accounts for 70–81% of endings at every mass. A
+  robot's force drops while it is still touching in 6–21%. Planner reassignment, falls and request changes
+  contribute little. During 76–91% of joint-push time at 40–80 kg, at least one robot is off its assigned point.
+- **Delivered force levels off.** Inside sustained joint pushes, total force along the command is 184 / 209 / 222 N
+  (median) at 40 / 60 / 80 kg, with a 90th percentile of 255 / 293 / 294 N.
+- **Per robot, force stays near 120 N at the command limit.** With the forward command held at the walker's 0.8 m/s
+  limit, each robot delivers 114–121 N (median) and 167–171 N (90th percentile) at 60–80 kg. About 14% of the force
+  is lost to misalignment.
+- **Comparison with friction.** Beam friction is randomised over 0.4–0.6, so sliding needs about 235–353 N at 60 kg
+  and 314–471 N at 80 kg. The beam moves (≥ 0.03 m/s) in 41% of sustained-push samples at 80 kg, against 98% at
+  40 kg.
+- Checkpoint 600 shows the same pattern: 225 N median at 60 and 80 kg, and per-robot 118–122 N at the limit.
+
+Reading, narrowed:
+- At 60–80 kg, failures happen despite sustained joint pushes. Those pushes deliver less force than sliding needs.
+- That force is what the frozen walker produces through its velocity-command interface at its forward limit, in
+  these behaviours. It is not the robot's physical capacity, and a walker or interface trained to push harder could
+  do more.
+- Contact maintenance is still a real loss: lost touch ends most joint pushes, and robots press off their assigned
+  points.
+- At 80 kg, though, better contact maintenance alone would at best deliver about 2 × 170 N, the bottom of the
+  required range.
+
