@@ -191,7 +191,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        hold_rand: float = 0.0, hold_cost_w: float = 1.0, credit_press: float = 0.0,
                        work_w: float = 3.0, effort: bool = False, over_push_w: float = 1.0,
                        contact_sense: bool = False, acq_bonus: float = 0.0, time_cost: float = 0.0,
-                       touch_cost: float = 0.0) -> ManagerBasedRlEnvCfg:
+                       touch_cost: float = 0.0, resid: bool = False, resid_objects: tuple = (),
+                       shape_bias: tuple = ()) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -282,7 +283,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
-    if reward_set == "r8" or guide or push_sensors or "compliant" in kinds.values():
+    if reward_set == "r8" or guide or push_sensors or resid or "compliant" in kinds.values():
         # contact between each robot and the object (work_credit, bump cost; a compliant walker's force input)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
@@ -322,7 +323,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         wrench=wrench, push_cmd=push_cmd and contacts, reselect_min_dist=reselect_min_dist,
         expert=expert, turn_full_dist=1.0 if expert else 0.0, finish_dist=0.5 if expert else 0.0,
         exec_v2=exec_v2 and push_cmd and contacts, hold_rand=hold_rand if exec_v2 else 0.0,
-        effort=effort and push_cmd and contacts, tol_levels=tuple(tuple(x) for x in tol_levels))
+        effort=effort and push_cmd and contacts, tol_levels=tuple(tuple(x) for x in tol_levels),
+        resid=resid and contacts and push_cmd, resid_objects=tuple(resid_objects),
+        shape_bias=tuple(tuple(x) for x in shape_bias))
 
     # -- observations -------------------------------------------------------------------------------
     T = ObservationTermCfg
@@ -345,6 +348,13 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                                            enable_corruption=False)
     obs["privileged"] = ObservationGroupCfg(terms={"box_physics": T(func=hb.box_physics)},
                                             concatenate_terms=True, enable_corruption=False)
+    if resid:  # residual execution pilot: the correction's own inputs and its per-env gate
+        assert contacts and push_cmd, "the residual pilot builds on Stage 4e (push_cmd) contacts"
+        for a in AGENTS:
+            obs[f"resid_{a}"] = ObservationGroupCfg(terms={"resid": T(func=mdp.resid_obs, params={"robot": a})},
+                                                    concatenate_terms=True, enable_corruption=False)
+        obs["resid_gate"] = ObservationGroupCfg(terms={"gate": T(func=mdp.resid_gate)}, concatenate_terms=True,
+                                                enable_corruption=False)
     cfg.observations = obs
 
     # -- events: each robot's walker randomization; object geometry, mass and friction -------------

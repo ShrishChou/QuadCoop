@@ -282,6 +282,8 @@ class CoopPush2Command(Push2Command):
         self.c_replans = torch.zeros(n, device=dev)  # re-plans by cause (logged): no progress,
         self.c_replan_slow = torch.zeros(n, device=dev)  # slow arrival
         self.c_slow_wait = torch.zeros(n, device=dev)  # s until a slow-arrival re-plan may fire again (slow_min_s)
+        self.c_rhist = torch.zeros(n, 2, RESID_H, RESID_HF, device=dev)  # resid: per robot, newest first
+        self.c_rhist_t = torch.zeros(n, device=dev)
         self.c_replan_weak = torch.zeros(n, device=dev)  # and no progress the force model expects (pair at its limit)
         self.c_weak = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress, pair at its limit
         self.c_strength = torch.full((n,), 1e6, device=dev)  # current pair: most push along the wanted motion / sliding force
@@ -1014,6 +1016,29 @@ class CoopPush2Command(Push2Command):
             self.c_reach_lim[e, k] = self.reach_limit(d)
             self.c_switches[e] += 1
 
+    def _resid_sample(self) -> torch.Tensor:
+        """(n, 2, RESID_HF): per robot, [own force along its push / 200 N, partner's / 200 N, object speed along
+        the wanted motion / 0.5 m/s, own on-contact]."""
+        fa = torch.stack([(object_force_from(self._env, AGENTS[k]) * self.push_dir_world(k)).sum(-1) for k in range(2)], -1)
+        vd = self.c_vdes
+        u = vd / torch.linalg.norm(vd, dim=-1, keepdim=True).clamp(min=1e-6)
+        sp = (self.box_vel()[:, :2] * u).sum(-1) * (torch.linalg.norm(vd, dim=-1) > 1e-3).float()
+        on = torch.stack([self.on_contact(k).float() for k in range(2)], -1)
+        out = []
+        for k in range(2):
+            out.append(torch.stack([fa[:, k] / 200.0, fa[:, 1 - k] / 200.0, sp / 0.5, on[:, k]], -1))
+        return torch.stack(out, 1)
+
+    def _update_resid_hist(self, dt: float) -> None:
+        """Every 0.1 s, push the newest sample (residual-pilot inputs)."""
+        self.c_rhist_t += dt
+        due = self.c_rhist_t >= 0.1 - 1e-6
+        if bool(due.any()):
+            new = self._resid_sample()
+            shifted = torch.cat([new.unsqueeze(2), self.c_rhist[:, :, :-1]], 2)
+            self.c_rhist[:] = torch.where(due[:, None, None, None], shifted, self.c_rhist)
+            self.c_rhist_t[:] = torch.where(due, torch.zeros_like(self.c_rhist_t), self.c_rhist_t)
+
     def _propose_expert(self, ids: torch.Tensor) -> dict:
         """Expert planner v2 (rule 4): the contact pair AND which robot takes each, together, at the
         lowest cost J = residual + time_weight x (slower robot's arrival, s) + stop_weight x (robots
@@ -1452,6 +1477,8 @@ class CoopPush2Command(Push2Command):
                         self._reselect(run[~ex])
                     else:
                         self._reselect(run)
+            if self.cfg.resid:
+                self._update_resid_hist(dt)
             # the approach potential's baseline for the next step (after resets and re-selections, so
             # a new contact or a new episode never pays for the jump)
             for k in range(len(AGENTS)):
@@ -1546,7 +1573,12 @@ class CoopPush2Command(Push2Command):
             torch.tensor([nm == c.only for nm in OBJ_NAMES2], device=dev).unsqueeze(0)
         gumbel = -torch.log(-torch.log(torch.rand_like(masses).clamp(1e-9, 1 - 1e-9)))
         gap_to_window = torch.relu(lo - masses) + torch.relu(masses - hi)
-        score = torch.where(ok, torch.log(self.shape_weight).unsqueeze(0) + gumbel,
+        sw = self.shape_weight
+        if c.shape_bias:
+            bias = dict(c.shape_bias)
+            sw = sw * torch.tensor([float(bias.get(nm[len("obj_"):], 1.0)) for nm in OBJ_NAMES2], device=dev)
+            ok = ok & (sw > 0).unsqueeze(0)
+        score = torch.where(ok, torch.log(sw.clamp(min=1e-12)).unsqueeze(0) + gumbel,
                             torch.where(fallback, -1e6 - gap_to_window, torch.full_like(masses, -1e9)))
         shape = score.argmax(-1)
         if c.need_frac > 0 and c.only is None:
@@ -1661,6 +1693,8 @@ class CoopPush2Command(Push2Command):
                 self.c_plan_n[env_ids] = 0.0
                 self.c_replan_slow[env_ids] = 0.0
                 self.c_slow_wait[env_ids] = 0.0
+                self.c_rhist[env_ids] = 0.0
+                self.c_rhist_t[env_ids] = 0.0
                 self.c_replan_weak[env_ids] = 0.0
                 self.c_weak[env_ids] = False
                 self.c_strength[env_ids] = 1e6
@@ -1875,6 +1909,11 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     # slow-arrival re-plans: at most one per env per slow_min_s (0 = every step while a robot is overdue, as trained).
     # A KEEP leaves the overdue condition true, so without this the same question is asked again next step.
     slow_min_s: float = 0.0
+    # residual execution pilot (docs/residual_pilot.md): resid_<robot> inputs (forces, motion, shares, contact
+    # geometry, 0.4 s history at 10 Hz) and the per-env gate (1 where the correction is enabled)
+    resid: bool = False
+    resid_objects: tuple = ()  # shape names with the correction enabled; () = all
+    shape_bias: tuple = ()  # ((shape name, weight), ...) multiplies the training shape mix (0 = never drawn)
     reselect_margin: float = 0.3  # m of rule score a new pair needs over the current one (hysteresis)
     reselect_min_dist: float = 0.15  # m: no re-selection with the object this close to its goal
     off_contact_mode: str = "terminate"  # "terminate" (Stage 4 / 4b) or "soft" (cost, no ending, no deadlines)
@@ -2507,6 +2546,48 @@ def object_force_from(env, robot: str) -> torch.Tensor:
     which only the active one can be touched."""
     f = env.scene[f"push_{robot}"].data.force  # (n, P, 3), net force per object body, global frame
     return -FORCE_SIGN * f.sum(1)[:, :2]
+
+
+RESID_H, RESID_HF = 4, 4  # residual pilot: history length (10 Hz) and features per sample
+
+
+def resid_obs(env, robot: str) -> torch.Tensor:
+    """Residual-pilot inputs for one robot (robot frame where directional), (n, 25 + RESID_H x RESID_HF):
+    own and partner contact force on the object (2 + 2, / 200 N), force along own / partner push direction (2),
+    commanded shares (own, partner), wanted object velocity (2) and yaw rate, object velocity (2) and yaw rate,
+    own base velocity (2) and yaw rate, own push direction (2), own contact point relative to its front (2),
+    contact distance, heading error, on-contact (own, partner), then the 10 Hz history (newest first)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    o = 1 - k
+    yaw = g.robot_yaw(k)
+    cs, sn = torch.cos(yaw), torch.sin(yaw)
+    rf = lambda v: torch.stack([cs * v[:, 0] + sn * v[:, 1], -sn * v[:, 0] + cs * v[:, 1]], -1)  # noqa: E731
+    f_own, f_par = object_force_from(env, AGENTS[k]), object_force_from(env, AGENTS[o])
+    fa = [(f * g.push_dir_world(i)).sum(-1, keepdim=True) / 200.0 for f, i in ((f_own, k), (f_par, o))]
+    r = env.scene[robot].data
+    col = lambda x: x.float().unsqueeze(-1)  # noqa: E731
+    out = torch.cat([
+        rf(f_own) / 200.0, rf(f_par) / 200.0, *fa,
+        g.push_share[:, k:k + 1], g.push_share[:, o:o + 1],
+        rf(g.c_vdes), col(g.c_wdes),
+        rf(g.box_vel()[:, :2]), col(g.box_ang_vel()[:, 2]),
+        r.root_link_lin_vel_b[:, :2], r.root_link_ang_vel_b[:, 2:3],
+        rf(g.push_dir_world(k)), rf(g.contact_world(k)[0] - g.front_point(robot)),
+        col(g.contact_dist(k)), col(g.contact_heading_err(k)),
+        col(g.on_contact(k)), col(g.on_contact(o)),
+        g.c_rhist[:, k].reshape(g.num_envs, -1),
+    ], -1)
+    return out
+
+
+def resid_gate(env) -> torch.Tensor:
+    """(n, 1): 1 where the residual correction is enabled for the env's object (cfg.resid_objects; () = all)."""
+    g = _g(env)
+    if not g.cfg.resid_objects:
+        return torch.ones(g.num_envs, 1, device=g.device)
+    on = torch.tensor([SHAPES2[s].name in g.cfg.resid_objects for s in range(len(SHAPES2))], device=g.device)
+    return on[g.shape].float().unsqueeze(-1)
 
 
 FORCE_SIGN = 1.0  # sensor convention: force on the primary (object) is -FORCE_SIGN * reading (checked in tests)

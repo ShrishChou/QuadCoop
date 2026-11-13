@@ -257,6 +257,16 @@ def main() -> int:
                          "r8: r7 with work_credit (contact force x object speed) and touch-only penalty "
                          "(quadcoop/coop2/env_cfg.py)")
     ap.add_argument("--entropy-coef", type=float, default=0.0)
+    ap.add_argument("--residual", default=None,
+                    help="residual execution pilot (docs/residual_pilot.md): this executor checkpoint is the frozen base; "
+                         "each actor learns a bounded correction (zero at the start) from extra force / motion inputs; "
+                         "critic and curriculum state carried over")
+    ap.add_argument("--resid-scale", type=float, default=0.3, help="--residual: correction bound (command units)")
+    ap.add_argument("--resid-std", type=float, default=0.15, help="--residual: initial exploration std")
+    ap.add_argument("--resid-objects", default="", help="--residual: shapes with the correction enabled (default all)")
+    ap.add_argument("--shape-bias", default="",
+                    help="training shape mix weights, e.g. beam:8,cylinder:1.5,asym:0 (others 1; 0 = never drawn)")
+    ap.add_argument("--min-std", type=float, default=0.2, help="action noise floor")
     ap.add_argument("--max-std-factor", type=float, default=1.0,
                     help="action noise may not rise above this x its warm-start value")
     ap.add_argument("--mean-clip", type=float, default=0.0,
@@ -280,6 +290,10 @@ def main() -> int:
     tol_levels = () if a.tol_levels == "none" else tuple(tuple(float(v) for v in x.split(":"))
                                                         for x in a.tol_levels.split(","))
     contact_mix = parse_contact_mix(a.contact_mix)
+    resid_objects = tuple(x.strip() for x in a.resid_objects.split(",") if x.strip())
+    shape_bias = tuple((x.split(":")[0].strip(), float(x.split(":")[1])) for x in a.shape_bias.split(",") if x.strip())
+    if a.residual and not (a.contacts and a.push_cmd and a.guide):
+        raise SystemExit("--residual builds on the Stage 4e executor (--contacts --guide --push-cmd)")
     rs = [float(x) for x in a.reselect_s.split(",")]
     reselect_s = (rs[0], rs[-1])
     if a.push_cmd and not a.guide:
@@ -363,7 +377,8 @@ def main() -> int:
                                  exec_v2=a.exec_v2, hold_rand=a.hold_rand, hold_cost_w=a.hold_cost,
                                  credit_press=a.credit_press, work_w=a.work_w, effort=a.effort,
                                  over_push_w=a.over_push_w, contact_sense=a.contact_sense,
-                                 acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost)
+                                 acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
+                                 resid=bool(a.residual), resid_objects=resid_objects, shape_bias=shape_bias)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     env_cfg.commands["goal"].start_level = a.start_level
@@ -390,7 +405,8 @@ def main() -> int:
                   contact_sense=a.contact_sense, acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
-                  inputs=models["selection"])
+                  inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
+                  resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std)
     trainer = MarlTrainer(env, cfg, log_dir, device, logger="tensorboard" if a.check else a.logger,
                           wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)
@@ -401,6 +417,8 @@ def main() -> int:
             raise SystemExit(f"{log_dir} already has checkpoints: pass --resume, or another --run-name")
         if a.scratch:
             trainer.init_scratch()
+        elif a.residual:
+            trainer.init_residual(a.residual)
         elif a.init_from:
             trainer.init_from(a.init_from)
         else:

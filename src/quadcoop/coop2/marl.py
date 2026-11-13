@@ -154,6 +154,12 @@ class MarlCfg:
     video_interval: int = 500
     video_length: int = 1000
     seed: int = 0
+    residual: str = ""  # residual pilot: frozen base executor checkpoint (actors = base + bounded correction)
+    resid_scale: float = 0.3  # correction bound (walker command units): scale x tanh
+    resid_std: float = 0.15  # initial exploration std of the correction
+    resid_hidden: tuple[int, ...] = (128, 64)
+    resid_objects: tuple = ()  # env option (recorded): shapes with the correction enabled (() = all)
+    shape_bias: tuple = ()  # env option (recorded): training shape mix weights
     init: dict = field(default_factory=dict)  # agent -> Stage 2 checkpoint
     inputs: dict = field(default_factory=dict)  # what was used (models.yaml roles), for the record
 
@@ -182,6 +188,69 @@ def make_model(obs: TensorDict, groups: list[str], out: int, hidden, variant: st
     if variant == "b":
         return CNNModel(obs, {"x": groups}, "x", out, cnn_cfg=dict(CNN), **kw)
     return MLPModel(obs, {"x": groups}, "x", out, **kw)
+
+
+def resid_groups(a: str) -> list[str]:
+    return [f"actor_{a}", f"resid_{a}"]
+
+
+class ResidualActor(torch.nn.Module):
+    """Residual execution pilot: a = base(obs) + gate x resid_scale x tanh(MLP(actor_<a>, resid_<a>)).
+    The base is a frozen executor actor (deterministic output); the correction's last layer starts at zero, so at
+    iteration 0 the policy's mean is exactly the base. Exploration: a Gaussian with a learned scalar std (init
+    resid_std) around that mean. gate = obs["resid_gate"] (1 where the correction is enabled): with gate 0 the
+    deterministic output is exactly the base. Exposes the rsl_rl model interface the trainer and PairPolicy use."""
+
+    def __init__(self, obs: TensorDict, a: str, variant: str, scale: float, init_std: float, hidden):
+        super().__init__()
+        from rsl_rl.models.mlp_model import MLPModel
+        from rsl_rl.modules.distribution import GaussianDistribution
+
+        self.base = make_model(obs, actor_groups(a, variant), 3, (256, 128, 64), variant, True)
+        for p_ in self.base.parameters():
+            p_.requires_grad_(False)
+        self.res = MLPModel(obs, {"x": resid_groups(a)}, "x", 3, hidden_dims=hidden, activation="elu",
+                            obs_normalization=True, distribution_cfg=None)
+        last = [m for m in self.res.mlp.modules() if isinstance(m, torch.nn.Linear)][-1]
+        torch.nn.init.zeros_(last.weight)
+        torch.nn.init.zeros_(last.bias)
+        self.distribution = GaussianDistribution(3, init_std=init_std, std_type="scalar")
+        self.scale = scale
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.base.eval()  # frozen: its normalizer never updates
+        return self
+
+    def correction(self, obs: TensorDict) -> torch.Tensor:
+        return self.scale * torch.tanh(self.res(obs)) * obs["resid_gate"]
+
+    def forward(self, obs: TensorDict, stochastic_output: bool = False) -> torch.Tensor:
+        with torch.no_grad():
+            b = self.base(obs)
+        mean = b + self.correction(obs)
+        if stochastic_output:
+            self.distribution.update(mean)
+            self.distribution.raw_mean = mean
+            return self.distribution.sample()
+        return mean
+
+    def update_normalization(self, obs: TensorDict) -> None:
+        self.res.update_normalization(obs)
+
+    @property
+    def output_entropy(self) -> torch.Tensor:
+        return self.distribution.entropy
+
+    @property
+    def output_distribution_params(self):
+        return self.distribution.params
+
+    def get_output_log_prob(self, outputs: torch.Tensor) -> torch.Tensor:
+        return self.distribution.log_prob(outputs)
+
+    def get_kl_divergence(self, old_params, new_params) -> torch.Tensor:
+        return self.distribution.kl_divergence(old_params, new_params)
 
 
 def clamp_sampling_mean(model, limit: float) -> None:
@@ -277,10 +346,14 @@ class MarlTrainer:
         obs, _ = env.reset()
         self.obs = self._td(obs)
         v = cfg.variant
-        self.actors = {a: make_model(self.obs, actor_groups(a, v), 3, cfg.hidden_dims, v, True).to(device)
-                       for a in AGENTS}
+        if cfg.residual:
+            self.actors = {a: ResidualActor(self.obs, a, v, cfg.resid_scale, cfg.resid_std, cfg.resid_hidden).to(device)
+                           for a in AGENTS}
+        else:
+            self.actors = {a: make_model(self.obs, actor_groups(a, v), 3, cfg.hidden_dims, v, True).to(device)
+                           for a in AGENTS}
         self.bound = cfg.mean_clip if cfg.mean_clip > 0 else 1.1
-        for m_ in self.actors.values():  # no clamp (inf) still records the raw mean for the bound penalty/logs
+        for m_ in ([] if cfg.residual else self.actors.values()):  # no clamp (inf) still records the raw mean
             clamp_sampling_mean(m_, cfg.mean_clip if cfg.mean_clip > 0 else float("inf"))
         if cfg.mean_clip > 0 or cfg.bound_coef > 0:
             print(f"[marl2] sampling mean clamped to +-{cfg.mean_clip:g} (straight-through): "
@@ -292,7 +365,8 @@ class MarlTrainer:
         else:
             self.critics = {"central": make_model(self.obs, critic_groups("mappo", v), len(AGENTS),
                                                   cfg.central_hidden_dims, v, False).to(device)}
-        self.actor_opt = {a: torch.optim.Adam(self.actors[a].parameters(), lr=cfg.actor_learning_rate) for a in AGENTS}
+        self.actor_opt = {a: torch.optim.Adam([p_ for p_ in self.actors[a].parameters() if p_.requires_grad],
+                                              lr=cfg.actor_learning_rate) for a in AGENTS}
         self.critic_opt = {k: torch.optim.Adam(c.parameters(), lr=cfg.critic_learning_rate)
                            for k, c in self.critics.items()}
         self.lr = {a: cfg.actor_learning_rate for a in AGENTS}
@@ -326,6 +400,8 @@ class MarlTrainer:
         gs = set()
         for a in AGENTS:
             gs.update(actor_groups(a, self.cfg.variant))
+            if self.cfg.residual:
+                gs.update(resid_groups(a) + ["resid_gate"])
         for k in self.critics:
             gs.update(critic_groups(self.cfg.algo, self.cfg.variant, None if k == "central" else k))
         return sorted(gs)
@@ -519,6 +595,32 @@ class MarlTrainer:
         print(f"[marl2] initialised from {path} (iteration {self.it}, curriculum level {g.level}"
               f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}); new inputs at zero weight")
 
+    def init_residual(self, path: str | Path) -> None:
+        """Residual pilot start: each actor's base <- the executor checkpoint's actor (frozen), the correction at
+        zero; the critic(s) and the curriculum state (level, tolerance level) carried over unchanged so the
+        value estimates start where the base policy left them. Iterations count from 0."""
+        ck = torch.load(str(path), map_location=self.device, weights_only=False)
+        assert ck["algo"] == self.cfg.algo, f"checkpoint is {ck['algo']}, trainer is {self.cfg.algo}"
+        for a in AGENTS:
+            self.actors[a].base.load_state_dict(ck["actors"][a])
+            self.actors[a].base.eval()
+        for k, c in self.critics.items():
+            c.load_state_dict(ck["critics"][k])
+        self.warm_from = {"residual_base": str(path), **ck.get("warm_from", {})}
+        es = ck.get("env_state", {})
+        g = self.env.command_manager.get_term("goal")
+        g.level = es.get("level", g.level)
+        g.ema_success = es.get("ema_success", g.ema_success)
+        if "shape_success" in es:
+            g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
+        if getattr(g, "tol_table", None) is not None:
+            g.tol_level = int(es.get("tol_level", g.tol_level))
+            g.tol_ema = float(es.get("tol_ema", g.tol_ema))
+            g.lvl_ema = float(es.get("lvl_ema", 0.0))
+        print(f"[marl2] residual pilot: base actors <- {path} (frozen), correction at zero (bound "
+              f"{self.cfg.resid_scale:g}, std {self.cfg.resid_std:g}), critic and curriculum carried over "
+              f"(level {g.level}{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''})")
+
     def _expand(self, model, old: dict, groups: list[str], what: str) -> None:
         """Copy `old` into `model`; 1D input groups may have grown at their end (new columns zero)."""
         new = model.state_dict()
@@ -655,8 +757,8 @@ class MarlTrainer:
                     done[t] = d
                     for c in self.critics.values():
                         c.update_normalization(obs)
-                    if cfg.scratch:  # warm-started actors keep their loaded normalizers
-                        for m_ in self.actors.values():
+                    if cfg.scratch or cfg.residual:  # warm-started actors keep their loaded normalizers
+                        for m_ in self.actors.values():  # (residual: only the correction's normalizer updates)
                             m_.update_normalization(obs)
                     ended = d.bool()
                     n_ended += float(ended.sum())
@@ -848,10 +950,15 @@ class PairPolicy:
 
     def __init__(self, env_obs: TensorDict, device: str, variant: str = "b", checkpoint: str | None = None,
                  singles: dict[str, str] | None = None):
-        self.actors = {a: make_model(env_obs, actor_groups(a, variant), 3, (256, 128, 64), variant, True).to(device)
-                       for a in AGENTS}
+        ck = torch.load(checkpoint, map_location=device, weights_only=False) if checkpoint else None
+        rc = (ck or {}).get("cfg", {})
+        if rc.get("residual"):
+            self.actors = {a: ResidualActor(env_obs, a, variant, rc["resid_scale"], rc["resid_std"],
+                                            tuple(rc["resid_hidden"])).to(device) for a in AGENTS}
+        else:
+            self.actors = {a: make_model(env_obs, actor_groups(a, variant), 3, (256, 128, 64), variant, True).to(device)
+                           for a in AGENTS}
         if checkpoint:
-            ck = torch.load(checkpoint, map_location=device, weights_only=False)
             for a in AGENTS:
                 self.actors[a].load_state_dict(ck["actors"][a])
             self.iteration = int(ck["iter"])

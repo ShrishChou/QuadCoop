@@ -286,3 +286,33 @@ comparison.
 **PPO pilot launched:** `logs/coord/rl_s0`, jobs 28767151 and 28767152 (chained resume). 24 iterations; each is one
 mass × 144 episodes, cycling 20/40/60 kg on seeds 200–223. All other settings are frozen as in §0 and §1. The
 reward is fixed per `RewardCfg`; the configuration and checkpoint rule are in `run.json`.
+
+## 10. Final comparison: teacher vs BC vs PPO (seeds 3000–3002, 2026-11-12)
+
+Setup: greedy policies, identical tasks and settings, 1,260 matched episodes per arm with the excluded cell removed.
+Full table: `evals/coord-rl_s0/final_comparison.md` (`scripts/coord_compare.py`). Intervals are paired bootstrap
+95% CIs over tasks.
+
+| | success | precise | fell | capped time (s) |
+|---|---|---|---|---|
+| teacher | 0.752 | 0.652 | 0.024 | 44.3 |
+| BC | 0.744 | 0.626 | 0.024 | 44.1 |
+| PPO (final) | 0.737 | 0.629 | 0.024 | 44.6 |
+| PPO − teacher | −1.6 [−4.4, +1.3] | −2.3 [−5.6, +1.0] | +0.0 [−1.2, +1.1] | +0.4 [−1.0, +1.8] |
+| PPO − BC | −0.8 [−3.6, +1.9] | +0.2 [−3.2, +3.6] | | |
+
+**Dumbbell (replicated on fresh seeds), vs the teacher:**
+- BC: success −5.3 [−10.4, 0.0], precise −8.3 [−14.4, −2.0];
+- PPO: success −5.6 [−10.9, 0.0], precise −6.3 [−12.6, −0.3].
+
+Contact acquisition is unchanged across arms (0.78 of assignments reached), as are switches per episode (about 10).
+
+The PPO training log (`evals/coord-rl_s0/log.jsonl`) shows the policy barely departed from BC:
+- entropy 0.02–0.06 nats;
+- sampled-action agreement with the teacher 0.96–0.99;
+- KL per update about 0.001–0.002 and about 1% of samples clipped.
+
+**Conclusion:** PPO did not improve contact selection over the teacher, and BC adds a dumbbell regression. The
+contact-selection-only line is closed. No further contact-selection-only runs; the hand-written planner stays the
+deployed assignment rule. Next (separate record): the beam-focused residual execution pilot, then solo-vs-pair
+participation using the real Stage-2b solo policy.

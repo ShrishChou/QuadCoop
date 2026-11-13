@@ -2,6 +2,7 @@
 placement seeds, identical tasks and settings, greedy. Excludes the declared cell (dumbbell / D_far_turn / 60 kg).
 
   python scripts/coord_compare.py teacher=final-teacher bc=final-bc0 ppo=final-ppo0 --seeds 3000,3001,3002
+  python scripts/coord_compare.py base=rdev-base resid=rdev-resid --seeds=4000 --all-cells --objects=each   # residual pilot
 
 Per arm, overall / by mass / by object: success, precise, falls, capped completion time (80 s if no success),
 assignment switches per episode and contact acquisition (share of assignments reached, mean over robots).
@@ -18,11 +19,11 @@ EXCLUDED = {("dumbbell", "D_far_turn", 60.0)}
 AG = ("anymal1", "anymal2")
 
 
-def load(prefix, seeds):
+def load(prefix, seeds, excluded=EXCLUDED):
     out = {}
     for s in seeds:
         for r in csv.DictReader(open(ROOT / "logs" / "evals" / f"{prefix}-s{s}-expert" / "pair" / "episodes.csv")):
-            if (r["object"], r["scenario"], float(r["mass"])) in EXCLUDED:
+            if (r["object"], r["scenario"], float(r["mass"])) in excluded:
                 continue
             ts = r["t_success"]
             reach = [float(r[f"reached_{a}"]) for a in AG if r.get(f"reached_{a}", "") not in ("",)]
@@ -49,19 +50,29 @@ def ci(d, n=2000, seed=0):
 
 
 def main():
-    arms, seeds = {}, [3000, 3001, 3002]
+    arms, seeds, excluded, objs = {}, [3000, 3001, 3002], EXCLUDED, None
     for x in sys.argv[1:]:
         if x.startswith("--seeds"):
             seeds = [int(v) for v in x.split("=", 1)[1].split(",")]
+        elif x == "--all-cells":
+            excluded = set()
+        elif x.startswith("--objects"):
+            objs = x.split("=", 1)[1].split(",")
         else:
             k, v = x.split("=", 1)
             arms[k] = v
-    data = {k: load(v, seeds) for k, v in arms.items()}
+    data = {k: load(v, seeds, excluded) for k, v in arms.items()}
     keys = sorted(set.intersection(*[set(d) for d in data.values()]))
     names = list(arms)
-    print(f"{len(keys)} matched tasks per arm (seeds {seeds}; excluded cell removed)\n")
-    groups = [("all", lambda k: True)] + [(f"{m:g} kg", lambda k, m=m: k[2] == m) for m in (20.0, 40.0, 60.0)] + \
-             [(o, lambda k, o=o: k[0] == o) for o in ("long", "arch", "dumbbell")]
+    print(f"{len(keys)} matched tasks per arm (seeds {seeds}; excluded cells {sorted(excluded)})\n")
+    masses = sorted({k[2] for k in keys})
+    objs = objs or ("long", "arch", "dumbbell")
+    if objs == ["each"]:
+        objs = sorted({k[0] for k in keys})
+    groups = [("all", lambda k: True)] + [(f"{m:g} kg", lambda k, m=m: k[2] == m) for m in masses] + \
+             [(o, lambda k, o=o: k[0] == o) for o in objs]
+    for o in objs:
+        groups += [(f"{o} {m:g} kg", lambda k, o=o, m=m: k[0] == o and k[2] == m) for m in masses] if o == "beam" else []
     print("| group | arm | n | success | precise | fell | capped time s | switches/ep | contacts reached |")
     print("|---|---|---|---|---|---|---|---|---|")
     for g, f in groups:
