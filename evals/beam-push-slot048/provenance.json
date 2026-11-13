@@ -1,0 +1,39 @@
+{
+ "argv": [
+  "scripts/beam_push_test.py",
+  "--name",
+  "beam-push-slot048",
+  "--slot",
+  "0.48"
+ ],
+ "models": {
+  "selection": {
+   "walker_anymal": "walker-anymal-v1",
+   "push2b_anymal": "s2b-anymal-term80"
+  },
+  "walker_ckpt": {
+   "anymal_c": "/orcd/home/002/shrishc/quadcoop/logs/evals/walker-anymal-v1/model.pt"
+  },
+  "walker_env": {
+   "anymal_c": {}
+  },
+  "policy": {
+   "anymal1": "/orcd/home/002/shrishc/quadcoop/logs/evals/s2b-anymal-term80/model.pt",
+   "anymal2": "/orcd/home/002/shrishc/quadcoop/logs/evals/s2b-anymal-term80/model.pt"
+  },
+  "pair": "anymal"
+ },
+ "pair": [
+  "anymal1",
+  "anymal2"
+ ],
+ "env": {
+  "QUADCOOP_PLANNER": "ends",
+  "QUADCOOP_CONTACT": "train",
+  "QUADCOOP_CMD_IF": "raw",
+  "QUADCOOP_PAIR": "anymal",
+  "QUADCOOP_SHAPES": "v2",
+  "QUADCOOP_WALKER_CKPT_ANYMAL_C": "/orcd/home/002/shrishc/quadcoop/logs/evals/walker-anymal-v1/model.pt",
+  "QUADCOOP_WALKER_HISTORY_ANYMAL_C": "0"
+ }
+}

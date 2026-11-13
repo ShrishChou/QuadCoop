@@ -267,6 +267,21 @@ class CoopPush2Command(Push2Command):
         self.push_dir_obj = torch.zeros(n, 2, 2, device=dev)  # each robot's push direction (object frame, unit)
         self.push_dir_obj[..., 0] = -1.0
         self.push_share = torch.full((n, 2), 0.5, device=dev)  # each robot's share of the total push
+        # planner feedback extension (cfg.fb_on / share_adapt): nominal and corrected requests, measurements, estimate
+        self.push_share_nom = torch.full((n, 2), 0.5, device=dev)  # the force split's shares, before any correction
+        self.fb_vmeas = torch.zeros(n, 2, device=dev)  # filtered object velocity (world, m/s)
+        self.fb_wmeas = torch.zeros(n, device=dev)  # filtered object yaw rate (rad/s)
+        self.fb_vcmd = torch.zeros(n, 2, device=dev)  # the motion handed to the split (world, m/s)
+        self.fb_wcmd = torch.zeros(n, device=dev)
+        self.fs_force = torch.zeros(n, 2, 2, device=dev)  # gait-filtered contact force on the object (world, N)
+        self.fs_touch = torch.zeros(n, 2, device=dev)  # gait-filtered touching (0..1)
+        self.fs_meas = torch.full((n,), 0.5, device=dev)  # robot 0's delivered share of force along the push dirs
+        self.fs_valid = torch.zeros(n, dtype=torch.bool, device=dev)  # this step's share sample counted
+        self.fs_bias = torch.zeros(n, device=dev)  # estimate: robot 0's delivered - requested share
+        self.fs_hold = torch.zeros(n, device=dev)  # s since the last reset of the estimate's conditions
+        self.fs_idx = torch.full((n, 2), -1, dtype=torch.long, device=dev)
+        self.fs_dir = torch.zeros(n, 2, 2, device=dev)
+        self._fs_sensors = None
         self.c_resid = torch.zeros(n, device=dev)  # part of the wanted push the current pair cannot make (0..1)
         self.c_res_t = torch.zeros(n, device=dev)  # s the residual has been above resid_bad
         self.c_prev_pose = torch.zeros(n, device=dev)  # distance + rho_g x angle error, last step (pose_progress)
@@ -810,22 +825,105 @@ class CoopPush2Command(Push2Command):
         d, e = self.errors()
         sym = self.symmetry()
         v_w, wz = self._wanted(self.goal_xy - self.box_pos()[:, :2], e, sym, self.c_rule == 4)
-        self.c_vdes[:], self.c_wdes[:] = v_w, wz
+        self.c_vdes[:], self.c_wdes[:] = v_w, wz  # nominal: what the rest of the env sees
+        want = (torch.linalg.norm(v_w, dim=-1) > 0.02) | (wz.abs() > 0.02)  # nominal (feedback never restarts pushing)
+        v_a, w_a = self._motion_feedback(v_w, wz, want) if c.fb_on else (v_w, wz)
+        self.fb_vcmd[:], self.fb_wcmd[:] = v_a, w_a
         yaw = self.contact_frame_yaw()
         cs, sn = torch.cos(yaw), torch.sin(yaw)
-        v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
-        f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, wz, self.c_cg, self.robot_cap())
+        v_o = torch.stack([cs * v_a[:, 0] + sn * v_a[:, 1], -sn * v_a[:, 0] + cs * v_a[:, 1]], -1)
+        f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, w_a, self.c_cg, self.robot_cap())
         mag = torch.linalg.norm(f, dim=-1)  # (n, 2)
-        want = (torch.linalg.norm(v_w, dim=-1) > 0.02) | (wz.abs() > 0.02)
         d_new = torch.where((mag > 1e-6).unsqueeze(-1), f / mag.unsqueeze(-1).clamp(min=1e-9), -self.c_nobj)
         alpha = min(1.0, dt / max(c.push_tau, 1e-6))
         blend = self.push_dir_obj + alpha * (d_new - self.push_dir_obj)
         blend = blend / torch.linalg.norm(blend, dim=-1, keepdim=True).clamp(min=1e-6)
         self.push_dir_obj[:] = torch.where(want.view(-1, 1, 1), blend, self.push_dir_obj)
         share = mag / mag.sum(-1, keepdim=True).clamp(min=1e-9)
+        self.push_share_nom[:] = torch.where(want.unsqueeze(-1), share, self.push_share_nom)
+        if c.share_adapt or c.share_perturb != 0.0:
+            self._share_measure(want)  # (measured against the share sent last step)
+            share = self._share_correct(share)
         self.push_share[:] = torch.where(want.unsqueeze(-1), share, self.push_share)
         self.c_resid[:] = torch.where(want, r, torch.zeros_like(r))
         self.c_res_t[:] = torch.where(self.c_resid > c.resid_bad, self.c_res_t + dt, torch.zeros_like(self.c_res_t))
+
+    def _motion_feedback(self, v_w: torch.Tensor, wz: torch.Tensor, want: torch.Tensor):
+        """Object-motion feedback (cfg.fb_on): nominal wanted motion (v_w world, wz) + a bounded correction from
+        the filtered measured motion, faded with the nominal request's size (none once nothing is wanted), capped
+        at the planner's push_vmax / push_wmax. Returns the motion handed to the force split."""
+        c, dt = self.cfg, self._env.step_dt
+        a = min(1.0, dt / max(c.fb_tau, 1e-6))
+        self.fb_vmeas += a * (self.box_vel()[:, :2] - self.fb_vmeas)
+        self.fb_wmeas += a * (self.box_ang_vel()[:, 2] - self.fb_wmeas)
+        fade = torch.maximum(torch.linalg.norm(v_w, dim=-1) / c.push_vmax, wz.abs() / c.push_wmax).clamp(0.0, 1.0)
+        dv = c.fb_kv * (v_w - self.fb_vmeas)
+        dvn = torch.linalg.norm(dv, dim=-1, keepdim=True)
+        dv = dv * (c.fb_vmax / dvn.clamp(min=1e-9)).clamp(max=1.0) * fade.unsqueeze(-1)
+        dw = (c.fb_kw * (wz - self.fb_wmeas)).clamp(-c.fb_wmax, c.fb_wmax) * fade
+        v_a = v_w + dv
+        van = torch.linalg.norm(v_a, dim=-1, keepdim=True)
+        v_a = v_a * (c.push_vmax / van.clamp(min=1e-9)).clamp(max=1.0)
+        w_a = (wz + dw).clamp(-c.push_wmax, c.push_wmax)
+        return torch.where(want.unsqueeze(-1), v_a, v_w), torch.where(want, w_a, wz)
+
+    def _share_measure(self, want: torch.Tensor) -> None:
+        """Gait-filtered delivered force share and the bounded estimate of delivered - requested share (robot 0).
+        Samples count only while the push is wanted, both robots are engaged on their contacts and physically
+        touching (filtered), the total force along the push directions is >= fs_fmin, both requested shares are
+        interior, neither robot is tipped over, and fs_hold_s has passed since the last (re)assignment or large
+        push-direction change. A reassignment resets the estimate; a large direction change decays it."""
+        c, dt = self.cfg, self._env.step_dt
+        if self._fs_sensors is None:
+            try:
+                self._fs_sensors = all(self._env.scene[f"push_{a}"] is not None for a in AGENTS)
+            except KeyError:
+                self._fs_sensors = False
+        if not self._fs_sensors:
+            raise RuntimeError("share_adapt / share_perturb need the robot-object force sensors (push_sensors)")
+        from quadcoop import falls
+        a = min(1.0, dt / max(c.fs_tau, 1e-6))
+        for k, ag in enumerate(AGENTS):
+            self.fs_force[:, k] += a * (object_force_from(self._env, ag) - self.fs_force[:, k])
+            touch = self._env.scene[f"push_{ag}"].data.found.view(self.num_envs, -1).any(-1).float()
+            self.fs_touch[:, k] += a * (touch - self.fs_touch[:, k])
+        along = torch.stack([(self.fs_force[:, k] * self.push_dir_world(k)).sum(-1).clamp(min=0.0) for k in range(2)], -1)
+        tot = along.sum(-1)
+        self.fs_meas[:] = torch.where(tot > 1e-6, along[:, 0] / tot.clamp(min=1e-6), torch.full_like(tot, 0.5))
+        # resets: a new assignment restarts the estimate; a large turn of a push direction decays it
+        new = (self.c_idx != self.fs_idx).any(-1)
+        cosd = (self.push_dir_obj * self.fs_dir).sum(-1).min(-1).values
+        turned = ~new & (cosd < math.cos(math.radians(c.fs_dir_deg)))
+        self.fs_bias[:] = torch.where(new, torch.zeros_like(self.fs_bias),
+                                      torch.where(turned, self.fs_bias * c.fs_dir_decay, self.fs_bias))
+        self.fs_hold[:] = torch.where(new | turned, torch.zeros_like(self.fs_hold), self.fs_hold + dt)
+        self.fs_idx[:] = self.c_idx
+        self.fs_dir[:] = torch.where((new | turned).view(-1, 1, 1), self.push_dir_obj, self.fs_dir)
+        tipped = torch.zeros_like(new)
+        for ag in AGENTS:
+            tipped |= falls.tilt_deg(self._env, ag) > falls.FALL_TILT_DEG
+        sent = self.push_share[:, 0]  # what the executor was asked for (last step)
+        interior = (self.push_share_nom.min(-1).values >= c.fs_min_share) & (sent >= c.fs_min_share) & (sent <= 1 - c.fs_min_share)
+        valid = want & self.c_engaged.all(-1) & (self.fs_touch >= 0.5).all(-1) & (tot >= c.fs_fmin) & interior & \
+            ~tipped & (self.fs_hold >= c.fs_hold_s)
+        self.fs_valid[:] = valid
+        if c.share_adapt:
+            b = min(1.0, dt / max(c.fs_est_tau, 1e-6))
+            upd = (self.fs_bias + b * ((self.fs_meas - sent) - self.fs_bias)).clamp(-c.fs_bias_max, c.fs_bias_max)
+            self.fs_bias[:] = torch.where(valid, upd, self.fs_bias)
+
+    def _share_correct(self, share: torch.Tensor) -> torch.Tensor:
+        """The requested shares sent to the executor: nominal - gain x estimate (bounded by fs_corr_max), plus the
+        preflight perturbation, for interior nominal shares only; zero / withdraw requests pass unchanged."""
+        c = self.cfg
+        lo, hi = c.fs_min_share, 1.0 - c.fs_min_share
+        interior = (share[:, 0] >= lo) & (share[:, 0] <= hi)
+        corr = torch.zeros_like(share[:, 0])
+        if c.share_adapt:
+            corr = (-c.fs_gain * self.fs_bias).clamp(-c.fs_corr_max, c.fs_corr_max)
+        corr = corr + c.share_perturb
+        s0 = torch.where(interior, (share[:, 0] + corr).clamp(lo, hi), share[:, 0])
+        return torch.stack([s0, 1.0 - s0], -1)
 
     def robot_cap(self, ids=None):
         """Expert envs: the normal (pushing) force one robot can apply, as a share of the force that
@@ -1692,6 +1790,19 @@ class CoopPush2Command(Push2Command):
             self.c_idx[env_ids], self.c_pobj[env_ids], self.c_nobj[env_ids] = idx, cp, cn
             self.push_dir_obj[env_ids] = -cn
             self.push_share[env_ids] = 0.5
+            self.push_share_nom[env_ids] = 0.5
+            self.fb_vmeas[env_ids] = 0.0
+            self.fb_wmeas[env_ids] = 0.0
+            self.fb_vcmd[env_ids] = 0.0
+            self.fb_wcmd[env_ids] = 0.0
+            self.fs_force[env_ids] = 0.0
+            self.fs_touch[env_ids] = 0.0
+            self.fs_meas[env_ids] = 0.5
+            self.fs_valid[env_ids] = False
+            self.fs_bias[env_ids] = 0.0
+            self.fs_hold[env_ids] = 0.0
+            self.fs_idx[env_ids] = -1
+            self.fs_dir[env_ids] = -cn
             if c.exec_v2:
                 self.c_cmd[env_ids] = 0
                 self.c_ready_t[env_ids] = 0.0
@@ -1964,6 +2075,32 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     push_wmax: float = 0.4  # rad/s wanted at most, reached push_rw from the goal angle
     push_rw: float = 0.5
     push_tau: float = 0.3  # s: low-pass of the push directions
+    # Planner feedback extension (2026-11-13, docs/planner_feedback.md). All off by default: the reference planner.
+    # Object-motion feedback: the motion handed to the force split (_split) is the nominal wanted motion plus a
+    # bounded correction from the measured object motion; c_vdes / c_wdes stay nominal (rewards, observations and
+    # re-planning are unchanged). The correction fades with the nominal request, so a reached goal stays reached.
+    fb_on: bool = False
+    fb_kv: float = 1.0  # velocity-error gain: dv = kv (v_nom - v_meas), |dv| <= fb_vmax
+    fb_kw: float = 2.0  # yaw-rate-error gain (damps unwanted rotation): dw = kw (w_nom - w_meas), |dw| <= fb_wmax
+    fb_vmax: float = 0.15  # m/s
+    fb_wmax: float = 0.3  # rad/s
+    fb_tau: float = 0.2  # s: low-pass of the measured object velocity and yaw rate
+    # Adaptive share: a bounded estimate of persistent delivered-minus-requested force share (robot 0; robot 1 is
+    # its complement), from gait-filtered contact force along each push direction, and a bounded correction of the
+    # requested shares. Explicit zero / withdraw requests (a share outside [fs_min_share, 1 - fs_min_share]) are
+    # never corrected.
+    share_adapt: bool = False
+    fs_tau: float = 1.0  # s: gait filter of each robot's contact force and touch (separate from fb_tau)
+    fs_est_tau: float = 3.0  # s: time constant of the share-error estimate
+    fs_fmin: float = 60.0  # N: total filtered force along the push directions for a share sample
+    fs_min_share: float = 0.15
+    fs_hold_s: float = 1.0  # s after a (re)assignment or a large push-direction change before samples count
+    fs_dir_deg: float = 20.0  # a push direction turning by more than this (since the last reset) decays the estimate
+    fs_dir_decay: float = 0.5
+    fs_gain: float = 1.0  # correction = -gain x estimate (delivered = sent + estimate => sent = nominal - estimate)
+    fs_corr_max: float = 0.15
+    fs_bias_max: float = 0.5
+    share_perturb: float = 0.0  # response preflight only: added to robot 0's requested share (interior shares)
     resid_bad: float = 0.5  # the pair cannot do the job above this residual ...
     resid_dwell_s: float = 1.0  # ... for this long: re-choose now
     resid_margin: float = 0.25  # residual a new pair must gain (hysteresis)

@@ -358,3 +358,45 @@ Decision table:
   training is justified.
 - **80 kg:** row 3 applies. The beam is not transported at friction ≥ 0.5 despite maintained, aligned contact, so
   80 kg needs a look at the walker command interface before it is treated as an execution-learning target.
+
+**Compatibility check: demonstrated pushing positions vs the planner's contacts (2026-11-13)**
+
+The beam (2.4 × 0.5 m) offers 16 candidate contacts: 5 segments per long face, centred at y = 0, ±0.48, ±0.96 m
+(0.48 m wide), plus corners and end faces. QUADCOOP_PLANNER=ends gives the same list.
+
+Planner assignments: during requested two-robot pushes (baseline traces, seeds 4000–4002), the expert assigns:
+- the two corners of one long face (y = ±1.2 m, diagonal push directions) 40% / 26% / <6% of the time at
+  40 / 60 / 80 kg;
+- the end segments (±0.96 m) 10% / 19% / 34%;
+- turning pairs (centre plus an end) for most of the rest.
+
+The inner segments (±0.48 m) are rarely used. The scripted ±0.70 m slots lie 0.22–0.26 m from the nearest
+segments, at the edge of on_contact's 0.25 m radius, so pushing there would read as off contact.
+
+The scripted push repeated at the planner's own points (`evals/beam-push-slot048`, `evals/beam-push-slot096`,
+same 27 cases):
+
+| slot | 60 kg moved ≥ 1 m | 60 kg yaw drift | falls (60 / 80 kg) | 80 kg moved ≥ 1 m |
+|---|---|---|---|---|
+| ±0.48 m (inner segments) | 7/9 | 4–22° | 1 / 0 | 3/9 |
+| ±0.70 m (first test) | 8/9 | 6–24° | 0 / 0 | 4/9 |
+| ±0.96 m (end segments) | 9/9 | 26–44° | 1 / 2 | 3/9 |
+
+- The inner segments reproduce the demonstrated behaviour: similar force (256–270 N at 60 kg, 0.4–0.6 m/s) and
+  little yaw.
+- The end segments still propel the beam, but turn it much more and fall more often.
+- The corner pair can't be tested with this script.
+- Earlier E6 engaged-start segment evaluations (`logs/evals/e6*`, an older stack version) solved 1.5 m straight
+  beam segments 0–67% of the time at 40–60 kg, with the executor and with the scripted recipe alike, at the
+  planner's contacts.
+
+Exact settings of the slot tests (uncommitted until 2026-11-13, now in `evals/beam-push-slot048/` and
+`evals/beam-push-slot096/`):
+- Commands:
+  - `NAME=beam-push-slot096 ARGS="--slot 0.96" sbatch slurm/beam_push_test.sbatch` (job 28969947);
+  - `NAME=beam-push-slot048 ARGS="--slot 0.48" sbatch slurm/beam_push_test.sbatch` (job 28969948).
+- Code: commit 7a8b7c6. Defaults otherwise as `evals/beam-push`:
+  - speeds 0.4 / 0.6 / 0.8 m/s; masses 40 / 60 / 80 kg; beam friction 0.4 / 0.5 / 0.6;
+  - 20 s horizon, measured from 2 s;
+  - start gap 0.05 m, seed 0, raw command interface, two ANYmals, walker-anymal-v1.
+- Each folder's `provenance.json` has the argv, the models and the QUADCOOP_* environment.

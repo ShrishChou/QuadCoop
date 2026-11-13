@@ -1,0 +1,50 @@
+{
+ "pf0-off": {
+  "40": {
+   "steps": 1251,
+   "max_abs_diff": {
+    "push_dir_obj": 0.0,
+    "push_share": 0.0,
+    "c_resid": 0.0,
+    "c_res_t": 0.0,
+    "c_vdes": 0.0,
+    "c_wdes": 0.0
+   }
+  },
+  "60": {
+   "steps": 1117,
+   "max_abs_diff": {
+    "push_dir_obj": 0.0,
+    "push_share": 0.0,
+    "c_resid": 0.0,
+    "c_res_t": 0.0,
+    "c_vdes": 0.0,
+    "c_wdes": 0.0
+   }
+  }
+ },
+ "pf0-fb": {
+  "40": {
+   "steps": 1214,
+   "max_abs_diff": {
+    "push_dir_obj": 0.03672076761722565,
+    "push_share": 1.0,
+    "c_resid": 0.651402473449707,
+    "c_res_t": 0.9799996018409729,
+    "c_vdes": 0.0,
+    "c_wdes": 0.0
+   }
+  },
+  "60": {
+   "steps": 1101,
+   "max_abs_diff": {
+    "push_dir_obj": 0.030289113521575928,
+    "push_share": 0.3800577223300934,
+    "c_resid": 0.8793522715568542,
+    "c_res_t": 0.9599996209144592,
+    "c_vdes": 0.0,
+    "c_wdes": 0.0
+   }
+  }
+ }
+}

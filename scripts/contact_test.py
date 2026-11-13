@@ -114,6 +114,55 @@ RULES = ("centre", "adjacent", "spread")
 SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the force split)
 
 
+PLANNER_CHECK: dict = {}  # --planner-check: per mass, steps checked and the largest output difference
+
+
+def ref_update_push(self) -> None:
+    """The force split's per-step update exactly as of commit 7a8b7c6 (before the planner feedback extension),
+    for --planner-check. Writes the same state the current method writes."""
+    import torch
+    c, dt = self.cfg, self._env.step_dt
+    d, e = self.errors()
+    sym = self.symmetry()
+    v_w, wz = self._wanted(self.goal_xy - self.box_pos()[:, :2], e, sym, self.c_rule == 4)
+    self.c_vdes[:], self.c_wdes[:] = v_w, wz
+    yaw = self.contact_frame_yaw()
+    cs, sn = torch.cos(yaw), torch.sin(yaw)
+    v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
+    f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, wz, self.c_cg, self.robot_cap())
+    mag = torch.linalg.norm(f, dim=-1)
+    want = (torch.linalg.norm(v_w, dim=-1) > 0.02) | (wz.abs() > 0.02)
+    d_new = torch.where((mag > 1e-6).unsqueeze(-1), f / mag.unsqueeze(-1).clamp(min=1e-9), -self.c_nobj)
+    alpha = min(1.0, dt / max(c.push_tau, 1e-6))
+    blend = self.push_dir_obj + alpha * (d_new - self.push_dir_obj)
+    blend = blend / torch.linalg.norm(blend, dim=-1, keepdim=True).clamp(min=1e-6)
+    self.push_dir_obj[:] = torch.where(want.view(-1, 1, 1), blend, self.push_dir_obj)
+    share = mag / mag.sum(-1, keepdim=True).clamp(min=1e-9)
+    self.push_share[:] = torch.where(want.unsqueeze(-1), share, self.push_share)
+    self.c_resid[:] = torch.where(want, r, torch.zeros_like(r))
+    self.c_res_t[:] = torch.where(self.c_resid > c.resid_bad, self.c_res_t + dt, torch.zeros_like(self.c_res_t))
+
+
+def install_planner_check(g, mass) -> None:
+    """--planner-check: run the reference update and the current one on the same pre-step state every step;
+    keep the current one's outputs and record the largest absolute difference per output."""
+    names = ("push_dir_obj", "push_share", "c_resid", "c_res_t", "c_vdes", "c_wdes")
+    rec = PLANNER_CHECK.setdefault(f"{mass:g}", {"steps": 0, "max_abs_diff": {k: 0.0 for k in names}})
+    current = g._update_push
+
+    def checked():
+        pre = {k: getattr(g, k).clone() for k in names}
+        ref_update_push(g)
+        ref = {k: getattr(g, k).clone() for k in names}
+        for k in names:
+            getattr(g, k).copy_(pre[k])
+        current()
+        for k in names:
+            rec["max_abs_diff"][k] = max(rec["max_abs_diff"][k], float((getattr(g, k) - ref[k]).abs().max()))
+        rec["steps"] += 1
+    g._update_push = checked
+
+
 def write_provenance(folders, a, g, mass) -> None:
     """E0: what exactly ran, per eval folder -> provenance.json (git state, checkpoint hash, resolved planner
     settings, candidate-table hash, environment switches) and provenance_<mass>kg.json (object masses as applied)."""
@@ -137,7 +186,9 @@ def write_provenance(folders, a, g, mass) -> None:
         (out / "provenance.json").write_text(json.dumps(prov, indent=1, default=str))
         (out / "git_diff.patch").write_bytes(diff)
         (out / f"provenance_{mass:g}kg.json").write_text(json.dumps(
-            {"requested_kg": mass, "applied_kg_min": float(m_.min()), "applied_kg_max": float(m_.max())}, indent=1))
+            {"requested_kg": mass, "applied_kg_min": float(m_.min()), "applied_kg_max": float(m_.max()),
+             "requested_friction": getattr(a, "friction", None), "applied_friction_min": float(g.c_mu.min()),
+             "applied_friction_max": float(g.c_mu.max())}, indent=1))
 
 
 EXTERNAL_COORD = None  # scripts/coord_train.py: factory (n, device, cases, mass, dt) -> coordinator (--coordinator external)
@@ -247,6 +298,13 @@ def main() -> int:
     ap.add_argument("--swap-actors", action="store_true",
                     help="stage4: robot 1 runs the network trained as robot 2 and vice versa (does a failure follow the "
                          "learned network or the robot's place?)")
+    ap.add_argument("--friction", type=float, default=None,
+                    help="set every object's friction to this value (default: drawn from the training range 0.4-0.6)")
+    ap.add_argument("--scenarios", default="",
+                    help="comma list: run only these scenarios of the task set (e.g. S_straight,S_moveturn)")
+    ap.add_argument("--planner-check", action="store_true",
+                    help="stage4: every step also run the reference force split (_update_push as of 7a8b7c6) on the same "
+                         "state and record the largest difference of its outputs (flag-off equivalence check)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -255,6 +313,12 @@ def main() -> int:
         SCENARIOS = TURN_SCENARIOS
     elif a.tasks == "segment":
         SCENARIOS = SEGMENT_SCENARIOS
+    if a.scenarios:
+        keep = [x.strip() for x in a.scenarios.split(",")]
+        unknown = set(keep) - {sc_[0] for sc_ in SCENARIOS}
+        if unknown:
+            raise SystemExit(f"--scenarios: not in this task set: {sorted(unknown)}")
+        SCENARIOS = tuple(sc_ for sc_ in SCENARIOS if sc_[0] in keep)
     if a.recipe != "none" and (a.executor != "stage4" or a.replay):
         raise SystemExit("--recipe replaces the stage4 executor's commands (and not with --replay)")
     overrides = {}
@@ -405,10 +469,16 @@ def main() -> int:
         alpha = 0.5 * math.log(mass / NOMINAL_MASS)
         for name in OBJ_NAMES2:
             cfg.events[f"{name}_mass"].params["alpha_range"] = (alpha, alpha)
+            if a.friction is not None and f"{name}_friction" in cfg.events:
+                cfg.events[f"{name}_friction"].params["ranges"] = (a.friction, a.friction)
         torch.manual_seed(a.seed)
         base = ManagerBasedRlEnv(cfg=cfg, device=device)
         g = base.command_manager.get_term("goal")
         dev = base.device
+        if a.planner_check:
+            if not (stage4 and getattr(g.cfg, "wrench", False)):
+                raise SystemExit("--planner-check needs the stage4 executor with the force split (wrench)")
+            install_planner_check(g, mass)
         ids = torch.arange(n, device=dev)
         for k in range(len(SHAPES2)):
             m2.apply_geometry(base, ids, k, torch.ones(n, 3, device=dev))
@@ -975,6 +1045,14 @@ def main() -> int:
                         # the planner's actual assignment: contact ids, last re-plan cause and re-plans run
                         cols += [g.c_idx[ti, k].float() for k in range(2)]
                         cols += [g.c_plan_reason[ti].float(), g.c_plan_n[ti]]
+                        if has_sh:  # planner feedback extension: nominal vs corrected request, measurement, estimate
+                            vo_ = g.box_vel()[ti, :2]
+                            cols += [g.c_vdes[ti, 0], g.c_vdes[ti, 1], vo_[:, 0], vo_[:, 1],
+                                     g.fb_vcmd[ti, 0], g.fb_vcmd[ti, 1], g.fb_wcmd[ti], g.fb_vmeas[ti, 0], g.fb_vmeas[ti, 1],
+                                     g.fb_wmeas[ti], g.push_share_nom[ti, 0], g.push_share_nom[ti, 1], g.fs_meas[ti],
+                                     g.fs_bias[ti], g.fs_valid[ti].float()]
+                        else:
+                            cols += [torch.full_like(hd, float("nan"))] * 15
                         tr_rows.append(torch.stack(cols, -1).cpu().numpy())
                 if stage4 and g.cfg.wrench:
                     resid_sum += g.c_resid * live.float()
@@ -1079,7 +1157,9 @@ def main() -> int:
                         ("cmd", "on", "engaged", "contact_dist", "heading_err_deg", "touching", "force",
                          "force_align", "base_speed", "share_cmd", "force_along_cmd")] + [
                         f"{x}_{ag}" for ag in AGENTS for x in ("wcmd_vx", "wcmd_vy", "wcmd_wz", "vx", "vy", "wz", "fell")] + [
-                        f"cidx_{ag}" for ag in AGENTS] + ["plan_reason", "plan_n"]
+                        f"cidx_{ag}" for ag in AGENTS] + ["plan_reason", "plan_n"] + [
+                        "want_vx", "want_vy", "obj_vx", "obj_vy", "fb_vx", "fb_vy", "fb_wz", "meas_vx", "meas_vy", "meas_wz",
+                        f"share_nom_{AGENTS[0]}", f"share_nom_{AGENTS[1]}", "fs_meas_share", "fs_bias", "fs_valid"]
             for rule_ in dict.fromkeys(cases[j][0] for j in tr_ids):
                 pth = ROOT / "logs" / "evals" / f"{prefix}-{rule_}" / "pair" / f"trace_{mass:g}kg.csv.gz"
                 pth.parent.mkdir(parents=True, exist_ok=True)
@@ -1525,6 +1605,8 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "start": a.start, "reselect_min_dist": a.reselect_min_dist, "cmd_mode": getattr(a, "cmd_mode", "planner"),
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
                "settle_s": a.settle_s, "slow_min_s": a.slow_min_s, "coordinator": a.coordinator,
+               "friction": getattr(a, "friction", None), "scenarios": getattr(a, "scenarios", ""),
+               "planner_check": PLANNER_CHECK or None,
                "coord_ckpt": a.coord_ckpt, "coord_mode": a.coord_mode, "seed": a.seed,
                "resid_objects": getattr(a, "resid_gate", None),
                "resid_gate_dist": a.resid_gate_dist, "resid_compose": getattr(a, "resid_compose", None),
