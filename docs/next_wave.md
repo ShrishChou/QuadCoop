@@ -4,11 +4,16 @@ Status (2026-11-14):
 - **Parent:** iteration 4000 of the ten-object restart (`docs/ten_restart.md`).
 - **Preflight:** passed for the iteration-3000 parent (job 29055494), with difference 0 for the transfer into IPPO
   and into MAPPO and for both bank replays. The bank has 65,536 tasks, 6,450–6,702 per shape.
-- **Running:**
-  - preflight for iteration 4000: job 29080178;
-  - arm A (IPPO, uniform): `nwA_ippo_uniform_s0`, job 29080195, then evaluation 29080197;
-  - arm B (MAPPO, uniform): `nwB_mappo_uniform_s0`, job 29080199, then evaluation 29080200.
-- Both arms train to iteration 5000 and wait on the preflight (afterok). Arms C–E follow when GPUs free.
+- **Arms A and B: done** (iteration 5000; evaluations `nw-A-ippo-uniform-it5000-dev7100` and
+  `nw-B-mappo-uniform-it5000-dev7100`, commit 23e5f3e).
+  - IPPO solved 315/480 and MAPPO 316/480. The parent solved 315.
+  - MAPPO − IPPO: +0.2 points [−3.3, +3.8]. Each arm against the parent gained and lost about 40 tasks, which is
+    rerun level. No clear change.
+  - Both arms are still below 20/48 on arch, which falls off with mass (0/12 at 80 kg).
+  - Both gained on the straight 3 m scenario and lost on the 5 m, 90° turn.
+  - One seed per arm.
+- **Next: placement test** of the existing checkpoints (`docs/placement_eval.md`), before arms C–E or any
+  start-placement training.
 
 **Question.** Can the robots learn when one should yield or reposition? Arms A–D cross the algorithm with the
 reset sampler, and the reward stays fixed. Arm E removes only the individual push credit: does a robot make room for

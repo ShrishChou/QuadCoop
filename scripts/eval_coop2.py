@@ -21,6 +21,19 @@ starts at the origin, both robots behind it (180 deg +- 35 deg, jittered per rep
     C_backright  goal 3 m at 135 deg right (the robots have to go around), turned -60 deg
     D_far_turn   goal 5 m ahead, turned 90 deg (capped by the shape's symmetry, as in training)
 
+Start formations (--formations, default standard only; --swap also runs every task with the two robots'
+start places exchanged, so each swapped episode is matched to an unswapped one). Object, mass, goal, gaps and
+jitter are the same draw in every formation; only the robots' bearings around the object change:
+
+    standard     both behind in the fixed world frame: 180 deg -/+ 35 deg (anymal1 on the left)
+    flank        opposite faces across the goal axis: goal direction -/+ 90 deg (anymal1 on the right)
+    goal_behind  anymal1 straight behind the object (goal direction + 180 deg), anymal2 on the goal side
+                 (between the object and the goal)
+
+Per episode also: time of each robot's first push (front on the object and behind it, as push_frac), time the
+object first got 0.25 m closer to the goal, the first pusher, and takeover: time the other robot pushed while the
+first pusher did not, and the object's progress toward the goal meanwhile. scripts/placement_compare.py reads them.
+
 Success (as the single-robot h80 suite): object within 10 cm / 6 deg for 1 s within --horizon
 (80 s); "precise" = the training rule (10 cm / 3 deg with the object at rest) reached at some
 point. An episode ends at success, a fall (either robot), the object tipping or being lost.
@@ -49,6 +62,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT))
+
+FORMATIONS = {  # bearing offsets (deg) of (anymal1, anymal2), the frame they are in, and the roles
+    "standard": ((-35.0, 35.0), "world", ("behind_left", "behind_right")),
+    "flank": ((-90.0, 90.0), "goal", ("right", "left")),
+    "goal_behind": ((180.0, 0.0), "goal", ("behind", "goal_side")),
+}
 
 SCENARIOS = (  # name, distance (m), direction (deg, + = left, 0 = straight ahead of the robots), turn (deg)
     ("A_straight", 3.0, 0.0, 0.0),
@@ -120,6 +139,8 @@ def main() -> int:
     ap.add_argument("--video-size", default="640x480")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--formations", default="standard", help="comma list of standard, flank, goal_behind")
+    ap.add_argument("--swap", action="store_true", help="also run each task with the robots' start places exchanged")
     ap.add_argument("--recovery", action="store_true",
                     help="also record a 10 Hz contact trace per episode (robot-object contact sensors, logging only: "
                          "policy, observations and outcome rules unchanged) to logs/evals/<name>/pair/recovery_<mass>kg.npz "
@@ -168,10 +189,15 @@ def main() -> int:
     out = ROOT / "logs" / "evals" / a.name / "pair"
     stats_dir = ROOT / "evals" / a.name / "eval" / "pair"
     out.mkdir(parents=True, exist_ok=True)
-    cases = [(o, s, r) for o in objects for s in range(len(SCENARIOS)) for r in range(a.reps)]
+    formations = [x.strip() for x in a.formations.split(",")]
+    bad = [x for x in formations if x not in FORMATIONS]
+    if bad:
+        ap.error(f"unknown formations {bad}; choose from {list(FORMATIONS)}")
+    base_cases = [(o, s, r) for o in objects for s in range(len(SCENARIOS)) for r in range(a.reps)]
+    cases = [(o, s, r, f, w) for f in formations for w in ((0, 1) if a.swap else (0,)) for (o, s, r) in base_cases]
     n = len(cases)
-    print(f"{what}\n{len(objects)} objects x {len(SCENARIOS)} scenarios x {a.reps} reps = {n} episodes per mass; "
-          f"masses {masses}", flush=True)
+    print(f"{what}\n{len(objects)} objects x {len(SCENARIOS)} scenarios x {a.reps} reps x formations {formations}"
+          f"{' x swap' if a.swap else ''} = {n} episodes per mass; masses {masses}", flush=True)
     rows: list[dict] = []
     t_start = time.time()
 
@@ -194,16 +220,26 @@ def main() -> int:
 
         # the scenario each env gets at the next reset
         rng = random.Random(f"{a.seed}-coop2")
-        obj_idx = torch.tensor([SHAPE_NAMES2.index(o) for o, _, _ in cases], device=dev)
-        dist = torch.tensor([SCENARIOS[s][1] for _, s, _ in cases], device=dev)
-        gdir = torch.deg2rad(torch.tensor([SCENARIOS[s][2] for _, s, _ in cases], device=dev))
-        turn = torch.deg2rad(torch.tensor([SCENARIOS[s][3] for _, s, _ in cases], device=dev))
+        obj_idx = torch.tensor([SHAPE_NAMES2.index(c[0]) for c in cases], device=dev)
+        dist = torch.tensor([SCENARIOS[c[1]][1] for c in cases], device=dev)
+        gdir = torch.deg2rad(torch.tensor([SCENARIOS[c[1]][2] for c in cases], device=dev))
+        turn = torch.deg2rad(torch.tensor([SCENARIOS[c[1]][3] for c in cases], device=dev))
         sym = g.sym[obj_idx]
         cap = torch.where(sym > 0, (math.pi / sym.clamp(min=1)) * g.cfg.max_yaw_frac_of_symmetry, torch.zeros_like(sym))
         turn = torch.sign(turn) * torch.minimum(turn.abs(), cap)
-        jit = torch.tensor([[rng.uniform(-10, 10) for _ in AGENTS] for _ in cases], device=dev)
-        gap = torch.tensor([[rng.uniform(0.3, 0.6) for _ in AGENTS] for _ in cases], device=dev)
-        bearings = [math.pi + torch.deg2rad(sgn * 35.0 + jit[:, k]) for k, sgn in enumerate((-1.0, 1.0))]
+        # one jitter / gap draw per (object, scenario, rep), in the standard order, shared by every formation and
+        # swap; a swap exchanges the start places (bearing and gap) of the two robots
+        bi = {c: j for j, c in enumerate(base_cases)}
+        jit0 = [[rng.uniform(-10, 10) for _ in AGENTS] for _ in base_cases]
+        gap0 = [[rng.uniform(0.3, 0.6) for _ in AGENTS] for _ in base_cases]
+        sw = [(1, 0) if c[4] else (0, 1) for c in cases]
+        jit = torch.tensor([[jit0[bi[c[:3]]][q] for q in sw[j]] for j, c in enumerate(cases)], device=dev)
+        gap = torch.tensor([[gap0[bi[c[:3]]][q] for q in sw[j]] for j, c in enumerate(cases)], device=dev)
+        offs = torch.tensor([[FORMATIONS[c[3]][0][q] for q in sw[j]] for j, c in enumerate(cases)], device=dev)
+        frame_goal = torch.tensor([FORMATIONS[c[3]][1] == "goal" for c in cases], device=dev)
+        centre = torch.where(frame_goal, gdir, torch.full_like(gdir, math.pi))  # standard: 180 deg + offsets
+        bearings = [centre + torch.deg2rad(offs[:, k] + jit[:, k]) for k in range(len(AGENTS))]
+        roles = [[FORMATIONS[c[3]][2][q] for q in sw[j]] for j, c in enumerate(cases)]
         park = [torch.full((n,), a.solo is not None and ag != a.solo, dtype=torch.bool, device=dev) for ag in AGENTS]
         z = torch.zeros(n, device=dev)
         sc = {"shape": obj_idx, "obj_xy_rel": torch.zeros(n, 2, device=dev), "obj_heading": z.clone(),
@@ -214,6 +250,10 @@ def main() -> int:
                                       for k, v in sc.items()}
         obs, _ = base.reset()
         g.scenario = None
+        bp0 = g.box_pos()[:, :2]
+        berr = max(float(wrap(torch.atan2(*(base.scene[ag].data.root_link_pos_w[:, :2] - bp0).flip(-1).unbind(-1))
+                              - bearings[k]).abs().max()) for k, ag in enumerate(AGENTS))
+        print(f"[{mass:g} kg] start bearings: largest |placed - intended| {math.degrees(berr):.2f} deg", flush=True)
         obs = TensorDict({k: v for k, v in obs.items() if not k.startswith("walker_")}, batch_size=[n])
         policy = PairPolicy(obs, device, variant, checkpoint=a.checkpoint,
                             singles=None if a.checkpoint else models["policy"])
@@ -249,6 +289,12 @@ def main() -> int:
         push_steps = {ag: torch.zeros(n, device=dev) for ag in AGENTS}
         copush_steps = torch.zeros(n, device=dev)
         spread_sum = torch.zeros(n, device=dev)
+        nan = float("nan")
+        t_push = {ag: torch.full((n,), nan, device=dev) for ag in AGENTS}  # first push
+        t_prog = torch.full((n,), nan, device=dev)  # object first 0.25 m closer to the goal (while live)
+        first = torch.full((n,), -1, dtype=torch.long, device=dev)  # first pusher (index into AGENTS), -1 none
+        take_s = torch.zeros(n, device=dev)  # the other robot pushes, the first pusher does not
+        take_prog = torch.zeros(n, device=dev)  # object progress toward the goal meanwhile (m, + = closer)
 
         def pushing(ag):
             r = base.scene[ag]
@@ -269,6 +315,7 @@ def main() -> int:
         min_rd = torch.full((n,), 1e9, device=dev)
         d0, _ = g.errors()
         last_d, last_e, min_d = d0.clone(), torch.zeros(n, device=dev), d0.clone()
+        d_prev = d0.clone()
         pt, yt = 0.10, math.radians(6.0)
         if a.recovery:  # 0.1 s bins: contact fraction and mean force per robot; pose sampled at the bin's end
             rb = max(1, round(0.1 / dt))
@@ -296,6 +343,7 @@ def main() -> int:
                 d, e = g.errors()
                 ea = e.abs()
                 ok = live & ~f_any & ~tip & ~lost
+                t_prog = torch.where(ok & torch.isnan(t_prog) & (d <= d0 - 0.25), torch.full_like(t_prog, t), t_prog)
                 last_d = torch.where(ok, d, last_d)
                 last_e = torch.where(ok, ea, last_e)
                 min_d = torch.where(ok, torch.minimum(min_d, d), min_d)
@@ -311,12 +359,22 @@ def main() -> int:
                         push_steps[ag] += pu[ag].float()
                     both = pu[AGENTS[0]] & pu[AGENTS[1]]
                     copush_steps += both.float()
+                    for k, ag in enumerate(AGENTS):
+                        t_push[ag] = torch.where(pu[ag] & torch.isnan(t_push[ag]), torch.full_like(t_prog, t), t_push[ag])
+                    newf = (first < 0) & (pu[AGENTS[0]] | pu[AGENTS[1]])
+                    first = torch.where(newf, torch.where(pu[AGENTS[0]], 0, 1), first)  # a tie goes to anymal1
+                    pf = torch.where(first == 0, pu[AGENTS[0]], pu[AGENTS[1]])
+                    po = torch.where(first == 0, pu[AGENTS[1]], pu[AGENTS[0]])
+                    tk = (first >= 0) & po & ~pf & ok
+                    take_s += tk.float() * dt
+                    take_prog += torch.where(tk, d_prev - d, torch.zeros_like(d))
                     spread_sum += torch.where(both, torch.linalg.norm(front_point(AGENTS[0]) - front_point(AGENTS[1]), dim=-1),
                                               torch.zeros(n, device=dev))
                     rd = torch.linalg.norm(base.scene[AGENTS[0]].data.root_link_pos_w[:, :2]
                                            - base.scene[AGENTS[1]].data.root_link_pos_w[:, :2], dim=-1)
                     min_rd = torch.where(live, torch.minimum(min_rd, rd), min_rd)
                 live_steps += live.float()
+                d_prev = torch.where(ok, d, d_prev)
                 if a.recovery:
                     ug = g.goal_xy - g.box_pos()[:, :2]
                     ug = ug / torch.linalg.norm(ug, dim=-1, keepdim=True).clamp(min=1e-6)
@@ -363,10 +421,12 @@ def main() -> int:
                     break
 
         mine = []
-        for j, (o, s, r) in enumerate(cases):
+        ft = lambda x: "" if math.isnan(float(x)) else round(float(x), 2)  # noqa: E731
+        for j, (o, s, r, fm, wsw) in enumerate(cases):
             row = {"object": o, "seen_shape": int(o in TRAIN_NAMES), "mass": mass, "scenario": SCENARIOS[s][0],
                    "distance": SCENARIOS[s][1], "direction": SCENARIOS[s][2],
                    "turn": round(math.degrees(float(turn[j])), 1), "rep": r,
+                   "formation": fm, "swap": wsw, **{f"role_{ag}": roles[j][k] for k, ag in enumerate(AGENTS)},
                    "success": int(how[j] == "success"), "precise": int(bool(precise[j])), "outcome": how[j],
                    "t_success": round(float(t_succ[j]), 2) if how[j] == "success" else "",
                    **{f"fell_{ag}": int(bool(fell[ag][j])) for ag in AGENTS},
@@ -378,13 +438,18 @@ def main() -> int:
                    "copush_frac": round(float(copush_steps[j] / live_steps[j].clamp(min=1)), 3) if a.solo is None else "",
                    "copush_spread": (round(float(spread_sum[j] / copush_steps[j]), 2)
                                      if a.solo is None and float(copush_steps[j]) > 0 else ""),
-                   "min_robot_dist": round(float(min_rd[j]), 2) if a.solo is None else "", "video": ""}
+                   "min_robot_dist": round(float(min_rd[j]), 2) if a.solo is None else "",
+                   **{f"t_push_{ag}": ft(t_push[ag][j]) for ag in AGENTS}, "t_progress": ft(t_prog[j]),
+                   "first_pusher": AGENTS[int(first[j])] if int(first[j]) >= 0 else "",
+                   "takeover_s": round(float(take_s[j]), 2), "takeover_prog": round(float(take_prog[j]), 3),
+                   "video": ""}
             mine.append(row)
         if a.recovery:
             arr = {k: np.stack(v, 1) for k, v in rtr.items()}  # (n, T, ...)
             np.savez_compressed(out / f"recovery_{mass:g}kg.npz", dt_bin=rb * dt, mass=mass,
                                 object=np.array([c[0] for c in cases]), scenario=np.array([SCENARIOS[c[1]][0] for c in cases]),
-                                rep=np.array([c[2] for c in cases]), outcome=np.array(how), t_end=t_end.cpu().numpy(),
+                                rep=np.array([c[2] for c in cases]), formation=np.array([c[3] for c in cases]),
+                                swap=np.array([c[4] for c in cases]), outcome=np.array(how), t_end=t_end.cpu().numpy(),
                                 success=np.array([int(h == "success") for h in how]), agents=np.array(AGENTS), **arr)
         if film:
             try:
@@ -393,7 +458,7 @@ def main() -> int:
                 MP = np.stack(rec_mp, 1) if rec_mp else None
                 MQ = np.stack(rec_mq, 1) if rec_mq else None
                 for o in objects:
-                    js = [j for j, c in enumerate(cases) if c[0] == o]
+                    js = [j for j, c in enumerate(cases) if c[0] == o and c[3] == formations[0] and not c[4]]
                     wins = [j for j in js if how[j] == "success"]
                     j = wins[0] if wins else js[0]
                     F = min(Q.shape[1], int(float(t_end[j]) / (stride * dt)) + int(1.0 / (stride * dt)) + 1)
@@ -444,6 +509,7 @@ def main() -> int:
         by[("obj_mass", r["object"], r["mass"])].append(r)
         by[("group_mass", "seen" if r["seen_shape"] else "unseen", r["mass"])].append(r)
         by[("scen_mass", r["scenario"], r["mass"])].append(r)
+        by[("form_mass", r["formation"], r["swap"], r["mass"])].append(r)
     summary = {"policy": what, "name": a.name, "agents": list(AGENTS), "masses": masses, "reps": a.reps,
                "horizon_s": a.horizon,
                "overall": agg(rows),
@@ -451,7 +517,10 @@ def main() -> int:
                "by_group_mass": {f"{gname} / {m:g} kg": agg(by[("group_mass", gname, m)])
                                  for gname in ("seen", "unseen") for m in masses},
                "by_object_mass": {f"{o} / {m:g} kg": agg(by[("obj_mass", o, m)]) for o in objects for m in masses},
-               "by_scenario_mass": {f"{s[0]} / {m:g} kg": agg(by[("scen_mass", s[0], m)]) for s in SCENARIOS for m in masses}}
+               "by_scenario_mass": {f"{s[0]} / {m:g} kg": agg(by[("scen_mass", s[0], m)]) for s in SCENARIOS for m in masses},
+               "formations": formations, "swap": a.swap,
+               "by_formation_mass": {f"{fm}{' swapped' if w else ''} / {m:g} kg": agg(by[("form_mass", fm, w, m)])
+                                     for fm in formations for w in ((0, 1) if a.swap else (0,)) for m in masses}}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     f2 = lambda x: "" if x is None else f"{x:.2f}"  # noqa: E731
     md = [f"# Pair evaluation: {a.name}", "", f"policy: {what}", "",
@@ -482,6 +551,13 @@ def main() -> int:
     for s in SCENARIOS:
         md.append(f"| {s[0]} | " + " | ".join(f2(summary["by_scenario_mass"][f"{s[0]} / {m:g} kg"]["success"])
                                              for m in masses) + " |")
+    if formations != ["standard"] or a.swap:
+        md += ["", "## success by start formation and mass (the tables above pool every formation)", "",
+               "| formation | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
+        for fm in formations:
+            for w in ((0, 1) if a.swap else (0,)):
+                md.append(f"| {fm}{' swapped' if w else ''} | " + " | ".join(
+                    f2(summary["by_formation_mass"][f"{fm}{' swapped' if w else ''} / {m:g} kg"]["success"]) for m in masses) + " |")
     (out / "summary.md").write_text("\n".join(md) + "\n")
     stats_dir.mkdir(parents=True, exist_ok=True)
     for f in ("summary.md", "summary.json", "episodes.csv"):

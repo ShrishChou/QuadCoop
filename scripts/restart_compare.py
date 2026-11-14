@@ -35,8 +35,8 @@ def load(name: str) -> dict:
     f = ROOT / "evals" / name / "eval" / "pair" / "episodes.csv"
     out = {}
     for r in csv.DictReader(open(f)):
-        if r["object"] not in TEN:
-            continue
+        if r["object"] not in TEN or r.get("formation", "standard") != "standard" or int(r.get("swap") or 0):
+            continue  # only the standard benchmark placements (eval_coop2 --formations / --swap add others)
         k = (r["object"], float(r["mass"]), r["scenario"], int(r["rep"]))
         out[k] = {"success": int(r["success"]), "fell": int(int(r["fell_anymal1"]) or int(r["fell_anymal2"])),
                   "pos": float(r["final_pos_err"])}
