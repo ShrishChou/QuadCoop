@@ -1,6 +1,12 @@
 """Paired comparison of two evaluations on the same tasks (the ten-object restart: iteration 3000 vs 4000).
 
-    python scripts/restart_compare.py [--ref ten-ippo-source-dev7100] [--new ten-ippo-it4000-dev7100] [--out FILE.md]
+    python scripts/restart_compare.py [--ref=ten-ippo-source-dev7100] [--new=ten-ippo-it4000-dev7100] [--out=FILE.md]
+        [--ref2=<rerun of ref>] [--new2=<rerun of new>]
+
+Evaluation reruns of one checkpoint are not identical (GPU simulation is not bit-reproducible): on the seed-7100
+tasks a rerun flips ~70-80 of 480 outcomes. With --ref2 / --new2 (e.g. the --recovery logging passes, same tasks)
+the report adds that noise baseline and the paired change of the two-run means per task, which is what to read;
+single-run gained / lost counts are mostly that noise.
 
 Reads evals/<name>/eval/pair/episodes.csv; tasks are matched on (object, mass, scenario, rep) and only tasks
 present in both count. Reports, new minus reference:
@@ -96,6 +102,21 @@ def main() -> int:
     for o in strong:
         ls = [k for k in by[o] if A[k]["success"] > B[k]["success"]]
         md.append(f"- {o}: {len(ls)} lost" + (": " + "; ".join(f"{k[1]:g} kg {k[2]} rep {k[3]}" for k in ls) if ls else ""))
+    if "--ref2" in args and "--new2" in args:
+        A2, B2 = load(args["--ref2"]), load(args["--new2"])
+        k2 = [k for k in keys if k in A2 and k in B2]
+        fl = lambda X, Y: (sum(X[k]["success"] > Y[k]["success"] for k in k2), sum(X[k]["success"] < Y[k]["success"] for k in k2))  # noqa: E731
+        md += ["", "## Rerun noise and two-run means", "",
+               f"Same checkpoint rerun (1 -> 0 / 0 -> 1 flips): reference {fl(A, A2)}, new {fl(B, B2)}; reference vs new "
+               f"(single runs): {fl(A, B)}. Single-run gained / lost counts are at the rerun level.", "",
+               "| tasks | n | reference (2 runs) | new (2 runs) | change of per-task means [95% CI] |", "|---|---|---|---|---|"]
+        for what, ks in [("all ten", k2)] + [(o, [k for k in k2 if k[0] == o]) for o in TEN]:
+            if ks:
+                ra = sum(A[k]["success"] + A2[k]["success"] for k in ks)
+                rb = sum(B[k]["success"] + B2[k]["success"] for k in ks)
+                m, lo, hi = ci([(B[k]["success"] + B2[k]["success"] - A[k]["success"] - A2[k]["success"]) / 2 for k in ks])
+                md.append(f"| {what} | {len(ks)} | {ra}/{2 * len(ks)} ({ra / 2 / len(ks):.1%}) | {rb}/{2 * len(ks)} "
+                          f"({rb / 2 / len(ks):.1%}) | {m:+.3f} [{lo:+.3f}, {hi:+.3f}] |")
     text = "\n".join(md) + "\n"
     if "--out" in args:
         Path(args["--out"]).parent.mkdir(parents=True, exist_ok=True)

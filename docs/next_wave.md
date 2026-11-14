@@ -1,7 +1,14 @@
 # Next wave: matched IPPO / MAPPO arms on a fixed task bank
 
-Status (2026-11-14): components built; preflight passed for the iteration-3000 parent (job 29055494: transfer into IPPO and MAPPO and both bank replays, all with difference 0; 65,536 tasks, 6,450-6,702 per shape). No arm has trained yet. The parent is chosen from the
-ten-object restart's matched evaluation (see Parent, below).
+Status (2026-11-14):
+- **Parent:** iteration 4000 of the ten-object restart (`docs/ten_restart.md`).
+- **Preflight:** passed for the iteration-3000 parent (job 29055494), with difference 0 for the transfer into IPPO
+  and into MAPPO and for both bank replays. The bank has 65,536 tasks, 6,450–6,702 per shape.
+- **Running:**
+  - preflight for iteration 4000: job 29080178;
+  - arm A (IPPO, uniform): `nwA_ippo_uniform_s0`, job 29080195, then evaluation 29080197;
+  - arm B (MAPPO, uniform): `nwB_mappo_uniform_s0`, job 29080199, then evaluation 29080200.
+- Both arms train to iteration 5000 and wait on the preflight (afterok). Arms C–E follow when GPUs free.
 
 **Question.** Can the robots learn when one should yield or reposition? Arms A–D cross the algorithm with the
 reset sampler, and the reward stays fixed. Arm E removes only the individual push credit: does a robot make room for
@@ -95,3 +102,11 @@ the job is rerun with that `PARENT`: the transfer checks run again and the exist
 The parent is chosen from `scripts/restart_compare.py`: iteration 4000 vs 3000, paired on the 480 seed-7100 tasks.
 - **Use iteration 4000** if it improves transport while keeping the strong objects (sphere, long).
 - **Use iteration 3000** if iteration 4000 clearly regresses. Iteration 3000 remains a viable parent.
+
+**Decision (2026-11-14): iteration 4000.** Pooled over two evaluation runs per checkpoint:
+- overall +1.5 points [−1.3, +4.3];
+- the gain is on L-shape and plus (newly trained), the other objects are flat;
+- falls 67 → 52;
+- sphere and long are kept within their intervals; arch is lower (−7 points, interval includes 0).
+
+It does not clearly regress, so the rule picks it. Details: `docs/ten_restart.md`.

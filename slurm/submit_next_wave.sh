@@ -8,7 +8,9 @@
 # At most two arms per call (two GPUs); AFTER=<job id> holds this call's training until that job ends.
 #
 #   PARENT=logs/marl2/ippo_aa_kl_s0/model_3000.pt ARMS="A B" bash slurm/submit_next_wave.sh
-# Refuses unless slurm/next_wave_checks.sbatch passed for PARENT (transfer into both algorithms, bank replay).
+# Refuses unless slurm/next_wave_checks.sbatch passed for PARENT (transfer into both algorithms, bank replay), or
+# PREFLIGHT=<job id> of that check, still queued or running: training then waits on it (afterok: a failed check
+# leaves the arms pending, cancel them).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PARENT=${PARENT:?set PARENT=<trainer checkpoint>}
@@ -19,17 +21,22 @@ BANK=${BANK:-$OUT/bank_ten_s0_k16.pt}
 shapes=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 read -r -a arms <<< "$ARMS"
 (( ${#arms[@]} <= 2 )) || { echo "at most two arms per call (two GPUs)" >&2; exit 1; }
-[[ -s "$PARENT" && -s "$BANK" ]] || { echo "missing $PARENT or $BANK" >&2; exit 1; }
-for f in "$OUT/obs_${TAG}.ippo.json" "$OUT/obs_${TAG}.mappo.json" "${BANK%.pt}.check.json"; do
-  python3 -c "import json,sys; sys.exit(0 if json.load(open('$f'))['pass'] else 1)" 2>/dev/null \
-    || { echo "preflight not passed: $f (run slurm/next_wave_checks.sbatch with PARENT=$PARENT)" >&2; exit 1; }
-done
+[[ -s "$PARENT" && ( -s "$BANK" || -n "${PREFLIGHT:-}" ) ]] || { echo "missing $PARENT or $BANK" >&2; exit 1; }
+if [[ -z "${PREFLIGHT:-}" ]]; then
+  for f in "$OUT/obs_${TAG}.ippo.json" "$OUT/obs_${TAG}.mappo.json" "${BANK%.pt}.check.json"; do
+    python3 -c "import json,sys; sys.exit(0 if json.load(open('$f'))['pass'] else 1)" 2>/dev/null \
+      || { echo "preflight not passed: $f (run slurm/next_wave_checks.sbatch with PARENT=$PARENT)" >&2; exit 1; }
+  done
+fi
 pit=$(source .venv/bin/activate && python -I -c "import torch; print(int(torch.load('$PARENT', map_location='cpu', weights_only=False)['iter']))")
 ITERS=${ITERS:-$((pit + 1000))}
 COMMON="--pair anymal --partner-map --reward r7 --kl-ref 0.05 --max-actor-lr 1e-4 --fixed-difficulty --fixed-level 4 \
 --train-mass 20,80 --train-shapes $shapes --init-actors $PARENT --critic-warmup-resume 100 --task-bank-file $BANK"
 dep=()
-[[ -n "${AFTER:-}" ]] && dep=(--dependency="afterany:${AFTER}")
+d=""
+[[ -n "${AFTER:-}" ]] && d="afterany:${AFTER}"
+[[ -n "${PREFLIGHT:-}" ]] && d="${d:+$d,}afterok:${PREFLIGHT}"
+[[ -n "$d" ]] && dep=(--dependency="$d")
 for arm in "${arms[@]}"; do
   case "$arm" in
     A) algo=ippo;  extra="--task-bank uniform"; what=ippo-uniform ;;
