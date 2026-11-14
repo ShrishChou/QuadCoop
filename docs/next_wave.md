@@ -1,6 +1,6 @@
 # Next wave: matched IPPO / MAPPO arms on a fixed task bank
 
-Status (2026-11-14): components built, preflight queued. No arm has trained yet. The parent is chosen from the
+Status (2026-11-14): components built; preflight passed for the iteration-3000 parent (job 29055494: transfer into IPPO and MAPPO and both bank replays, all with difference 0; 65,536 tasks, 6,450-6,702 per shape). No arm has trained yet. The parent is chosen from the
 ten-object restart's matched evaluation (see Parent, below).
 
 **Question.** Can the robots learn when one should yield or reposition? Arms A–D cross the algorithm with the

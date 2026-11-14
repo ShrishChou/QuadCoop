@@ -120,6 +120,10 @@ def main() -> int:
     ap.add_argument("--video-size", default="640x480")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--recovery", action="store_true",
+                    help="also record a 10 Hz contact trace per episode (robot-object contact sensors, logging only: "
+                         "policy, observations and outcome rules unchanged) to logs/evals/<name>/pair/recovery_<mass>kg.npz "
+                         "for scripts/recovery_analysis.py")
     a = ap.parse_args()
     if not (a.checkpoint or a.frozen_pair or a.solo):
         ap.error("give --checkpoint, --frozen-pair or --solo")
@@ -172,7 +176,8 @@ def main() -> int:
     t_start = time.time()
 
     for mass in masses:
-        cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set)
+        cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set,
+                                 push_sensors=a.recovery)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -253,6 +258,9 @@ def main() -> int:
             behind = (to_obj * u).sum(-1) / torch.linalg.norm(to_obj, dim=-1).clamp(min=1e-6) > 0.0
             return (g.surface_distance(ag) < 0.08) & behind
 
+        def ended_now(f_any, tip, lost):
+            return f_any | tip | lost
+
         def front_point(ag):
             r = base.scene[ag]
             yaw = yaw_of(r.data.root_link_quat_w)
@@ -262,6 +270,10 @@ def main() -> int:
         d0, _ = g.errors()
         last_d, last_e, min_d = d0.clone(), torch.zeros(n, device=dev), d0.clone()
         pt, yt = 0.10, math.radians(6.0)
+        if a.recovery:  # 0.1 s bins: contact fraction and mean force per robot; pose sampled at the bin's end
+            rb = max(1, round(0.1 / dt))
+            racc = {k: torch.zeros(n, 2, device=dev) for k in ("found", "f_goal", "f_mag")}
+            rtr = defaultdict(list)
         all_done_at = None
         tail = int(2.0 / dt)
         with torch.no_grad():
@@ -305,6 +317,33 @@ def main() -> int:
                                            - base.scene[AGENTS[1]].data.root_link_pos_w[:, :2], dim=-1)
                     min_rd = torch.where(live, torch.minimum(min_rd, rd), min_rd)
                 live_steps += live.float()
+                if a.recovery:
+                    ug = g.goal_xy - g.box_pos()[:, :2]
+                    ug = ug / torch.linalg.norm(ug, dim=-1, keepdim=True).clamp(min=1e-6)
+                    for k, ag in enumerate(AGENTS):
+                        sd_ = base.scene[f"push_{ag}"].data
+                        racc["found"][:, k] += sd_.found.view(n, -1).any(-1).float()
+                        fx = sd_.force.view(n, -1, 3).sum(1)[:, :2]  # net force over the object bodies (one is live)
+                        racc["f_goal"][:, k] += (fx * ug).sum(-1)
+                        racc["f_mag"][:, k] += torch.linalg.norm(fx, dim=-1)
+                    if (i + 1) % rb == 0:
+                        for kk, v in racc.items():
+                            rtr[kk].append((v / rb).cpu().numpy())
+                            v.zero_()
+                        bp, by = g.box_pos()[:, :2], yaw_of(g.box_quat())
+                        cb, sb_ = torch.cos(by), torch.sin(by)
+                        fps, beh = [], []
+                        for ag in AGENTS:
+                            fw = front_point(ag) - bp
+                            fps.append(torch.stack([cb * fw[:, 0] + sb_ * fw[:, 1], -sb_ * fw[:, 0] + cb * fw[:, 1]], -1))
+                            beh.append(pushing(ag))
+                        rtr["t"].append(np.full(n, t, dtype=np.float32))
+                        rtr["live"].append((live & ~ended_now(f_any, tip, lost)).cpu().numpy())
+                        rtr["front_obj"].append(torch.stack(fps, 1).cpu().numpy())
+                        rtr["pushing"].append(torch.stack(beh, 1).cpu().numpy())
+                        rtr["d"].append(d.cpu().numpy())
+                        rtr["e"].append(ea.cpu().numpy())
+                        rtr["fell"].append(torch.stack([fell[ag] for ag in AGENTS], 1).cpu().numpy())
                 for j in f_any.nonzero().flatten().tolist():
                     how[j] = "fell_" + "+".join(ag for ag in active if bool(fell[ag][j]))
                 for j in tip.nonzero().flatten().tolist():
@@ -341,6 +380,12 @@ def main() -> int:
                                      if a.solo is None and float(copush_steps[j]) > 0 else ""),
                    "min_robot_dist": round(float(min_rd[j]), 2) if a.solo is None else "", "video": ""}
             mine.append(row)
+        if a.recovery:
+            arr = {k: np.stack(v, 1) for k, v in rtr.items()}  # (n, T, ...)
+            np.savez_compressed(out / f"recovery_{mass:g}kg.npz", dt_bin=rb * dt, mass=mass,
+                                object=np.array([c[0] for c in cases]), scenario=np.array([SCENARIOS[c[1]][0] for c in cases]),
+                                rep=np.array([c[2] for c in cases]), outcome=np.array(how), t_end=t_end.cpu().numpy(),
+                                success=np.array([int(h == "success") for h in how]), agents=np.array(AGENTS), **arr)
         if film:
             try:
                 cam = Camera(base, vw, vh)
