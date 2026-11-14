@@ -114,3 +114,40 @@ Parent, single run: flank +0.7, goal_behind −0.9 overall; cylinder +0.0 and �
     bank) is the test.
   - **New:** the arms' 1000 uniform-bank iterations narrowed what they handle, and the mixed-start arm should be
     compared directly with arm A.
+
+## Parent rerun pooled (2026-11-14): the cylinder weakness is mostly inherited
+
+With `place-ten-ippo-it4000-r2`, every policy has two runs. The comparison is per base task: success averaged over
+the swap halves and the runs, intervals bootstrapped over the 480 base tasks
+(`scripts/placement_compare.py --baseline=PARENT`).
+
+| cylinder | standard | flank | goal_behind | flank − standard | goal_behind − standard |
+|---|---|---|---|---|---|
+| parent, iteration 4000 | 47.4% | 41.1% | 38.5% | −6.2 [−13.5, +0.5] | −8.9 [−19.3, +0.5] |
+| A, IPPO | 44.3% | 35.4% | 35.9% | −8.9 [−18.2, +0.0] | −8.3 [−19.3, +1.6] |
+| B, MAPPO | 49.5% | 37.0% | 35.9% | −12.5 [−20.3, −5.2] | −13.5 [−24.0, −3.6] |
+
+Each arm's change minus the parent's change, on cylinder:
+
+| | flank | goal_behind |
+|---|---|---|
+| A | −2.6 [−9.4, +3.6] | +0.5 [−6.8, +7.8] |
+| B | −6.2 [−11.5, −1.6] | −4.7 [−12.0, +2.1] |
+
+Across all ten objects, the arms against the parent: −0.3 to −2.6 points, every interval including 0.
+
+**Reading:**
+- **The parent already loses cylinder success in both new formations,** and falls below 40% in goal_behind.
+- **IPPO's extra 1000 iterations** didn't measurably widen the gap.
+- **MAPPO widened it in flank.**
+- **Cylinder failures are about finishing, not starting.**
+  - The object starts moving in nearly every episode: 0–1.6% never make 0.25 m of progress.
+  - The first 0.25 m comes 0.5–1 s later than from the standard start.
+  - Failed episodes end a median 0.16–0.27 m from the goal.
+  - Falls rise in flank: 25–28%, against 15–25% from the standard start.
+- **Caveat on the role measures:** a robot counts as pushing only when it is behind the object and within 8 cm, and
+  a takeover requires 0.2 m of goalward progress.
+  - So "the behind robot pushes first" and "takeovers succeed more often" are partly built into the definitions.
+  - The swap-pair result is not: on matched goal_behind pairs, the leader follows the start place in 71–74% of pairs.
+
+Next: one mixed-start IPPO arm against arm A (`docs/mixed_start.md`).

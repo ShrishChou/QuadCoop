@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -323,6 +324,12 @@ def main() -> int:
     ap.add_argument("--bank-check", action="store_true", help="replay-check --task-bank-file on this env, exit")
     ap.add_argument("--bank-per-env", type=int, default=16, help="--bank-make: tasks per env slot")
     ap.add_argument("--bank-seed", type=int, default=9100, help="--bank-make: draw seed (not an evaluation seed)")
+    ap.add_argument("--bank-remix", default=None, metavar="SRC_BANK",
+                    help="write --task-bank-file as a copy of SRC_BANK with some tasks' robot bearings set to the "
+                         "--bank-mix formations (docs/mixed_start.md), re-record and replay-check every column, exit")
+    ap.add_argument("--bank-mix", default="flank:2,goal_behind:2",
+                    help="--bank-remix: columns per slot per formation (even: half with the robots exchanged)")
+    ap.add_argument("--bank-mix-seed", type=int, default=9200, help="--bank-remix: which columns, jitter")
     ap.add_argument("--drop-rewards", default="",
                     help="reward terms removed after the reward set is built, by name prefix (each robot's), e.g. "
                          "push_credit: team return only for pushing")
@@ -336,9 +343,11 @@ def main() -> int:
         raise SystemExit("--init-actors replaces --init-from / --scratch / --residual")
     if a.transfer_check and not a.init_actors:
         raise SystemExit("--transfer-check checks an --init-actors transfer")
-    if (a.task_bank or a.bank_make or a.bank_check) and not a.task_bank_file:
-        raise SystemExit("--task-bank / --bank-make / --bank-check need --task-bank-file")
-    if (a.task_bank or a.bank_make or a.bank_check) and (a.contacts or not a.fixed_difficulty):
+    if (a.task_bank or a.bank_make or a.bank_check or a.bank_remix) and not a.task_bank_file:
+        raise SystemExit("--task-bank / --bank-make / --bank-check / --bank-remix need --task-bank-file")
+    if (a.bank_make or a.bank_remix) and Path(a.task_bank_file).exists():
+        raise SystemExit(f"{a.task_bank_file} exists: a bank is written once")
+    if (a.task_bank or a.bank_make or a.bank_check or a.bank_remix) and (a.contacts or not a.fixed_difficulty):
         raise SystemExit("the task bank is for planner-free runs at fixed difficulty (--fixed-difficulty)")
     if a.bank_make and Path(a.task_bank_file).exists():
         raise SystemExit(f"{a.task_bank_file} exists: a bank is drawn once and shared by the arms")
@@ -522,6 +531,42 @@ def main() -> int:
               f"mass window {train_mass or 'the level'}, shapes {train_shapes or 'Stage 2 split'}")
     if a.transfer_check:
         raise SystemExit(transfer_check(trainer, env, a, device))
+    if a.bank_remix:
+        from quadcoop.coop2 import task_bank as tbm
+        per = {k: int(v) for k, v in (x.split(":") for x in a.bank_mix.split(","))}
+        src = torch.load(a.bank_remix, map_location="cpu", weights_only=False)
+        mix = tbm.remix(src, per, a.bank_mix_seed)
+        tb = tbm.TaskBank(mix, "uniform", device)
+        tb.check_physics(env)
+        g_ = env.command_manager.get_term("goal")
+        g_.scenario = tb
+        moved = tbm.resnap(env, tb)
+        # placed robots against the remixed bearings, on every task (from the re-recorded snapshot)
+        oxy = tb.snap["obj_xy"]
+        berr = 0.0
+        for k_, ag_ in enumerate(("anymal1", "anymal2")):
+            v_ = tb.snap[f"xy_{ag_}"] - oxy
+            dd = torch.atan2(v_[..., 1], v_[..., 0]) - tb.t["bearings"][..., k_]
+            berr = max(berr, float(torch.atan2(torch.sin(dd), torch.cos(dd)).abs().max()))
+        fixed_keys = [k_ for k_ in moved if not k_.startswith(("xy_", "yaw_"))]
+        drift = max(moved[k_] for k_ in fixed_keys)
+        out_ = {"tasks": {k_: v_.cpu() for k_, v_ in tb.t.items()}, "snap": {k_: v_.cpu() for k_, v_ in tb.snap.items()},
+                "meta": mix["meta"], "mix": mix["mix"]}
+        Path(a.task_bank_file).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(out_, a.task_bank_file)
+        rep_ = tbm.replay_check(env, tb, columns=tuple(range(tb.K)))
+        g_.scenario = None
+        rep_.update(source=a.bank_remix, mix=mix["meta"]["mix"], resnap_change=moved, non_robot_drift=drift,
+                    bearing_err_deg=math.degrees(berr))
+        rep_["pass"] = bool(rep_["pass"] and drift <= 1e-4 and math.degrees(berr) <= 0.5)
+        f_ = mix["mix"]["formation"]
+        print(f"[bank] remix {a.bank_remix} -> {a.task_bank_file}: per slot {per}; tasks original "
+              f"{int((f_ < 0).sum())}, " + ", ".join(f"{nm} {int((f_ == i).sum())}" for i, nm in enumerate(mix['mix']['names']))
+              + f"; robot poses moved up to {max(moved[k_] for k_ in moved if k_ not in fixed_keys):.2f}, other keys "
+              f"{drift:.2e}; placed vs remixed bearing {math.degrees(berr):.3f} deg; replay (all {tb.K} columns, twice) "
+              f"worst {rep_['worst']:.2e} -> {'PASS' if rep_['pass'] else 'FAIL'}")
+        (Path(a.task_bank_file).with_suffix(".check.json")).write_text(json.dumps(rep_, indent=1))
+        raise SystemExit(0 if rep_["pass"] else 1)
     if a.bank_make or a.bank_check or a.task_bank:
         from quadcoop.coop2 import task_bank as tbm
         if a.bank_make:

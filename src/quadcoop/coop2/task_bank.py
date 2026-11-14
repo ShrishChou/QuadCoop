@@ -248,3 +248,71 @@ def replay_check(env, tb: TaskBank, columns=(0, -1), tol: float = 1e-4) -> dict:
     rep["worst"] = worst
     rep["pass"] = worst <= tol
     return rep
+
+
+# -- mixed starts (docs/mixed_start.md): a copy of a bank with some tasks' robot bearings changed ------------------
+MIX_FORMATIONS = {  # bearing offsets (deg) of (anymal1, anymal2) from the object -> goal direction (eval_coop2's)
+    "flank": (-90.0, 90.0),
+    "goal_behind": (180.0, 0.0),
+}
+
+
+def remix(bank: dict, per_slot: dict[str, int], seed: int, jitter_deg: float = 10.0) -> dict:
+    """A copy of `bank` in which, on every slot, per_slot[f] columns get formation f's bearings (relative to that
+    task's own object -> goal direction, +- jitter_deg per robot); half of each formation's columns on a slot with
+    the robots' places exchanged (per_slot[f] must be even), so each actor takes each place equally often. Shape,
+    object pose, goal, gaps, yaw noise, flags and physics are unchanged. The robot placements in the snapshot are
+    stale for the changed tasks: run resnap() on the env before use. CPU only."""
+    t = {k: v.clone() for k, v in bank["tasks"].items()}
+    n, K = t["shape"].shape
+    total = sum(per_slot.values())
+    assert total <= K and all(v % 2 == 0 for v in per_slot.values()), per_slot
+    gen = torch.Generator().manual_seed(seed)
+    cols = torch.argsort(torch.rand(n, K, generator=gen), dim=1)[:, :total]  # distinct columns per slot
+    form = torch.full((n, K), -1, dtype=torch.long)  # -1 original, else index into MIX_FORMATIONS
+    swap = torch.zeros(n, K, dtype=torch.bool)
+    rows = torch.arange(n).unsqueeze(1)
+    j = 0
+    names = list(MIX_FORMATIONS)
+    for f, cnt in per_slot.items():
+        c = cols[:, j:j + cnt]
+        form[rows, c] = names.index(f)
+        swap[rows, c[:, cnt // 2:]] = True
+        j += cnt
+    d = t["goal_xy_rel"] - t["obj_xy_rel"]
+    gdir = torch.atan2(d[..., 1], d[..., 0])
+    jit = torch.deg2rad((2 * torch.rand(n, K, 2, generator=gen) - 1) * jitter_deg)
+    new = t["bearings"].clone()
+    for i, f in enumerate(names):
+        off = torch.deg2rad(torch.tensor(MIX_FORMATIONS[f]))
+        sel = form == i
+        o = torch.where(swap.unsqueeze(-1), off.flip(0), off).expand(n, K, 2)
+        b = gdir.unsqueeze(-1) + o + jit
+        new[sel] = torch.atan2(torch.sin(b), torch.cos(b))[sel]
+    t["bearings"] = new
+    meta = dict(bank["meta"])
+    meta["mix"] = {"source_seed": meta["seed"], "per_slot": dict(per_slot), "seed": seed, "jitter_deg": jitter_deg,
+                   "formations": {k: list(v) for k, v in MIX_FORMATIONS.items()}}
+    return {"tasks": t, "snap": {k: v.clone() for k, v in bank["snap"].items()}, "meta": meta,
+            "mix": {"formation": form, "swap": swap, "names": names}}
+
+
+@torch.no_grad()
+def resnap(env, tb: "TaskBank") -> dict:
+    """Re-record every column's placement on every slot (a full env reset per column) into tb.snap; returns the
+    largest change per key (robot poses change where bearings were remixed, everything else must not)."""
+    ids = torch.arange(env.num_envs, device=env.device)
+    worst = {}
+    for k in range(tb.K):
+        tb.forced = k
+        env.reset()
+        s = snapshot(env, ids, tb.t["shape"][:, k])
+        for key, v in s.items():
+            dd = v - tb.snap[key][:, k]
+            if "yaw" in key:
+                dd = torch.atan2(torch.sin(dd), torch.cos(dd))
+            worst[key] = max(worst.get(key, 0.0), float(dd.abs().max()))
+            tb.snap[key][:, k] = v
+    tb.forced = None
+    tb.cur.fill_(-1)
+    return worst

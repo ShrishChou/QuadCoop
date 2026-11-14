@@ -1,7 +1,8 @@
 """Start-placement comparison of trained pairs (eval_coop2.py --formations standard,flank,goal_behind --swap).
 
-    python scripts/placement_compare.py --runs=IPPO:<eval name>,MAPPO:<eval name>[,...] [--out=FILE.md]
-        [--focus=arch,cylinder,long,sphere] [--reruns=IPPO:<rerun eval name>,...]
+    python scripts/placement_compare.py --runs=IPPO:<eval>[+<rerun eval>],MAPPO:<eval>[+<rerun>],... [--out=FILE.md]
+        [--focus=arch,cylinder,long,sphere] [--baseline=PARENT] [--pairs=F-A,B-A] [--diag=cylinder]
+        [--reruns=IPPO:<rerun eval name>,...]   (older form of LABEL:a+b)
 
 Each eval holds every task (object x mass x scenario x rep, the 480 seed-7100 benchmark tasks) in each formation,
 unswapped and with the robots' start places exchanged; object, mass, goal, gaps and jitter are the same draw in
@@ -20,6 +21,14 @@ all of them. Tasks are matched on (object, mass, scenario, rep, swap). Reported 
   reruns       with --reruns (a second evaluation of the same checkpoint and tasks): outcome flips between the
                two runs per formation, and each formation's change vs standard from the two-run mean per task,
                for every object; that is what to read for a per-object deficit
+  pooled       (every run given) per base task (object, mass, scenario, rep): success averaged over the swap
+               halves and the runs; a formation's change vs standard is the per-base-task difference, its 95% CI a
+               bootstrap over base tasks (swaps and reruns stay together)
+  baseline     --baseline=LABEL: each other policy's change vs standard minus the baseline's, per base task
+  pairs        --pairs=X-Y: X minus Y success per formation, pooled the same way
+  diag         --diag=OBJ: per formation, median time of the object's first 0.25 m of progress (and the share of
+               episodes where it never came), median final distance to the goal, falls - getting the push going
+               vs finishing it
 Rerun noise: one GPU evaluation rerun flips ~15% of outcomes (docs/ten_restart.md); differences inside that are
 not findings.
 """
@@ -73,7 +82,13 @@ def main() -> int:
     args = dict(x.split("=", 1) for x in sys.argv[1:] if x.startswith("--") and "=" in x)
     runs = [x.split(":", 1) for x in args["--runs"].split(",")]
     focus = args.get("--focus", "arch,cylinder,long,sphere").split(",")
-    data = {lab: load(nm) for lab, nm in runs}
+    allruns = {lab: [load(x) for x in nm.split("+")] for lab, nm in runs}
+    for x in (args["--reruns"].split(",") if "--reruns" in args else []):
+        lab, nm = x.split(":", 1)
+        if len(allruns[lab]) == 1:
+            allruns[lab].append(load(nm))
+    data = {lab: rr[0] for lab, rr in allruns.items()}  # the single-run sections: the first run
+    runs = [(lab, nm.split("+")[0]) for lab, nm in runs]
     md = [f"# Start placements: {', '.join(f'{l} = `{n}`' for l, n in runs)}", ""]
     forms = list(dict.fromkeys(r["formation"] for r in next(iter(data.values()))))
     for lab, rows in data.items():
@@ -176,33 +191,99 @@ def main() -> int:
                 m, lo, hi = ci([B[k]["success"] - A[k]["success"] for k in ks])
                 cells.append(f"{100 * m:+.1f} [{100 * lo:+.1f}, {100 * hi:+.1f}] pts")
             md.append(f"| {fm} | " + " | ".join(cells) + " |")
-    if "--reruns" in args:
-        md += ["", "## Two runs per checkpoint: rerun noise and pooled change vs standard", ""]
-        for lab, nm in (x.split(":", 1) for x in args["--reruns"].split(",")):
-            R1 = {(r["formation"], r["key"]): r for r in data[lab]}
-            R2 = {(r["formation"], r["key"]): r for r in load(nm)}
-            md += [f"### {lab} (`{nm}` as the second run)", "",
-                   "Same checkpoint, same tasks, second run: outcome flips (1 -> 0 / 0 -> 1) per formation: "
-                   + "; ".join(f"{fm} {sum(R1[k]['success'] > R2[k]['success'] for k in R1 if k[0] == fm and k in R2)} / "
-                               f"{sum(R1[k]['success'] < R2[k]['success'] for k in R1 if k[0] == fm and k in R2)}"
-                               for fm in forms) + " (of 960).", "",
-                   "| object | standard (2 runs) | " + " | ".join(f"{fm} change [95% CI]" for fm in forms if fm != "standard") + " |",
-                   "|---|---|" + "---|" * (len(forms) - 1)]
-            objs = ["all ten"] + sorted({k[1][0] for k in R1})
-            for o in objs:
-                ks = [k for k in R1 if k[0] == "standard" and k in R2 and (o == "all ten" or k[1][0] == o)]
-                sm = sum(R1[k]["success"] + R2[k]["success"] for k in ks) / (2 * len(ks))
-                cells = []
+    # -- pooled over swaps and runs, per base task --------------------------------------------------------------
+    def pooled(lab):
+        acc = defaultdict(lambda: [0.0, 0])
+        for rows in allruns[lab]:
+            for r in rows:
+                a_ = acc[(r["formation"], r["key"][:4])]
+                a_[0] += r["success"]
+                a_[1] += 1
+        return {k: v[0] / v[1] for k, v in acc.items()}
+
+    P = {lab: pooled(lab) for lab in allruns}
+    nruns = {lab: len(rr) for lab, rr in allruns.items()}
+    groups = [("all ten", None)] + [(o, o) for o in sorted({k[1][0] for k in next(iter(P.values()))})]
+    sel = lambda ks, o: [k for k in ks if o is None or k[0] == o]  # noqa: E731
+    std_b = lambda lab: sorted(k[1] for k in P[lab] if k[0] == "standard")  # noqa: E731
+
+    def change(lab, fm, o):
+        return {b: P[lab][(fm, b)] - P[lab][("standard", b)] for b in sel(std_b(lab), o) if (fm, b) in P[lab]}
+
+    def cell(d):
+        if not d:
+            return "-"
+        m, lo, hi = ci(d)
+        return f"{100 * m:+.1f} [{100 * lo:+.1f}, {100 * hi:+.1f}]" + (" **" if hi < 0 or lo > 0 else "")
+
+    md += ["", "## Pooled over swaps and runs (per base task; ** = interval excludes 0)", ""]
+    for lab, rr in allruns.items():
+        if len(rr) > 1:
+            fl = []
+            for fm in forms:
+                a1 = {r["key"]: r["success"] for r in rr[0] if r["formation"] == fm}
+                a2 = {r["key"]: r["success"] for r in rr[1] if r["formation"] == fm}
+                fl.append(f"{fm} {sum(a1[k] != a2[k] for k in a1 if k in a2)}")
+            md.append(f"- {lab}: rerun flips (of 960 per formation): " + ", ".join(fl))
+    md += ["", "### Success rate", "",
+           "| object | " + " | ".join(f"{lab} ({nruns[lab]} run{'s' if nruns[lab] > 1 else ''}) {fm}"
+                                     for lab in P for fm in forms) + " |",
+           "|---|" + "---|" * (len(P) * len(forms))]
+    for gname, o in groups:
+        cells = []
+        for lab in P:
+            for fm in forms:
+                v = [P[lab][(fm, b)] for b in sel(std_b(lab), o) if (fm, b) in P[lab]]
+                cells.append(f"{sum(v) / len(v):.1%}" if v else "-")
+        md.append(f"| {gname} | " + " | ".join(cells) + " |")
+    md += ["", "### Change vs standard (points [95% CI])", "",
+           "| object | " + " | ".join(f"{lab} {fm}" for lab in P for fm in forms if fm != "standard") + " |",
+           "|---|" + "---|" * (len(P) * (len(forms) - 1))]
+    for gname, o in groups:
+        md.append(f"| {gname} | " + " | ".join(cell(list(change(lab, fm, o).values()))
+                                              for lab in P for fm in forms if fm != "standard") + " |")
+    if "--baseline" in args:
+        bl = args["--baseline"]
+        others = [lab for lab in P if lab != bl]
+        md += ["", f"### Change vs standard, minus {bl}'s (per base task; points [95% CI])", "",
+               "| object | " + " | ".join(f"{lab} - {bl} {fm}" for lab in others for fm in forms if fm != "standard") + " |",
+               "|---|" + "---|" * (len(others) * (len(forms) - 1))]
+        for gname, o in groups:
+            cells = []
+            for lab in others:
                 for fm in forms:
                     if fm == "standard":
                         continue
-                    d = [(R1[(fm, k[1])]["success"] + R2[(fm, k[1])]["success"] - R1[k]["success"] - R2[k]["success"]) / 2
-                         for k in ks if (fm, k[1]) in R1 and (fm, k[1]) in R2]
-                    m, lo, hi = ci(d)
-                    flag = " **" if hi < 0 or lo > 0 else ""
-                    cells.append(f"{100 * m:+.1f} [{100 * lo:+.1f}, {100 * hi:+.1f}]{flag}")
-                md.append(f"| {o} | {sm:.0%} | " + " | ".join(cells) + " |")
-            md += ["", "** = interval excludes 0.", ""]
+                    c1, c0 = change(lab, fm, o), change(bl, fm, o)
+                    cells.append(cell([c1[b] - c0[b] for b in c1 if b in c0]))
+            md.append(f"| {gname} | " + " | ".join(cells) + " |")
+    for pr in (args["--pairs"].split(",") if "--pairs" in args else []):
+        x, y = pr.split("-")
+        md += ["", f"### {x} - {y}, success per formation (per base task; points [95% CI])", "",
+               "| object | " + " | ".join(forms) + " |", "|---|" + "---|" * len(forms)]
+        for gname, o in groups:
+            cells = []
+            for fm in forms:
+                ks = [k for k in P[x] if k[0] == fm and k in P[y] and (o is None or k[1][0] == o)]
+                cells.append(cell([P[x][k] - P[y][k] for k in ks]))
+            md.append(f"| {gname} | " + " | ".join(cells) + " |")
+    for o in (args["--diag"].split(",") if "--diag" in args else []):
+        md += ["", f"### {o}: getting the push going vs finishing it (all runs and swaps)", "",
+               "| policy | formation | n | success | falls | first 0.25 m progress, median s | never progressed "
+               "| final distance to goal, median m | final distance, failures, median m |",
+               "|---|---|---|---|---|---|---|---|---|"]
+        for lab, rr in allruns.items():
+            for fm in forms:
+                R = [r for rows in rr for r in rows if r["formation"] == fm and r["object"] == o]
+                if not R:
+                    continue
+                tg = [float(r["t_progress"]) for r in R if r["t_progress"]]
+                fd = [float(r["final_pos_err"]) for r in R]
+                ff = [float(r["final_pos_err"]) for r in R if not r["success"]]
+                md.append(f"| {lab} | {fm} | {len(R)} | {sum(r['success'] for r in R) / len(R):.1%} | "
+                          f"{sum(r['fell'] for r in R) / len(R):.1%} | {st.median(tg) if tg else float('nan'):.1f} | "
+                          f"{(len(R) - len(tg)) / len(R):.1%} | {st.median(fd):.2f} | "
+                          f"{st.median(ff) if ff else float('nan'):.2f} |")
     text = "\n".join(md) + "\n"
     if "--out" in args:
         Path(args["--out"]).parent.mkdir(parents=True, exist_ok=True)

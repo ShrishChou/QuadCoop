@@ -3,6 +3,8 @@
 #   A  IPPO   uniform        B  MAPPO  uniform
 #   C  IPPO   SGS            D  MAPPO  SGS
 #   E  MAPPO  uniform, push_credit removed (team return only for pushing)
+#   F  IPPO   uniform over the mixed-start bank (MIXBANK, slurm/mixed_start_bank.sbatch; docs/mixed_start.md):
+#             A's bank with 12.5% flank and 12.5% goal_behind starts, everything else A's
 # Each arm: actors from PARENT (normalizers, noise), fresh critics trained alone for 100 iterations, 1000
 # iterations in all (ITERS overrides the stop iteration), then the matched 480-task seed-7100 evaluation.
 # At most two arms per call (two GPUs); AFTER=<job id> holds this call's training until that job ends.
@@ -18,12 +20,15 @@ ARMS=${ARMS:?set ARMS, e.g. \"A B\"}
 TAG=$(basename "$(dirname "$PARENT")")_$(basename "$PARENT" .pt)
 OUT=logs/next_wave
 BANK=${BANK:-$OUT/bank_ten_s0_k16.pt}
+MIXBANK=${MIXBANK:-$OUT/bank_ten_s0_k16_mix.pt}
 shapes=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 read -r -a arms <<< "$ARMS"
 (( ${#arms[@]} <= 2 )) || { echo "at most two arms per call (two GPUs)" >&2; exit 1; }
 [[ -s "$PARENT" && ( -s "$BANK" || -n "${PREFLIGHT:-}" ) ]] || { echo "missing $PARENT or $BANK" >&2; exit 1; }
 if [[ -z "${PREFLIGHT:-}" ]]; then
-  for f in "$OUT/obs_${TAG}.ippo.json" "$OUT/obs_${TAG}.mappo.json" "${BANK%.pt}.check.json"; do
+  checks=("$OUT/obs_${TAG}.ippo.json" "$OUT/obs_${TAG}.mappo.json" "${BANK%.pt}.check.json")
+  [[ " ${arms[*]} " == *" F "* ]] && checks+=("${MIXBANK%.pt}.check.json")
+  for f in "${checks[@]}"; do
     python3 -c "import json,sys; sys.exit(0 if json.load(open('$f'))['pass'] else 1)" 2>/dev/null \
       || { echo "preflight not passed: $f (run slurm/next_wave_checks.sbatch with PARENT=$PARENT)" >&2; exit 1; }
   done
@@ -31,7 +36,7 @@ fi
 pit=$(source .venv/bin/activate && python -I -c "import torch; print(int(torch.load('$PARENT', map_location='cpu', weights_only=False)['iter']))")
 ITERS=${ITERS:-$((pit + 1000))}
 COMMON="--pair anymal --partner-map --reward r7 --kl-ref 0.05 --max-actor-lr 1e-4 --fixed-difficulty --fixed-level 4 \
---train-mass 20,80 --train-shapes $shapes --init-actors $PARENT --critic-warmup-resume 100 --task-bank-file $BANK"
+--train-mass 20,80 --train-shapes $shapes --init-actors $PARENT --critic-warmup-resume 100"
 dep=()
 d=""
 [[ -n "${AFTER:-}" ]] && d="afterany:${AFTER}"
@@ -39,16 +44,20 @@ d=""
 [[ -n "$d" ]] && dep=(--dependency="$d")
 for arm in "${arms[@]}"; do
   case "$arm" in
-    A) algo=ippo;  extra="--task-bank uniform"; what=ippo-uniform ;;
-    B) algo=mappo; extra="--task-bank uniform"; what=mappo-uniform ;;
-    C) algo=ippo;  extra="--task-bank sgs";     what=ippo-sgs ;;
-    D) algo=mappo; extra="--task-bank sgs";     what=mappo-sgs ;;
-    E) algo=mappo; extra="--task-bank uniform --drop-rewards push_credit"; what=mappo-uniform-nocredit ;;
+    A) algo=ippo;  extra="--task-bank uniform --task-bank-file $BANK"; what=ippo-uniform ;;
+    B) algo=mappo; extra="--task-bank uniform --task-bank-file $BANK"; what=mappo-uniform ;;
+    C) algo=ippo;  extra="--task-bank sgs --task-bank-file $BANK";     what=ippo-sgs ;;
+    D) algo=mappo; extra="--task-bank sgs --task-bank-file $BANK";     what=mappo-sgs ;;
+    E) algo=mappo; extra="--task-bank uniform --task-bank-file $BANK --drop-rewards push_credit"; what=mappo-uniform-nocredit ;;
+    F) algo=ippo;  extra="--task-bank uniform --task-bank-file $MIXBANK"; what=ippo-uniform-mixstart ;;
     *) echo "unknown arm $arm" >&2; exit 1 ;;
   esac
   run="nw${arm}_${what//-/_}_s0"
   tid=$(ALGO=$algo SEED=0 VARIANT=b NUM_ENVS=4096 RUN_NAME="$run" ITERS="$ITERS" LOGGER=wandb EXTRA="$COMMON $extra" \
         sbatch --parsable "${dep[@]}" slurm/train_coop2.sbatch)
+  if [[ -n "${NOEVAL:-}" ]]; then  # e.g. arm F: its placement evaluation includes the benchmark tasks
+    echo "arm $arm ($algo, $what): train $run job $tid (to iteration $ITERS), no evaluation queued"; continue
+  fi
   eid=$(NAME="nw-${arm}-${what}-it${ITERS}-dev7100" CK="logs/marl2/$run/model_${ITERS}.pt" SOLO= MASSES=20,40,60,80 REPS=3 \
         ARGS="--objects $shapes --seed 7100 --videos 0" sbatch --parsable --dependency="afterok:${tid%%;*}" slurm/eval_coop2.sbatch)
   echo "arm $arm ($algo, $what): train $run job $tid (to iteration $ITERS) -> eval job $eid"
