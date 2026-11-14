@@ -465,6 +465,7 @@ def push2_curriculum(env, env_ids: torch.Tensor, advance: float = 0.55, retreat:
                      dwell_iters: int = 75, ema: float = 0.02, steps_per_iter: int = 24,
                      min_weight: float = 0.15, allow_level: bool = True):
     g = _g(env)
+    fixed = getattr(g.cfg, "fixed_difficulty", False)
     it = env.common_step_counter / steps_per_iter
     if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
         succ = g.metrics["success"][env_ids]
@@ -472,13 +473,16 @@ def push2_curriculum(env, env_ids: torch.Tensor, advance: float = 0.55, retreat:
             sel = g.shape[env_ids] == k
             if sel.any():
                 g.shape_success[k] = 0.95 * g.shape_success[k] + 0.05 * succ[sel].mean()
-        g.shape_weight[:] = (1.0 - g.shape_success).clamp(min=min_weight)
+        if fixed:
+            g.shape_weight.fill_(1.0)
+        else:
+            g.shape_weight[:] = (1.0 - g.shape_success).clamp(min=min_weight)
         at_level = g.env_level[env_ids] == g.level
         if at_level.any():
             s = float(succ[at_level].mean())
             w = min(1.0, ema * int(at_level.sum()))
             g.ema_success = (1 - w) * g.ema_success + w * s
-            if allow_level and it - g.last_change_iter >= dwell_iters:
+            if allow_level and not fixed and it - g.last_change_iter >= dwell_iters:
                 if g.ema_success > advance and g.level < len(g.cfg.levels) - 1:
                     g.level += 1
                     g.last_change_iter = it
