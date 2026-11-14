@@ -295,6 +295,9 @@ def main() -> int:
         first = torch.full((n,), -1, dtype=torch.long, device=dev)  # first pusher (index into AGENTS), -1 none
         take_s = torch.zeros(n, device=dev)  # the other robot pushes, the first pusher does not
         take_prog = torch.zeros(n, device=dev)  # object progress toward the goal meanwhile (m, + = closer)
+        # --recovery: each robot's work moving the object toward the goal (J): its contact force on the object along
+        # the goal direction (pushing part) x the object's speed toward the goal, while the episode is live
+        work = torch.zeros(n, len(AGENTS), device=dev)
 
         def pushing(ag):
             r = base.scene[ag]
@@ -381,8 +384,14 @@ def main() -> int:
                     for k, ag in enumerate(AGENTS):
                         sd_ = base.scene[f"push_{ag}"].data
                         racc["found"][:, k] += sd_.found.view(n, -1).any(-1).float()
-                        fx = sd_.force.view(n, -1, 3).sum(1)[:, :2]  # net force over the object bodies (one is live)
-                        racc["f_goal"][:, k] += (fx * ug).sum(-1)
+                        # force ON the object (the sensor reads the reaction: -FORCE_SIGN x reading), net over the
+                        # object bodies (one is live); files before 2026-11-14 stored the raw reading (no force_on_object)
+                        fx = -cm.FORCE_SIGN * sd_.force.view(n, -1, 3).sum(1)[:, :2]
+                        fg_ = (fx * ug).sum(-1)
+                        racc["f_goal"][:, k] += fg_
+                        vg_ = (g.box_vel()[:, :2] * ug).sum(-1).clamp(min=0.0)
+                        work[:, k] += torch.where(live & ~ended_now(f_any, tip, lost), fg_.clamp(min=0.0) * vg_ * dt,
+                                                  torch.zeros_like(fg_))
                         racc["f_mag"][:, k] += torch.linalg.norm(fx, dim=-1)
                     if (i + 1) % rb == 0:
                         for kk, v in racc.items():
@@ -442,6 +451,9 @@ def main() -> int:
                    **{f"t_push_{ag}": ft(t_push[ag][j]) for ag in AGENTS}, "t_progress": ft(t_prog[j]),
                    "first_pusher": AGENTS[int(first[j])] if int(first[j]) >= 0 else "",
                    "takeover_s": round(float(take_s[j]), 2), "takeover_prog": round(float(take_prog[j]), 3),
+                   **({f"work_{ag}": round(float(work[j, k]), 1) for k, ag in enumerate(AGENTS)} if a.recovery else {}),
+                   **({"work_share_min": (round(float(work[j].min() / work[j].sum()), 3) if float(work[j].sum()) > 1.0 else "")}
+                      if a.recovery else {}),
                    "video": ""}
             mine.append(row)
         if a.recovery:
@@ -450,7 +462,8 @@ def main() -> int:
                                 object=np.array([c[0] for c in cases]), scenario=np.array([SCENARIOS[c[1]][0] for c in cases]),
                                 rep=np.array([c[2] for c in cases]), formation=np.array([c[3] for c in cases]),
                                 swap=np.array([c[4] for c in cases]), outcome=np.array(how), t_end=t_end.cpu().numpy(),
-                                success=np.array([int(h == "success") for h in how]), agents=np.array(AGENTS), **arr)
+                                success=np.array([int(h == "success") for h in how]), agents=np.array(AGENTS),
+                                force_on_object=True, **arr)
         if film:
             try:
                 cam = Camera(base, vw, vh)

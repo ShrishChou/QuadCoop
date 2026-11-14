@@ -75,3 +75,45 @@ At most two GPUs are in use at once.
   - Don't train a recovery change now.
   - Look at arch's stalled separations in the next-wave arms. That is where the off-contact start experiment would
     be tried first if the pattern grows.
+
+## Contribution: how much of the pushing work each robot does (2026-11-14)
+
+**Definition.** A robot's work is its contact force on the object along the goal direction (the pushing part only),
+times the object's speed toward the goal, integrated over the live episode. A robot "idles" when it does less than
+10% of the pair's work.
+
+**Data.** The iteration 3000 and 4000 recovery traces.
+
+**Force sign.**
+- The traces store the raw `push_<robot>` sensor reading, which is the reaction: the force on the object is −1 ×
+  the reading (`FORCE_SIGN`).
+- From now on `eval_coop2.py --recovery` stores the force on the object (`force_on_object=True` in the npz).
+- It also writes `work_<robot>` (J) and `work_share_min` to `episodes.csv`.
+- `recovery_analysis.py` never used the force, so the results above are unaffected.
+
+| mass | episodes with one robot idle (it3000 / it4000) | success when one idles | success when both work | weaker robot's share, median |
+|---|---|---|---|---|
+| 20 kg | 40% / 28% | 94% / 91% | 92% / 90% | 0.17 / 0.25 |
+| 40 kg | 30% / 22% | 92% / 92% | 82% / 82% | 0.27 / 0.32 |
+| 60 kg | 25% / 19% | 57% / 52% | 56% / 62% | 0.30 / 0.35 |
+| 80 kg | 24% / 19% | 7% / 4% | 30% / 30% | 0.35 / 0.39 |
+
+**Reading:**
+- **Light loads:** one robot doing the work is fine, and arguably efficient. Easy tasks also finish before the
+  second robot arrives.
+- **80 kg:** an idle robot means almost certain failure. Even with both working, only 30% succeed.
+- **The trend:** training is reducing idling, from about 24% to 19% at 80 kg.
+
+**What was already tried.** `r8`'s `work_credit` replaced `push_credit` with exactly this per-robot work. On the
+same 480 tasks at iteration 3000:
+- idle episodes fell, on the geometric push measure, to 9–11% from 24%;
+- but success fell to 55–59% from 63%.
+
+Individual work credit pays each robot to push even when yielding or steering would be better, and
+the placement tests show that yielding is often productive.
+
+**Next step, if one is tried** (after arm F, from iteration 4000, against arm A): a joint term on heavy tasks only,
+not individual credit.
+- For example, reward the smaller of the two robots' work rates, on 60–80 kg tasks or `need` episodes.
+- It pays only when both contribute, so it can't be earned by one robot pushing harder or by competing for the push.
+- Judge it on 60–80 kg success and idle share, with light-mass success as the cost check.
