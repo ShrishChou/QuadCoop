@@ -109,6 +109,7 @@ SEGMENT_SCENARIOS = (  # --tasks segment (E6): short fixed-contact motions from 
     ("S_side", 1.5, 45.0, 0.0),
     ("S_moveturn", 1.5, 0.0, 30.0),
     ("S_side_turn", 1.5, -45.0, -30.0),
+    ("S_long", 4.0, 0.0, 0.0),  # command-to-force probe: a long straight push (added last: earlier tasks unchanged)
 )
 RULES = ("centre", "adjacent", "spread")
 SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the force split)
@@ -390,6 +391,10 @@ def main() -> int:
                          "input changed (anymal1 +/- this, anymal2 the opposite) and, as a control, with both push directions "
                          "rotated +/- 15 deg; record the change of the raw actor output, the clipped action and the walker "
                          "command (summary.json: share_probe). Open loop: the env still steps with the unperturbed action")
+    ap.add_argument("--cmd-probe", default="",
+                    help="stage4 command-to-force probe 'robot,vx,partner_vx' (e.g. anymal1,0.4,0.8): the executor runs "
+                         "as usual, but the walker's forward command (vx, m/s) of `robot` is fixed at vx and its partner's "
+                         "at partner_vx, all episode; lateral and heading commands stay the executor's")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
@@ -970,6 +975,12 @@ def main() -> int:
                         a_r = 2.0 * (cmd_ - tq_[k]._lo) / (tq_[k]._hi - tq_[k]._lo) - 1.0
                         use_ = present[k] & (g.on_contact(k) if a.recipe_scope == "push" else torch.ones_like(present[k])) & ~fin_
                         act[:, 3 * k:3 * k + 3] = torch.where(use_.unsqueeze(-1), a_r, act[:, 3 * k:3 * k + 3])
+                if a.cmd_probe:  # command-to-force probe: fixed forward commands, the executor's lateral / heading
+                    pr_, pv_, qv_ = a.cmd_probe.split(",")
+                    kp_ = AGENTS.index(pr_.strip())
+                    for k, v_ in ((kp_, float(pv_)), (1 - kp_, float(qv_))):
+                        tm_ = base.action_manager.get_term(f"walker_{AGENTS[k]}")
+                        act[:, 3 * k] = 2.0 * (v_ - float(tm_._lo[0])) / float(tm_._hi[0] - tm_._lo[0]) - 1.0
                 if rp is not None:  # replay: the recorded command instead of the executor's
                     ridx = min(int(i * dt / 0.1), rcmd.shape[1] - 1)
                     rwin = (i * dt) < rlen * 0.1
@@ -1701,7 +1712,7 @@ def _write(rows, name, rule, a, objects, agents, train_names, quiet=False) -> No
                "tasks": getattr(a, "tasks", "standard"), "set": getattr(a, "set", ""),
                "settle_s": a.settle_s, "slow_min_s": a.slow_min_s, "coordinator": a.coordinator,
                "friction": getattr(a, "friction", None), "scenarios": getattr(a, "scenarios", ""),
-               "planner_check": PLANNER_CHECK or None, "share_probe": share_probe_summary() or None,
+               "planner_check": PLANNER_CHECK or None, "cmd_probe": getattr(a, "cmd_probe", ""), "share_probe": share_probe_summary() or None,
                "coord_ckpt": a.coord_ckpt, "coord_mode": a.coord_mode, "seed": a.seed,
                "resid_objects": getattr(a, "resid_gate", None),
                "resid_gate_dist": a.resid_gate_dist, "resid_compose": getattr(a, "resid_compose", None),
