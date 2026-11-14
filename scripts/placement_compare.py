@@ -1,7 +1,7 @@
 """Start-placement comparison of trained pairs (eval_coop2.py --formations standard,flank,goal_behind --swap).
 
     python scripts/placement_compare.py --runs=IPPO:<eval name>,MAPPO:<eval name>[,...] [--out=FILE.md]
-        [--focus=arch,cylinder,long,sphere]
+        [--focus=arch,cylinder,long,sphere] [--reruns=IPPO:<rerun eval name>,...]
 
 Each eval holds every task (object x mass x scenario x rep, the 480 seed-7100 benchmark tasks) in each formation,
 unswapped and with the robots' start places exchanged; object, mass, goal, gaps and jitter are the same draw in
@@ -17,6 +17,9 @@ all of them. Tasks are matched on (object, mass, scenario, rep, swap). Reported 
   takeover     share of episodes where the robot that did not push first later pushed alone while the object
                moved >= 0.2 m closer to the goal, and the success of those episodes
   policies     paired difference between policies per formation (same tasks)
+  reruns       with --reruns (a second evaluation of the same checkpoint and tasks): outcome flips between the
+               two runs per formation, and each formation's change vs standard from the two-run mean per task,
+               for every object; that is what to read for a per-object deficit
 Rerun noise: one GPU evaluation rerun flips ~15% of outcomes (docs/ten_restart.md); differences inside that are
 not findings.
 """
@@ -160,14 +163,46 @@ def main() -> int:
         md.append("")
     if len(data) >= 2:
         labs = list(data)
-        md += ["## Policies compared (paired, same tasks)", "",
-               "| formation | " + f" {labs[1]} - {labs[0]} success [95% CI] |", "|---|---|"]
-        A = {(r["formation"], r["key"]): r for r in data[labs[0]]}
-        B = {(r["formation"], r["key"]): r for r in data[labs[1]]}
+        pairs = [(labs[i], labs[j]) for i in range(len(labs)) for j in range(i + 1, len(labs))]
+        md += ["## Policies compared (paired, same tasks; single runs)", "",
+               "| formation | " + " | ".join(f"{b} - {a} success [95% CI]" for a, b in pairs) + " |",
+               "|---|" + "---|" * len(pairs)]
+        idx = {lab: {(r["formation"], r["key"]): r for r in rows} for lab, rows in data.items()}
         for fm in forms:
-            ks = [k for k in A if k[0] == fm and k in B]
-            m, lo, hi = ci([B[k]["success"] - A[k]["success"] for k in ks])
-            md.append(f"| {fm} | {100 * m:+.1f} [{100 * lo:+.1f}, {100 * hi:+.1f}] pts (n {len(ks)}) |")
+            cells = []
+            for a_, b_ in pairs:
+                A, B = idx[a_], idx[b_]
+                ks = [k for k in A if k[0] == fm and k in B]
+                m, lo, hi = ci([B[k]["success"] - A[k]["success"] for k in ks])
+                cells.append(f"{100 * m:+.1f} [{100 * lo:+.1f}, {100 * hi:+.1f}] pts")
+            md.append(f"| {fm} | " + " | ".join(cells) + " |")
+    if "--reruns" in args:
+        md += ["", "## Two runs per checkpoint: rerun noise and pooled change vs standard", ""]
+        for lab, nm in (x.split(":", 1) for x in args["--reruns"].split(",")):
+            R1 = {(r["formation"], r["key"]): r for r in data[lab]}
+            R2 = {(r["formation"], r["key"]): r for r in load(nm)}
+            md += [f"### {lab} (`{nm}` as the second run)", "",
+                   "Same checkpoint, same tasks, second run: outcome flips (1 -> 0 / 0 -> 1) per formation: "
+                   + "; ".join(f"{fm} {sum(R1[k]['success'] > R2[k]['success'] for k in R1 if k[0] == fm and k in R2)} / "
+                               f"{sum(R1[k]['success'] < R2[k]['success'] for k in R1 if k[0] == fm and k in R2)}"
+                               for fm in forms) + " (of 960).", "",
+                   "| object | standard (2 runs) | " + " | ".join(f"{fm} change [95% CI]" for fm in forms if fm != "standard") + " |",
+                   "|---|---|" + "---|" * (len(forms) - 1)]
+            objs = ["all ten"] + sorted({k[1][0] for k in R1})
+            for o in objs:
+                ks = [k for k in R1 if k[0] == "standard" and k in R2 and (o == "all ten" or k[1][0] == o)]
+                sm = sum(R1[k]["success"] + R2[k]["success"] for k in ks) / (2 * len(ks))
+                cells = []
+                for fm in forms:
+                    if fm == "standard":
+                        continue
+                    d = [(R1[(fm, k[1])]["success"] + R2[(fm, k[1])]["success"] - R1[k]["success"] - R2[k]["success"]) / 2
+                         for k in ks if (fm, k[1]) in R1 and (fm, k[1]) in R2]
+                    m, lo, hi = ci(d)
+                    flag = " **" if hi < 0 or lo > 0 else ""
+                    cells.append(f"{100 * m:+.1f} [{100 * lo:+.1f}, {100 * hi:+.1f}]{flag}")
+                md.append(f"| {o} | {sm:.0%} | " + " | ".join(cells) + " |")
+            md += ["", "** = interval excludes 0.", ""]
     text = "\n".join(md) + "\n"
     if "--out" in args:
         Path(args["--out"]).parent.mkdir(parents=True, exist_ok=True)
