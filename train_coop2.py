@@ -37,6 +37,7 @@ update (the frozen-pair baseline).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -306,10 +307,41 @@ def main() -> int:
     ap.add_argument("--wandb-project", default="quadcoop")
     ap.add_argument("--device", default=None)
     ap.add_argument("--check", action="store_true", help="build, warm start, run 2 iterations, exit")
+    # -- next wave (docs/next_wave.md): matched IPPO / MAPPO arms, fixed task bank --------------------------------
+    ap.add_argument("--init-actors", default=None,
+                    help="both actors (weights, normalizers, action noise) from this trainer checkpoint of either "
+                         "algorithm; critics and optimizers fresh (pair with --critic-warmup-resume)")
+    ap.add_argument("--transfer-check", default=None, metavar="OBS_FILE",
+                    help="with --init-actors: compare the actors with the source on the observations saved in "
+                         "OBS_FILE (collected under the source policy if missing), before any update; exit 0 / 1")
+    ap.add_argument("--task-bank", choices=("uniform", "sgs"), default=None,
+                    help="resets draw from the fixed bank --task-bank-file: uniformly or success-guided")
+    ap.add_argument("--task-bank-file", default=None, help="the bank (written by --bank-make)")
+    ap.add_argument("--bank-make", action="store_true",
+                    help="draw the bank with the training rule (this run's env and seed), save --task-bank-file, "
+                         "check its replay, exit")
+    ap.add_argument("--bank-check", action="store_true", help="replay-check --task-bank-file on this env, exit")
+    ap.add_argument("--bank-per-env", type=int, default=16, help="--bank-make: tasks per env slot")
+    ap.add_argument("--bank-seed", type=int, default=9100, help="--bank-make: draw seed (not an evaluation seed)")
+    ap.add_argument("--drop-rewards", default="",
+                    help="reward terms removed after the reward set is built, by name prefix (each robot's), e.g. "
+                         "push_credit: team return only for pushing")
+    ap.add_argument("--sgs-floor", type=float, default=0.05, help="SGS: lowest weight 4p(1-p) may take")
+    ap.add_argument("--sgs-ema", type=float, default=0.3, help="SGS: per-task success estimate update rate")
     a = ap.parse_args()
 
     if a.kl_ref > 0 and a.scratch:
         raise SystemExit("--kl-ref anchors to the Stage 2 policies: it does not apply with --scratch")
+    if a.init_actors and (a.init_from or a.scratch or a.residual):
+        raise SystemExit("--init-actors replaces --init-from / --scratch / --residual")
+    if a.transfer_check and not a.init_actors:
+        raise SystemExit("--transfer-check checks an --init-actors transfer")
+    if (a.task_bank or a.bank_make or a.bank_check) and not a.task_bank_file:
+        raise SystemExit("--task-bank / --bank-make / --bank-check need --task-bank-file")
+    if (a.task_bank or a.bank_make or a.bank_check) and (a.contacts or not a.fixed_difficulty):
+        raise SystemExit("the task bank is for planner-free runs at fixed difficulty (--fixed-difficulty)")
+    if a.bank_make and Path(a.task_bank_file).exists():
+        raise SystemExit(f"{a.task_bank_file} exists: a bank is drawn once and shared by the arms")
     if a.tol_levels is None:
         a.tol_levels = "0.30:15,0.20:10,0.15:6,0.12:4,0.10:3" if a.contacts else "none"
     tol_levels = () if a.tol_levels == "none" else tuple(tuple(float(v) for v in x.split(":"))
@@ -419,6 +451,14 @@ def main() -> int:
                                  short_tasks=a.short_tasks)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
+    drop_rewards = tuple(x.strip() for x in a.drop_rewards.split(",") if x.strip())
+    for pre in drop_rewards:
+        gone = [nm for nm in list(env_cfg.rewards) if nm == pre or nm.startswith(pre + "_")]
+        if not gone:
+            raise SystemExit(f"--drop-rewards {pre}: no such term in {sorted(env_cfg.rewards)}")
+        for nm in gone:
+            del env_cfg.rewards[nm]
+        print(f"[marl2] rewards dropped: {gone}")
     env_cfg.commands["goal"].start_level = a.start_level
     env_cfg.commands["goal"].turn_frac = a.turn_frac
     if a.fixed_difficulty:  # the very first episodes (drawn at construction, before the warm start) match too
@@ -451,7 +491,8 @@ def main() -> int:
                   resid_compose=a.resid_compose, resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes,
                   train_mass=train_mass, fixed_difficulty=a.fixed_difficulty,
                   resid_scale_axes=tuple(float(x) for x in a.resid_scale_axes.split(",")) if a.resid_scale_axes else (),
-                  track=a.track, track_w=a.track_w, short_tasks=a.short_tasks)
+                  track=a.track, track_w=a.track_w, short_tasks=a.short_tasks,
+                  drop_rewards=drop_rewards, init_actors=a.init_actors or "", task_bank=a.task_bank or "", task_bank_file=a.task_bank_file or "")
     trainer = MarlTrainer(env, cfg, log_dir, device, logger="tensorboard" if a.check else a.logger,
                           wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)
@@ -464,6 +505,8 @@ def main() -> int:
             trainer.init_scratch()
         elif a.residual:
             trainer.init_residual(a.residual)
+        elif a.init_actors:
+            trainer.init_actors(a.init_actors)
         elif a.init_from:
             trainer.init_from(a.init_from)
         else:
@@ -477,6 +520,34 @@ def main() -> int:
         assert bool((g_.env_level == a.fixed_level).all()), "fixed difficulty: episodes at another level"
         print(f"[marl2] fixed difficulty: level {g_.level}, tolerance level {getattr(g_, 'tol_level', 0)} (finest), "
               f"mass window {train_mass or 'the level'}, shapes {train_shapes or 'Stage 2 split'}")
+    if a.transfer_check:
+        raise SystemExit(transfer_check(trainer, env, a, device))
+    if a.bank_make or a.bank_check or a.task_bank:
+        from quadcoop.coop2 import task_bank as tbm
+        if a.bank_make:
+            bank = tbm.generate(env, a.bank_per_env, a.bank_seed)
+            Path(a.task_bank_file).parent.mkdir(parents=True, exist_ok=True)
+            torch.save(bank, a.task_bank_file)
+            print(f"[bank] {a.task_bank_file}: {env.num_envs} slots x {a.bank_per_env} tasks, seed {a.bank_seed}, "
+                  f"level {bank['meta']['level']}; shapes drawn " + ", ".join(
+                      f"{nm} {int((bank['tasks']['shape'] == i).sum())}" for i, nm in enumerate(bank["meta"]["shapes"])
+                      if int((bank['tasks']['shape'] == i).sum())))
+        bank = torch.load(a.task_bank_file, map_location="cpu", weights_only=False)
+        tb = tbm.TaskBank(bank, a.task_bank or "uniform", device, ema=a.sgs_ema, floor=a.sgs_floor)
+        tb.check_physics(env)
+        if a.bank_make or a.bank_check:
+            g_ = env.command_manager.get_term("goal")
+            g_.scenario = tb
+            rep_ = tbm.replay_check(env, tb)
+            g_.scenario = None
+            bad = {k: v for k, v in rep_.items() if isinstance(v, float) and v > 1e-4}
+            print(f"[bank] replay check (columns 0 and {tb.K - 1}, every slot, twice): worst {rep_['worst']:.2e} "
+                  f"-> {'PASS' if rep_['pass'] else 'FAIL'}" + (f"; over tolerance: {bad}" if bad else ""))
+            (Path(a.task_bank_file).with_suffix(".check.json")).write_text(json.dumps(rep_, indent=1))
+            raise SystemExit(0 if rep_["pass"] else 1)
+        trainer.attach_bank(tb)
+        print(f"[bank] training resets draw from {a.task_bank_file} ({tb.n} slots x {tb.K} tasks, "
+              f"{a.task_bank}{f', floor {a.sgs_floor:g}, ema {a.sgs_ema:g}' if a.task_bank == 'sgs' else ''})")
     if a.resid_check:
         if not a.residual:
             raise SystemExit("--resid-check needs --residual")
@@ -500,6 +571,37 @@ def main() -> int:
     trainer.learn()
     env.close()
     return 0
+
+
+def transfer_check(trainer, env, a, device) -> int:
+    """--transfer-check: the observations are collected once (under the source policy: at the start, then
+    after 50 and 200 steps) and reused by every arm's check, so IPPO and MAPPO are compared on the same inputs."""
+    from quadcoop.coop2.marl import PairPolicy
+    import torch
+
+    obs_file = Path(a.transfer_check)
+    if not obs_file.exists():
+        src = PairPolicy(trainer.obs, device, a.variant, checkpoint=a.init_actors)
+        snaps, obs = {"t0": trainer.obs.clone()}, trainer.obs
+        with torch.inference_mode():
+            for t in range(1, 201):
+                o, *_ = env.step(src(obs))
+                obs = trainer._td(o)
+                if t in (50, 200):
+                    snaps[f"t{t}"] = obs.clone()
+        obs_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(snaps, obs_file)
+        print(f"[transfer] saved {len(snaps)} observation batches x {env.num_envs} envs to {obs_file}")
+    rep = trainer.check_actor_transfer(a.init_actors, obs_file)
+    print(f"[transfer] {a.init_actors} -> {a.algo} actors, before any update, on {obs_file}:")
+    for k, v in rep.items():
+        if isinstance(v, dict):
+            print(f"[transfer]   {k}: {v}")
+    print(f"[transfer] worst difference {rep['worst']:.2e} -> {'PASS' if rep['pass'] else 'FAIL'}; critics "
+          f"{list(trainer.critics)} fresh, critic-only iterations {trainer.cfg.critic_warmup_resume}")
+    out = obs_file.with_name(f"{obs_file.stem}.{a.algo}.json")
+    out.write_text(json.dumps(rep, indent=1, default=str))
+    return 0 if rep["pass"] else 1
 
 
 if __name__ == "__main__":

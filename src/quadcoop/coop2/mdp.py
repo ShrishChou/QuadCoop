@@ -188,6 +188,8 @@ class CoopPush2Command(Push2Command):
         self.profile_roll = 1
         # eval hook: callable(env_ids) -> dict overriding the placement (see scripts/eval_coop2.py)
         self.scenario = None
+        # task bank (quadcoop/coop2/task_bank.py): a dict filled with each draw's placement when not None
+        self.draw_log = None
         # success-tolerance curriculum (per env: the tolerance its episode started with)
         self.tol_table = torch.tensor(cfg.tol_levels, device=dev) if cfg.tol_levels else None
         self.tol_level = (len(cfg.tol_levels) - 1 if cfg.tol_start_finest else 0) if cfg.tol_levels else 0
@@ -1742,6 +1744,14 @@ class CoopPush2Command(Push2Command):
             o.write_root_link_velocity_to_sim(v, e)
 
     # -- placement --------------------------------------------------------------------------------
+    def reset(self, env_ids: torch.Tensor | None = None) -> dict[str, float]:
+        """mjlab zeroes the metrics before resampling: a task bank scenario gets each ending episode's
+        success here first (the episode it handed out at the previous reset)."""
+        sc = self.scenario
+        if sc is not None and hasattr(sc, "episode_end") and isinstance(env_ids, torch.Tensor) and len(env_ids) > 0:
+            sc.episode_end(env_ids, self.metrics["success"][env_ids])
+        return super().reset(env_ids)
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         c, dev = self.cfg, self.device
         m = len(env_ids)
@@ -1794,6 +1804,8 @@ class CoopPush2Command(Push2Command):
         sc = self.scenario(env_ids) if self.scenario is not None else None
         if sc is not None and "shape" in sc:
             shape = sc["shape"]
+        if sc is not None and "need" in sc:  # task bank replay: the draw's heavy-pair flag
+            self.need_episode[env_ids] = sc["need"]
         self.shape[env_ids] = shape
         m_sel = masses.gather(1, shape.unsqueeze(-1)).squeeze(-1)
         b_ = (torch.bucketize(m_sel, self.reset_mass_edges, right=True) - 1).clamp(0, self.reset_counts.shape[1] - 1)
@@ -1829,6 +1841,8 @@ class CoopPush2Command(Push2Command):
             tmag = torch.minimum(torch.deg2rad(U(c.turn_deg[0], c.turn_deg[1])), cap)
             sgn = torch.where(torch.rand(m, device=dev) < 0.5, -torch.ones_like(tmag), torch.ones_like(tmag))
             goal_yaw = torch.where(tt, wrap(obj_heading + sgn * tmag), goal_yaw)
+        if sc is not None and "turn" in sc:  # task bank replay: the draw's turn-in-place flag (goal from sc)
+            tt = sc["turn"]
         self.turn_episode[env_ids] = tt
         behind = gdir + math.pi + sym_u(t[:, BEHIND])
         b0 = behind + sym_u(t[:, SPREAD])
@@ -1855,6 +1869,12 @@ class CoopPush2Command(Push2Command):
             gaps = sc.get("gaps", gaps)
             yaw_noise = sc.get("yaw_noise", yaw_noise)
             park = sc.get("park", park)  # eval "solo": the other robot stands far away
+        if self.draw_log is not None:  # task bank generation: everything the placement below depends on
+            self.draw_log.update(
+                env_ids=env_ids.clone(), level=lvl.clone(), shape=shape.clone(), obj_xy_rel=(obj_xy - origin).clone(),
+                obj_heading=obj_heading.clone(), goal_xy_rel=(goal_xy - origin).clone(), goal_yaw=goal_yaw.clone(),
+                bearings=torch.stack(bearings, -1).clone(), gaps=torch.stack(gaps, -1).clone(),
+                yaw_noise=torch.stack(yaw_noise, -1).clone(), turn=tt.clone(), need=self.need_episode[env_ids].clone())
         cpose = None
         self.resid_base_last[env_ids] = 0.0  # residual: the base's action history restarts with the episode (any planner)
         if c.contact_mode:

@@ -137,6 +137,10 @@ class MarlCfg:
     bump_cost: float = 1.0  # env option (recorded)
     disturb_frac: float = 0.0  # env option (recorded)
     init_from: str = ""  # Stage 4 checkpoint the networks were expanded from (Stage 4d / 4e)
+    drop_rewards: tuple = ()  # env option (recorded): reward terms removed by name prefix
+    init_actors: str = ""  # trainer checkpoint the actors (only) came from, any algorithm; critics fresh
+    task_bank: str = ""  # "" (training-rule draws) | "uniform" | "sgs": resets draw from a fixed task bank
+    task_bank_file: str = ""  # the bank (quadcoop/coop2/task_bank.py), shared by the arms it compares
     push_cmd: bool = False  # env option (recorded): Stage 4e push directions (4 more inputs per robot), 4e rewards
     walk_cost: float = 0.3  # env option (recorded): per second on the way to a new contact (push_cmd)
     exec_v2: bool = False  # env option (recorded): Phase 2 executor (phase + team ready inputs, hold_cost)
@@ -449,6 +453,8 @@ class MarlTrainer:
         mine = {i for ix in self.own_idx.values() for i in ix}
         self.team_idx = [i for i in range(len(names)) if i not in mine]
         self.term_names = names
+        self.bank = None  # TaskBank (attach_bank)
+        self._bank_state = None  # its counts from a resumed checkpoint, applied at attach_bank
         self.writer = None
         self.wandb = None
         self.logger_kind = logger
@@ -580,6 +586,7 @@ class MarlTrainer:
             "critic_opt": {k: o.state_dict() for k, o in self.critic_opt.items()},
             "lr": dict(self.lr), "warm_from": self.warm_from,
             "std_cap": {a: (None if c is None else c.tolist()) for a, c in self.std_cap.items()},
+            "bank": None if self.bank is None else self.bank.state(),
             "env_state": {"common_step_counter": int(self.env.common_step_counter), "level": int(g.level),
                           "ema_success": float(g.ema_success), "shape_success": g.shape_success.tolist(),
                           "tol_level": int(getattr(g, "tol_level", 0)), "tol_ema": float(getattr(g, "tol_ema", 0.0)),
@@ -587,6 +594,8 @@ class MarlTrainer:
         }
         path = self.log_dir / f"model_{self.it}.pt"
         torch.save(ck, path)
+        if self.bank is not None:  # what training drew from the bank so far (tries / successes per task)
+            torch.save({"iter": self.it, **self.bank.state()}, self.log_dir / f"bank_{self.it}.pt")
         rc = self._reset_counts()
         if rc is not None:  # cumulative episode starts by object x mass (what training actually drew)
             edges = g.reset_mass_edges.tolist()
@@ -670,6 +679,7 @@ class MarlTrainer:
         self.it = int(ck["iter"])
         self.resume_it = self.it
         self.warm_from = ck.get("warm_from", {})
+        self._bank_state = ck.get("bank")
         es = ck.get("env_state", {})
         self.env.common_step_counter = es.get("common_step_counter", 0)
         g = self.env.command_manager.get_term("goal")
@@ -723,6 +733,90 @@ class MarlTrainer:
             g.tol_last_change = g.last_change_iter
         print(f"[marl2] initialised from {path} (iteration {self.it}, curriculum level {g.level}"
               f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}); new inputs at zero weight")
+
+    def init_actors(self, path: str | Path) -> None:
+        """Both actors from a trainer checkpoint of either algorithm (IPPO <-> MAPPO): weights,
+        observation normalizers and action noise exactly as saved, with their noise caps, learning
+        rates, iteration count and curriculum state. Critics and optimizers stay as built (fresh);
+        critic_warmup_resume then trains the critics alone first, the same in every arm."""
+        ck = torch.load(str(path), map_location=self.device, weights_only=False)
+        rc = ck.get("cfg", {})
+        assert ck.get("variant", "b") == self.cfg.variant, f"checkpoint variant {ck.get('variant')}, trainer {self.cfg.variant}"
+        assert not rc.get("residual") and not self.cfg.residual, "actor transfer: plain actors only"
+        for a in AGENTS:
+            self.actors[a].load_state_dict(ck["actors"][a], strict=True)
+        self.lr = dict(ck["lr"])
+        for a in AGENTS:
+            for pg in self.actor_opt[a].param_groups:
+                pg["lr"] = self.lr[a]
+        for a, c in (ck.get("std_cap") or {}).items():
+            if c is not None:
+                self.std_cap[a] = torch.tensor(c, device=self.device)
+        self.it = int(ck["iter"])
+        self.resume_it = self.it
+        self.warm_from = {"init_actors": str(path), "source_algo": ck["algo"], **ck.get("warm_from", {})}
+        es = ck.get("env_state", {})
+        self.env.common_step_counter = es.get("common_step_counter", 0)
+        g = self.env.command_manager.get_term("goal")
+        g.level = es.get("level", g.level)
+        g.ema_success = es.get("ema_success", g.ema_success)
+        if "shape_success" in es:
+            g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
+        g.last_change_iter = self.env.common_step_counter / self.cfg.num_steps_per_env
+        if getattr(g, "tol_table", None) is not None:
+            g.tol_level = int(es.get("tol_level", g.tol_level))
+            g.tol_ema = float(es.get("tol_ema", g.tol_ema))
+            g.lvl_ema = float(es.get("lvl_ema", 0.0))
+            g.tol_last_change = g.last_change_iter
+        print(f"[marl2] actors from {path} ({ck['algo']} -> {self.cfg.algo}, iteration {self.it}, curriculum level "
+              f"{g.level}); critics fresh ({', '.join(self.critics)}), optimizers fresh, critic-only for "
+              f"{self.cfg.critic_warmup_resume} iterations")
+
+    @torch.no_grad()
+    def check_actor_transfer(self, path: str | Path, obs_file: str | Path, tol: float = 1e-6) -> dict:
+        """Before any update: on saved observations, the trainer's actors must give the source
+        checkpoint's sampling mean and std (what the rollout records), and its deterministic mean.
+        The reference is built independently (PairPolicy, the evaluation loader) and run through
+        the same sampling path (mean clamp) as the trainer's actors."""
+        obs = torch.load(str(obs_file), map_location=self.device, weights_only=False)
+        ref = PairPolicy(self.obs, self.device, self.cfg.variant, checkpoint=str(path))
+        lim = self.cfg.mean_clip if self.cfg.mean_clip > 0 else float("inf")
+        rep, worst = {}, 0.0
+        for a in AGENTS:
+            mine, theirs = self.actors[a], ref.actors[a]
+            clamp_sampling_mean(theirs, lim)
+            was = mine.training
+            mine.eval()
+            for name, o in obs.items():
+                det = (mine(o) - theirs(o)).abs().max().item()
+                mine(o, stochastic_output=True)
+                m1, s1 = mine.output_distribution_params
+                theirs(o, stochastic_output=True)
+                m2, s2 = theirs.output_distribution_params
+                dm, ds = (m1 - m2).abs().max().item(), (s1 - s2).abs().max().item()
+                rep[f"{a}/{name}"] = {"det_mean": det, "sample_mean": dm, "std": ds, "n": int(o.batch_size[0]),
+                                      "std_value": [round(x, 4) for x in s1.flatten()[:3].tolist()]}
+                worst = max(worst, det, dm, ds)
+            for (k1, v1), (k2, v2) in zip(mine.state_dict().items(), theirs.state_dict().items(), strict=True):
+                assert k1 == k2
+                d = (v1.float() - v2.float()).abs().max().item() if v1.numel() else 0.0
+                if d > 0:
+                    rep.setdefault(f"{a}/state_diff", {})[k1] = d
+                    worst = max(worst, d)
+            mine.train(was)
+        rep["worst"], rep["pass"] = worst, worst <= tol
+        return rep
+
+    def attach_bank(self, bank) -> None:
+        """Resets draw from `bank` from now on; all envs restart on bank tasks."""
+        self.bank = bank
+        if self._bank_state is not None:
+            bank.load_state(self._bank_state)
+        g = self.env.command_manager.get_term("goal")
+        g.scenario = bank
+        obs, _ = self.env.reset()
+        self.obs = self._td(obs)
+        bank.scalars()  # the restart's draws are not an iteration's
 
     def init_residual(self, path: str | Path) -> None:
         """Residual pilot start: each actor's base <- the executor checkpoint's actor (frozen), the correction at
@@ -1260,6 +1354,8 @@ class MarlTrainer:
             out["Train/skipped_updates"] = float(skipped)
             if cfg.residual:
                 out.update(self._residual_log(rstat))
+            if self.bank is not None:
+                out.update(self.bank.scalars())
             out.update(self._reset_log(counts0))
             # how the episodes that ended this iteration ended (fractions; they sum to 1)
             for nm, cnt in outcome.items():
