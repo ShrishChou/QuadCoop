@@ -3,7 +3,8 @@
 Model and policy are RAI Judo's (MIT), read from a checkout (QUADCOOP_JUDO, default ~/ext/judo; not vendored):
 ``judo/models/xml/spot_primitive`` (12 leg + 7 arm joints, primitive collision shapes, position actuators with the
 walker's training gains) and ``judo/models/policies/spot_locomotion.onnx`` (MLP 84 -> 512 -> 256 -> 128 -> 12, ELU).
-``get_spec`` edits the model in code: the scene's own ground, lights, sensors and visual meshes are removed, and
+``get_spec`` edits the model in code: the scene's own ground, lights, sensors and textures are removed, the visual
+meshes are read from QuadCoop's copy of MuJoCo Menagerie's Spot (the same files Judo maps them to), and
 the feet get the friction RAI's ground gave them (0.7; RAI's ground had priority over the robot's 0.15). Every
 collision geom gets QuadCoop's robot contact priority (1, as ANYmal C and the armless Spot; RAI's was 4): the
 ground (0) leaves the feet their 0.7, and a pushed object (2) sets the robot-object friction, as for the other
@@ -37,6 +38,7 @@ ARM_STOWED = (0.0, -3.11, 3.13, 1.56, 0.0, -1.56, 0.0)
 ARM_OUT = (0.0, -0.9, 1.8, 0.0, -0.9, 0.0, 0.0)
 STAND_HEIGHT_CMD = 0.52
 FOOT_FRICTION = 0.7
+MESH_DIR = Path(__file__).resolve().parents[1] / "assets" / "spot" / "assets"
 CONTACT_PRIORITY = 1
 # learned arm control (quadcoop/coop2/spot_arm_term.py): the six arm joints (gripper held closed)
 ARM_LO = (-2.618, -3.1416, 0.0, -2.7925, -1.8326, -2.8798)
@@ -57,17 +59,21 @@ def get_spec() -> mujoco.MjSpec:
     for s in list(spec.sensors):
         spec.delete(s)
     for g in list(spec.geoms):
-        if g.type == mujoco.mjtGeom.mjGEOM_MESH or g.name == "ground":
+        if g.name == "ground":
             spec.delete(g)
+        elif g.type == mujoco.mjtGeom.mjGEOM_MESH:
+            continue  # visual only (no contacts; every body has an explicit inertia, so no mass either)
         else:
             g.priority = CONTACT_PRIORITY
-            g.group = 2  # drawn by the default renderer (the visual meshes are gone): the videos show these shapes
-            g.material = ""
-            g.rgba = [0.25, 0.25, 0.28, 1.0] if g.name.startswith("arm_") else [0.95, 0.78, 0.1, 1.0]
             if g.name.endswith("_foot_collision"):
                 g.friction[0] = FOOT_FRICTION
-    for m in list(spec.meshes):
-        spec.delete(m)
+    # the visual meshes are not in Judo's git: they are MuJoCo Menagerie's Spot meshes (as Judo maps them), which
+    # QuadCoop already has for the armless Spot (scripts/fetch_assets.py)
+    for m in spec.meshes:
+        f = MESH_DIR / Path(m.file).name
+        if not f.exists():
+            raise FileNotFoundError(f"{f} missing -- run `python scripts/fetch_assets.py` first.")
+        m.file = str(f)
     for t in list(spec.textures):
         spec.delete(t)
     for mt in spec.materials:

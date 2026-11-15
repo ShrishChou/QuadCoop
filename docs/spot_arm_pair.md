@@ -77,8 +77,11 @@ elbow angles for both robots.
 | falls | none |
 | reloaded MAPPO checkpoint | records robot type `spot_arm`, widths 9 + 9, arm `learned`; outputs 18 actions; its arm outputs moved both arms (up to 0.60 and 0.28 rad) |
 
-The robots are drawn from RAI's primitive collision shapes (yellow body and legs, dark arm), because the visual
-meshes are removed for the simulator.
+Rerun with the full visual model (job 29210929): the same checks passed with the same numbers. The first run drew
+the robots from RAI's primitive collision shapes, because Judo's git has no mesh files and the model was loaded
+without them. The visual meshes are MuJoCo Menagerie's Spot meshes, already in `src/quadcoop/assets/spot/assets`,
+and are now attached. They are visual only (no contacts, and every body has an explicit inertia), so checkpoints
+trained before the change evaluate under the same physics.
 
 ## Turn pilot (`slurm/submit_spot_arm_pilot.sh`, settings in `slurm/spot_arm_pilot.env`)
 
