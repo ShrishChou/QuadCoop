@@ -125,6 +125,21 @@ exploration noise has stayed at its initial 0.60 while the base noise fell to 0.
 usually solve the ±30° task by body pushing; it does not show that the arm outputs learned nothing (their mean can
 still depend on the object or goal) or cost nothing. The matched evaluation and the arm ablation answer that.
 
+**Pilot result (2000 iterations, 120 held-out tasks each; `evals/spot_arm/pilot_report.md`).**
+
+| run | success | with both arms held stowed | arm on the object | median time to success |
+|---|---|---|---|---|
+| A IPPO, stowed | 93.3% | - | 0% | |
+| B IPPO, joint targets | 100% | 99.2% (1 task lost) | ≤ 1.3% | 4.0 s |
+| C MAPPO, stowed | 93.3% | - | 0% | 4.1 s |
+| D MAPPO, joint targets | 96.7% | 99.2% (+2.5 pts, CI −0.8 to +6.7) | ≤ 0.4% | 3.8 s |
+
+- B beats A by +6.7 points (95% CI +2.5 to +11.7; 8 tasks gained, 0 lost), but B with its arms locked stowed
+  still scores 99.2%. The gain is a better body-pushing policy, not arm use; with one seed this is within the
+  variation expected between training runs.
+- MAPPO vs IPPO with stowed arms: +0.0 points (CI −6.7 to +6.7).
+- The ±30° task is solved by body pushing in about 4 s of the 20 s episode; neither algorithm uses the arms.
+
 ## Hand-position control and the ±60° turn (wave 2)
 
 Two separate questions: does hand-position control make useful arm actions easier to learn, and does using the arms
