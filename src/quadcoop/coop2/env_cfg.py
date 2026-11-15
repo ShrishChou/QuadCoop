@@ -66,6 +66,8 @@ from quadcoop.coop2.mdp import AGENTS, PARTNER
 from quadcoop.coop2.pairs import ROBOT_TYPE
 from quadcoop.robots.anymal_c import ROBOT as ANYMAL_C
 from quadcoop.robots.spot import ROBOT as SPOT
+from quadcoop.robots.spot_arm import ROBOT as SPOT_ARM
+from quadcoop.coop2 import spot_arm_term as sat
 from quadcoop.stage1 import mdp as s1
 from quadcoop.stage1b import mdp as hb
 from quadcoop.stage1b.shapes import NOMINAL_MASS
@@ -74,7 +76,9 @@ from quadcoop.stage2 import mdp as m2
 from quadcoop.stage2.shapes import FACTOR_RANGE, OBJ_NAMES2, SHAPES2, get_goal_cfgs, get_object_cfgs
 from quadcoop.walker_env_cfg import make_walker_env_cfg
 
-SPECS = {a: {"anymal_c": ANYMAL_C, "spot": SPOT}[ROBOT_TYPE[a]] for a in AGENTS}  # per slot (QUADCOOP_PAIR)
+SPECS = {a: {"anymal_c": ANYMAL_C, "spot": SPOT, "spot_arm": SPOT_ARM}[ROBOT_TYPE[a]] for a in AGENTS}  # per slot
+SPOT_ARM_BASE = "arm_link_sh0"
+ARM = {a: ROBOT_TYPE[a] == "spot_arm" for a in AGENTS}  # Spot with its arm: RAI's frozen walker, its own action term
 MASS_RANGE = (10.0, 90.0)  # kg per object copy per env (uniform); the level picks a window
 FRICTION_RANGE = (0.4, 0.6)  # Stage 2's
 EPISODE_S = float(os.environ.get("QUADCOOP_COOP_EPISODE_S", "80"))
@@ -124,6 +128,20 @@ def _walker_group(wcfg: ManagerBasedRlEnvCfg, name: str) -> ObservationGroupCfg:
 def _agent_terms(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False,
                  push_cmd: bool = False, exec_v2: bool = False, effort: bool = False,
                  contact_sense: bool = False) -> dict:
+    out = _agent_terms0(name, other, noisy, contacts, guide, push_cmd, exec_v2, effort, contact_sense)
+    if ARM[name]:  # no IMU sensors in RAI's model: the same quantities from the body state; then the arm (last)
+        T = ObservationTermCfg
+        nz = (lambda lim: Unoise(n_min=-lim, n_max=lim)) if noisy else (lambda lim: None)
+        out["base_lin_vel"] = T(func=sat.base_lin_vel, params={"robot": name}, noise=nz(0.1))
+        out["base_ang_vel"] = T(func=sat.base_ang_vel, params={"robot": name}, noise=nz(0.1))
+        out["arm_state"] = T(func=sat.arm_state, params={"robot": name, "action_name": f"walker_{name}"}, noise=nz(0.02))
+        out["arm_touch"] = T(func=sat.arm_touch, params={"robot": name})
+    return out
+
+
+def _agent_terms0(name: str, other: str, noisy: bool, contacts: bool = False, guide: bool = False,
+                  push_cmd: bool = False, exec_v2: bool = False, effort: bool = False,
+                  contact_sense: bool = False) -> dict:
     """Stage 2's 42 actor terms (names, order, sizes, noise) for robot `name`, + the partner
     (+ the assigned contacts in contact mode)."""
     def nz(lim):
@@ -199,7 +217,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        touch_cost: float = 0.0, resid: bool = False, resid_objects: tuple = (),
                        shape_bias: tuple = (), resid_gate_dist: float = 0.0, train_shapes: tuple = (),
                        train_mass: tuple = (), fixed_difficulty: bool = False, track: bool = False,
-                       track_w: float = 0.5, short_tasks: bool = False) -> ManagerBasedRlEnvCfg:
+                       track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
+                       pilot_level: tuple = (), pilot_episode_s: float = 0.0,
+                       dyaw_choices: bool = False) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -258,14 +278,19 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     expert: the expert planner v2 machinery (contact rule 4: pair and robot assignment together at
     least cost incl. walking time, no-progress / slow-arrival re-plans, priorities, go / hold,
     turning that grows as the object nears its goal); contact_mix may carry a 5th weight for it.
-    tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed."""
+    tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed.
+    arm (Spot-arm slots): "stowed" (3 actions per robot, arm held stowed) or "learned" (9: + six arm joint targets).
+    pilot_level: one level row replacing the table (columns as CoopPush2CommandCfg.levels), pilot_episode_s its
+    episode length; dyaw_choices: the goal heading change is -1, 0 or +1 x the level's value, equally often."""
     assert variant in ("b", "ctrl"), variant
     assert reward_set in REWARD_SETS, reward_set
     assert not (partner_map and variant != "b"), "the partner map needs variant b (maps)"
-    kinds = {a: walker_kind(SPECS[a].name) for a in AGENTS}
+    kinds = {a: "rai" if ARM[a] else walker_kind(SPECS[a].name) for a in AGENTS}
     wcfg = {a: make_walker_env_cfg(SPECS[a], history=walker_history(SPECS[a].name), compliant=kinds[a] == "compliant")
-            for a in AGENTS}
-    cfg = wcfg[AGENTS[0]]  # sim, terrain and viewer settings; everything task-related is replaced
+            for a in AGENTS if not ARM[a]}
+    # sim, terrain and viewer settings; everything task-related is replaced (a Spot-arm slot has no QuadCoop walker
+    # config: the ANYmal one supplies the same sim settings every pair uses)
+    cfg = wcfg[AGENTS[0]] if AGENTS[0] in wcfg else make_walker_env_cfg(ANYMAL_C, history=0)
 
     # -- scene: two robots, the Stage 2 objects and goal markers, a robot-robot contact sensor --
     robots = {}
@@ -290,7 +315,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
-    if reward_set == "r8" or guide or push_sensors or resid or "compliant" in kinds.values():
+    if reward_set == "r8" or guide or push_sensors or resid or "compliant" in kinds.values() or any(ARM.values()):
         # contact between each robot and the object (work_credit, bump cost; a compliant walker's force input)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
@@ -298,16 +323,27 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             secondary=ContactMatch(mode="subtree", pattern=SPECS[a].base_body, entity=a),
             fields=("found", "force"), reduce="netforce", num_slots=1,
         ) for a in AGENTS)
+    for a in AGENTS:  # Spot-arm: which part touches the object (inputs, logs): the arm, the trunk
+        if ARM[a]:
+            cfg.scene.sensors += tuple(ContactSensorCfg(
+                name=f"{part}_{a}",
+                primary=ContactMatch(mode="body", pattern=tuple(f"{o}/body" for o in OBJ_NAMES2)),
+                secondary=ContactMatch(mode=mode, pattern=pat, entity=a),
+                fields=("found", "force"), reduce="netforce", num_slots=1,
+            ) for part, mode, pat in (("arm", "subtree", SPOT_ARM_BASE), ("trunk", "body", SPECS[a].base_body)))
     cfg.sim.njmax = 1500
     cfg.episode_length_s = EPISODE_S
     cfg.metrics = {}
 
     # -- actions: one high-level (vx, vy, wz) per robot -> its frozen walker -------------------------
-    joint_cfgs = {a: copy.deepcopy(wcfg[a].actions["joint_pos"]) for a in AGENTS}
-    walker_groups = {a: _walker_group(wcfg[a], a) for a in AGENTS}
-    walker_events = {a: copy.deepcopy(wcfg[a].events) for a in AGENTS}
+    joint_cfgs = {a: copy.deepcopy(wcfg[a].actions["joint_pos"]) for a in wcfg}
+    walker_groups = {a: _walker_group(wcfg[a], a) for a in wcfg}
+    walker_events = {a: copy.deepcopy(wcfg[a].events) for a in wcfg}
     cfg.actions = {}
     for a in AGENTS:
+        if ARM[a]:
+            cfg.actions[f"walker_{a}"] = sat.SpotArmActionCfg(entity_name=a, twist_name=f"twist_{a}", arm=arm)
+            continue
         joint_cfgs[a].entity_name = a
         cfg.actions[f"walker_{a}"] = s1.WalkerCommandActionCfg(
             entity_name=a, joint_cfg=joint_cfgs[a],
@@ -339,6 +375,12 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         cfg.commands["goal"].replay_frac = 0.0
     if track:
         assert resid and contacts and push_cmd, "request tracking builds on the residual pilot (Stage 4e contacts)"
+    cfg.commands["goal"].dyaw_choices = bool(dyaw_choices)
+    if pilot_level:  # one level of the caller's choosing (Spot-arm turn pilot: docs/spot_arm_pair.md)
+        assert len(pilot_level) == len(cfg.commands["goal"].levels[0]), pilot_level
+        cfg.commands["goal"].levels = (tuple(float(x) for x in pilot_level),)
+        if pilot_episode_s > 0:
+            cfg.episode_length_s = float(pilot_episode_s)
     if short_tasks:  # request-tracking pilot: one level of short segments (docs/request_tracking.md)
         cfg.commands["goal"].levels = (SHORT_LEVEL,)
         cfg.episode_length_s = SHORT_EPISODE_S
@@ -358,7 +400,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
                                                   concatenate_terms=True, enable_corruption=False)
-        obs[f"walker_{a}"] = walker_groups[a]
+        if a in walker_groups:
+            obs[f"walker_{a}"] = walker_groups[a]
     if variant == "b":
         obs["front"] = ObservationGroupCfg(terms={"front": T(func=m2.profile_front)}, concatenate_terms=True,
                                            enable_corruption=False)
@@ -380,6 +423,16 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     # -- events: each robot's walker randomization; object geometry, mass and friction -------------
     events = {}
     for a in AGENTS:
+        if ARM[a]:  # RAI's walker is used as released: no joint / friction / mass randomization of the robot
+            events[f"reset_base_{a}"] = EventTermCfg(
+                func=envs_mdp.reset_root_state_uniform, mode="reset",
+                params={"pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.01, 0.03), "yaw": (0.0, 0.0)},
+                        "velocity_range": {}, "asset_cfg": SceneEntityCfg(a)})
+            events[f"reset_robot_joints_{a}"] = EventTermCfg(
+                func=envs_mdp.reset_joints_by_offset, mode="reset",
+                params={"position_range": (0.0, 0.0), "velocity_range": (0.0, 0.0),
+                        "asset_cfg": SceneEntityCfg(a, joint_names=(".*",))})
+            continue
         for k, ev in walker_events[a].items():
             if k not in KEEP_EVENTS:
                 continue

@@ -4,7 +4,10 @@ Model and policy are RAI Judo's (MIT), read from a checkout (QUADCOOP_JUDO, defa
 ``judo/models/xml/spot_primitive`` (12 leg + 7 arm joints, primitive collision shapes, position actuators with the
 walker's training gains) and ``judo/models/policies/spot_locomotion.onnx`` (MLP 84 -> 512 -> 256 -> 128 -> 12, ELU).
 ``get_spec`` edits the model in code: the scene's own ground, lights, sensors and visual meshes are removed, and
-the feet get the friction RAI's ground gave them (0.7; RAI's ground had priority over the robot's 0.15).
+the feet get the friction RAI's ground gave them (0.7; RAI's ground had priority over the robot's 0.15). Every
+collision geom gets QuadCoop's robot contact priority (1, as ANYmal C and the armless Spot; RAI's was 4): the
+ground (0) leaves the feet their 0.7, and a pushed object (2) sets the robot-object friction, as for the other
+robots (with RAI's priority the robot's 0.15 would have overridden the object's 0.4-0.6).
 
 ``RaiWalker`` is the frozen walker (interface of judo/controller/batched_spot_locomotion.py), 50 Hz:
   command (25) = base velocity (vx, vy, wz), arm joint targets (7), leg overrides (12, 0 = walk), torso roll,
@@ -34,6 +37,13 @@ ARM_STOWED = (0.0, -3.11, 3.13, 1.56, 0.0, -1.56, 0.0)
 ARM_OUT = (0.0, -0.9, 1.8, 0.0, -0.9, 0.0, 0.0)
 STAND_HEIGHT_CMD = 0.52
 FOOT_FRICTION = 0.7
+CONTACT_PRIORITY = 1
+# learned arm control (quadcoop/coop2/spot_arm_term.py): the six arm joints (gripper held closed)
+ARM_LO = (-2.618, -3.1416, 0.0, -2.7925, -1.8326, -2.8798)
+ARM_HI = (3.1416, 0.5236, 3.1416, 2.7925, 1.8326, 2.8798)
+ARM_SPAN = (1.5, 2.6, -2.6, 1.5, 1.5, 1.5)  # rad per unit action from the stowed pose (+ = unfold on sh1 / el0)
+ARM_BASE_BODY = "arm_link_sh0"
+GRIPPER_BODY = "arm_link_fngr"
 _NAMES = ("ISAAC_TO_MUJOCO_INDICES_12", "MUJOCO_TO_ISAAC_INDICES_19", "LOCOMOTION_DEFAULT_JOINTS_OFFSET",
           "LOCOMOTION_DEFAULT_LEGS_OFFSET")
 
@@ -49,8 +59,13 @@ def get_spec() -> mujoco.MjSpec:
     for g in list(spec.geoms):
         if g.type == mujoco.mjtGeom.mjGEOM_MESH or g.name == "ground":
             spec.delete(g)
-        elif g.name.endswith("_foot_collision"):
-            g.friction[0] = FOOT_FRICTION
+        else:
+            g.priority = CONTACT_PRIORITY
+            g.group = 2  # drawn by the default renderer (the visual meshes are gone): the videos show these shapes
+            g.material = ""
+            g.rgba = [0.25, 0.25, 0.28, 1.0] if g.name.startswith("arm_") else [0.95, 0.78, 0.1, 1.0]
+            if g.name.endswith("_foot_collision"):
+                g.friction[0] = FOOT_FRICTION
     for m in list(spec.meshes):
         spec.delete(m)
     for t in list(spec.textures):
@@ -129,5 +144,20 @@ class RaiWalker:
         obs = torch.cat([d.root_link_lin_vel_b, d.root_link_ang_vel_b, d.projected_gravity_b, cmd,
                          d.joint_pos[:, self.m2i] - self.joff, d.joint_vel[:, self.m2i], self.prev], -1)
         act = self.net(obs)
-        self.prev = act
+        self.prev[:] = act
         return torch.cat([act[:, self.i2m] * 0.2 + self.loff[self.i2m], cmd[:, 3:10]], -1)
+
+
+def _spec():
+    from quadcoop.robots.spec import RobotSpec
+    return RobotSpec(
+        name="spot_arm", get_robot_cfg=get_robot_cfg, base_body="body",
+        foot_geoms=tuple(f"{leg}_foot_collision" for leg in ("front_left", "front_right", "rear_left", "rear_right")),
+        foot_sites=(), nonfoot_collision_regex=r"^(body|.*_upper_leg|arm_.*)_collision.*$",
+        action_scale={".*": 0.2}, pose_std_standing={".*": 0.05}, pose_std_walking={".*": 0.3},
+        push_point_b=(0.45, 0.0, 0.0), half_length=0.55, viewer_distance=2.5,
+        nominal_height=0.5,  # stands at 0.48-0.54 m under the walker (port acceptance)
+    )
+
+
+ROBOT = _spec()  # what the two-robot env reads: size, base body, fall height (it has no QuadCoop walker config)

@@ -70,6 +70,7 @@ import torch
 from tensordict import TensorDict
 
 from quadcoop.coop2.mdp import AGENTS
+from quadcoop.coop2.pairs import ROBOT_TYPE
 
 N_SINGLE = 42  # Stage 2 actor numbers (the critic's are these + 3 physics)
 N_PARTNER = 9
@@ -85,6 +86,10 @@ class MarlCfg:
     partner_map: bool = False  # env option (recorded so evaluations rebuild the same env)
     reward_set: str = "r3"  # env option, see quadcoop/coop2/env_cfg.py
     pair: str = "mixed"  # which two robots (quadcoop/coop2/pairs.py), recorded for evaluations
+    arm: str = ""  # Spot-arm pairs (recorded): "stowed" (3 actions per robot) or "learned" (9: + six arm targets)
+    pilot_level: tuple = ()  # env option (recorded): one level row replacing the level table
+    pilot_episode_s: float = 0.0  # env option (recorded)
+    dyaw_choices: bool = False  # env option (recorded): goal heading change in {-1, 0, +1} x the level's value
     num_envs: int = 4096
     num_steps_per_env: int = 24
     max_iterations: int = 6000
@@ -205,6 +210,18 @@ def make_model(obs: TensorDict, groups: list[str], out: int, hidden, variant: st
     if variant == "b":
         return CNNModel(obs, {"x": groups}, "x", out, cnn_cfg=dict(CNN), **kw)
     return MLPModel(obs, {"x": groups}, "x", out, **kw)
+
+
+def action_slices(env) -> dict[str, slice]:
+    """Each robot's columns of the env action, read from its walker action term (3 per robot; 9 for a Spot with a
+    learned arm), in AGENTS order: the env action is the robots' actions side by side."""
+    out, at = {}, 0
+    for a in AGENTS:
+        d = int(env.action_manager.get_term(f"walker_{a}").action_dim)
+        out[a] = slice(at, at + d)
+        at += d
+    assert at == env.action_manager.total_action_dim, (out, env.action_manager.total_action_dim)
+    return out
 
 
 def resid_bound(cfg) -> float | tuple:
@@ -417,11 +434,15 @@ class MarlTrainer:
         obs, _ = env.reset()
         self.obs = self._td(obs)
         v = cfg.variant
+        self.act_sl = action_slices(env)
+        self.act_dim = {a: sl.stop - sl.start for a, sl in self.act_sl.items()}
+        self.n_act = sum(self.act_dim.values())
+        assert not cfg.residual or set(self.act_dim.values()) == {3}, "the residual pilot is for 3-action robots"
         if cfg.residual:
             self.actors = {a: ResidualActor(self.obs, a, v, resid_bound(cfg), cfg.resid_std, cfg.resid_hidden,
                                             cfg.resid_compose).to(device) for a in AGENTS}
         else:
-            self.actors = {a: make_model(self.obs, actor_groups(a, v), 3, cfg.hidden_dims, v, True).to(device)
+            self.actors = {a: make_model(self.obs, actor_groups(a, v), self.act_dim[a], cfg.hidden_dims, v, True).to(device)
                            for a in AGENTS}
         self.bound = cfg.mean_clip if cfg.mean_clip > 0 else 1.1
         for m_ in ([] if cfg.residual else self.actors.values()):  # no clamp (inf) still records the raw mean
@@ -461,6 +482,32 @@ class MarlTrainer:
         self.wandb_project = wandb_project
 
     # -- helpers ----------------------------------------------------------------------------------
+    def _arm_stats(self, logs, ended: torch.Tensor) -> None:
+        """Spot-arm robots, per step (wandb Arm/*): share of envs with the arm / the trunk on the object, the arm's
+        contact force while touching (N), how far the arm is unfolded (rad, shoulder + elbow away from stowed), and
+        how fast the object's heading error shrinks while this arm touches it vs while it does not (deg/s)."""
+        arms = [a for a in AGENTS if ROBOT_TYPE[a] == "spot_arm"]
+        if not arms:
+            return
+        env = self.env
+        e = torch.rad2deg(env.command_manager.get_term("goal").errors()[1].abs())
+        prev = getattr(self, "_arm_prev_e", None)
+        self._arm_prev_e = e.clone()
+        closing = None if prev is None else torch.where(ended, torch.zeros_like(e), (prev - e) / self.dt)
+        for a in arms:
+            sd = env.scene[f"arm_{a}"].data
+            on = sd.found.view(self.n, -1).any(-1)
+            logs[f"Arm/touch_{a}"].append(float(on.float().mean()))
+            logs[f"Arm/trunk_touch_{a}"].append(float(env.scene[f"trunk_{a}"].data.found.view(self.n, -1).any(-1).float().mean()))
+            term = env.action_manager.get_term(f"walker_{a}")
+            logs[f"Arm/unfold_{a}"].append(float((term.arm_target - term.stow)[:, 1:3].abs().sum(-1).mean()))
+            if bool(on.any()):
+                logs[f"Arm/force_{a}"].append(float(torch.linalg.norm(sd.force.view(self.n, -1, 3).sum(1), dim=-1)[on].mean()))
+                if closing is not None:
+                    logs[f"Arm/heading_closing_touching_{a}"].append(float(closing[on].mean()))
+            if closing is not None and bool((~on).any()):
+                logs[f"Arm/heading_closing_not_touching_{a}"].append(float(closing[~on].mean()))
+
     def _td(self, obs: dict) -> TensorDict:
         """Trainer observations, sanitized: a simulation glitch in one env must not reach the
         normalizers or the networks."""
@@ -579,7 +626,7 @@ class MarlTrainer:
         g = self.env.command_manager.get_term("goal")
         ck = {
             "iter": self.it, "algo": self.cfg.algo, "variant": self.cfg.variant, "cfg": asdict(self.cfg),
-            "agents": list(AGENTS),
+            "agents": list(AGENTS), "robots": dict(ROBOT_TYPE), "act_dims": dict(self.act_dim), "arm": self.cfg.arm,
             "actors": {a: self.actors[a].state_dict() for a in AGENTS},
             "critics": {k: c.state_dict() for k, c in self.critics.items()},
             "actor_opt": {a: o.state_dict() for a, o in self.actor_opt.items()},
@@ -1153,10 +1200,10 @@ class MarlTrainer:
             t0 = time.time()
             warm = self.it < cfg.critic_warmup or (self.resume_it is not None and self.it < self.resume_it + cfg.critic_warmup_resume)
             buf = {g_: torch.zeros(T, *obs[g_].shape, device=dev) for g_ in groups}
-            act = torch.zeros(T, n, 3 * A, device=dev)
+            act = torch.zeros(T, n, self.n_act, device=dev)
             logp = torch.zeros(T, n, A, device=dev)
-            mu = torch.zeros(T, n, 3 * A, device=dev)
-            sigma = torch.zeros(T, n, 3 * A, device=dev)
+            mu = torch.zeros(T, n, self.n_act, device=dev)
+            sigma = torch.zeros(T, n, self.n_act, device=dev)
             val = torch.zeros(T, n, A, device=dev)
             rew = torch.zeros(T, n, A, device=dev)
             done = torch.zeros(T, n, device=dev)
@@ -1178,8 +1225,8 @@ class MarlTrainer:
                         ak = self.actors[a](obs, stochastic_output=True)
                         logp[t, :, k] = self.actors[a].get_output_log_prob(ak)
                         m_, s_ = self.actors[a].output_distribution_params
-                        mu[t, :, 3 * k:3 * k + 3] = m_
-                        sigma[t, :, 3 * k:3 * k + 3] = s_.expand_as(m_)
+                        mu[t, :, self.act_sl[a]] = m_
+                        sigma[t, :, self.act_sl[a]] = s_.expand_as(m_)
                         acts.append(ak)
                         if cfg.residual:
                             self._residual_stats(rstat, a, *self.actors[a].last)
@@ -1218,6 +1265,7 @@ class MarlTrainer:
                         ep_len[ended] = 0.0
                     for k_, v_ in extras.get("log", {}).items():
                         logs[k_].append(float(v_) if not torch.is_tensor(v_) else float(v_.float().mean()))
+                    self._arm_stats(logs, ended)
                 last_v = self.values(obs)
                 adv = torch.zeros(T, n, A, device=dev)
                 gae = torch.zeros(n, A, device=dev)
@@ -1249,7 +1297,7 @@ class MarlTrainer:
                     if not warm:
                         for k, a in enumerate(AGENTS):
                             actor = self.actors[a]
-                            sl = slice(3 * k, 3 * k + 3)
+                            sl = self.act_sl[a]
                             actor(o_mb, stochastic_output=True)
                             excess = torch.relu(actor.distribution.raw_mean.abs() - self.bound)
                             bound_loss = excess.pow(2).sum(-1).mean()
@@ -1346,6 +1394,10 @@ class MarlTrainer:
             for a in AGENTS:
                 out[f"Policy/lr_{a}"] = self.lr[a]
                 out[f"Policy/std_{a}"] = float(self.actors[a].distribution.std_param.detach().mean())
+                if self.act_dim[a] > 3:  # a learned arm: the base and the arm outputs' noise separately
+                    sp_ = self.actors[a].distribution.std_param.detach().flatten()
+                    out[f"Policy/std_base_{a}"] = float(sp_[:3].mean())
+                    out[f"Policy/std_arm_{a}"] = float(sp_[3:].mean())
             out["Perf/steps_per_s"] = B / dt_s
             out["Perf/collect_s"] = collect_s
             out["Perf/iteration_s"] = dt_s
@@ -1423,8 +1475,9 @@ class PairPolicy:
                                             tuple(rc["resid_hidden"]), rc.get("resid_compose", "raw")).to(device)
                            for a in AGENTS}
         else:
-            self.actors = {a: make_model(env_obs, actor_groups(a, variant), 3, (256, 128, 64), variant, True).to(device)
-                           for a in AGENTS}
+            dims = (ck or {}).get("act_dims") or {}  # checkpoints from before the Spot-arm pair: 3 per robot
+            self.actors = {a: make_model(env_obs, actor_groups(a, variant), int(dims.get(a, 3)), (256, 128, 64), variant,
+                                         True).to(device) for a in AGENTS}
         if checkpoint:
             for a in AGENTS:
                 self.actors[a].load_state_dict(ck["actors"][a])

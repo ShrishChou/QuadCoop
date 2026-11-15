@@ -81,6 +81,9 @@ def resolve_models(variant: str, pair: str = "mixed") -> dict:
     reg = load()
     out = {"selection": {}, "walker_ckpt": {}, "walker_env": {}, "policy": {}, "pair": pair}
     for a, robot in robot_of(pair).items():
+        if robot == "spot_arm":  # RAI's released walker (quadcoop/robots/spot_arm.py); no Stage 2 policy for this body
+            out["selection"]["walker_spot_arm"] = "RAI judo spot_locomotion.onnx (frozen; QUADCOOP_JUDO)"
+            continue
         role = role_of[robot]
         w_role, p_role = f"walker_{role}", f"push2{variant}_{role}"
         if w_role not in sel or p_role not in sel:
@@ -150,7 +153,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--algo", choices=("ippo", "mappo"), required=True)
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot"), default="mixed",
+    ap.add_argument("--arm", choices=("stowed", "learned"), default="stowed",
+                    help="--pair spot_arm: each robot's arm held stowed (3 actions per robot) or policy-controlled "
+                         "(9: + six rate-limited arm joint targets)")
+    ap.add_argument("--pilot-level", default="",
+                    help="one level row replacing the level table, 11 comma-separated values: d_lo, d_hi, robot "
+                         "spread deg, behind offset deg, object start yaw deg, goal yaw change deg, pos tol m, yaw tol "
+                         "deg, hold s, max mass, min mass (use with --fixed-difficulty --fixed-level 0)")
+    ap.add_argument("--pilot-episode-s", type=float, default=0.0, help="episode length with --pilot-level")
+    ap.add_argument("--dyaw-choices", action="store_true",
+                    help="goal heading change is -1, 0 or +1 x the level's value, equally often (left / straight / right)")
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm"), default="mixed",
                     help="which two robots: ANYmal C + Spot (mixed), two ANYmal C, two Spot "
                          "(quadcoop/coop2/pairs.py); both start from that type's Stage 2 policy")
     ap.add_argument("--seed", type=int, default=0)
@@ -383,6 +396,9 @@ def main() -> int:
     if a.max_actor_lr is None:
         a.max_actor_lr = 1e-3 if a.scratch else 3e-4
     models = resolve_models(a.variant, a.pair)
+    if a.pair == "spot_arm" and not (a.scratch or a.resume or a.init_from or a.init_actors):
+        raise SystemExit("--pair spot_arm has no Stage 2 policies to start from: pass --scratch (or --resume / --init-from)")
+    pilot_level = tuple(float(x) for x in a.pilot_level.split(",")) if a.pilot_level else ()
     set_env(models)
     import torch
     import yaml
@@ -457,7 +473,8 @@ def main() -> int:
                                  resid=bool(a.residual), resid_objects=resid_objects, shape_bias=shape_bias,
                                  resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes, train_mass=train_mass,
                                  fixed_difficulty=a.fixed_difficulty, track=a.track, track_w=a.track_w,
-                                 short_tasks=a.short_tasks)
+                                 short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
+                                 pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     drop_rewards = tuple(x.strip() for x in a.drop_rewards.split(",") if x.strip())
@@ -494,6 +511,8 @@ def main() -> int:
                   over_push_w=a.over_push_w if a.effort else 0.0,
                   contact_sense=a.contact_sense, acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
+                  arm=a.arm if a.pair == "spot_arm" else "", pilot_level=pilot_level,
+                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
                   resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std,

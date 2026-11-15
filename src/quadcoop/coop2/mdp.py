@@ -75,7 +75,7 @@ from quadcoop.stage2.shapes import (
 from quadcoop.coop2.pairs import AGENTS, PARTNER, ROBOT_TYPE  # noqa: E402
 from quadcoop.contacts import PLANNER_PARTS  # noqa: E402
 
-_FOOTPRINT_OF_TYPE = {"anymal_c": (0.55, 0.30), "spot": (0.55, 0.28)}  # m: half-length, half-width
+_FOOTPRINT_OF_TYPE = {"anymal_c": (0.55, 0.30), "spot": (0.55, 0.28), "spot_arm": (0.55, 0.28)}  # m: half-length, half-width
 FOOTPRINT_HALF = {a: _FOOTPRINT_OF_TYPE[ROBOT_TYPE[a]] for a in AGENTS}  # partner map, body gap
 SPREAD = 2  # level-table column 2: each robot's spread around "behind", +- deg
 BEHIND = 3  # level-table column 3: "behind" rotated away from straight behind the object, +- deg
@@ -1831,6 +1831,8 @@ class CoopPush2Command(Push2Command):
         cap = torch.where(self.sym[shape] > 0, (math.pi / self.sym[shape].clamp(min=1)) * c.max_yaw_frac_of_symmetry,
                           torch.zeros_like(gd))
         dyaw = torch.minimum(torch.deg2rad(t[:, DYAW]), cap) * (2 * torch.rand(m, device=dev) - 1)
+        if c.dyaw_choices:  # the goal heading change is one of -1, 0, +1 x the level's value, equally often
+            dyaw = torch.minimum(torch.deg2rad(t[:, DYAW]), cap) * (torch.randint(0, 3, (m,), device=dev) - 1).float()
         goal_yaw = wrap(obj_heading + dyaw)
         tt = torch.zeros(m, dtype=torch.bool, device=dev)
         if c.turn_frac > 0 and sc is None:  # turn practice (training only): a turn in place
@@ -2269,6 +2271,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     # d_lo, d_hi [m] | robot spread +- [deg] | "behind" offset +- [deg] | object start yaw +- |
     # goal yaw change +- | pos tol [m] | yaw tol [deg] | hold [s] (tolerances: "hold" mode only;
     # "terminate" uses success_pos_tol / success_yaw_tol_deg) | max mass [kg] | min mass [kg]
+    dyaw_choices: bool = False  # goal heading change drawn from {-1, 0, +1} x the level's value (turn pilot)
     levels: tuple[tuple[float, ...], ...] = field(default_factory=lambda: (
         (1.5, 3.0, 25, 0, 30, 30, 0.15, 10, 0.5, 40, 10),     # each robot could do it alone
         (2.0, 4.0, 40, 20, 60, 60, 0.12, 8, 0.5, 50, 20),
@@ -2689,6 +2692,7 @@ def partner_obs(env, robot: str, other: str, other_action: str) -> torch.Tensor:
     term = env.action_manager.get_term(other_action)
     # with a command interface the partner's applied (limited) command, so observations match what its walker gets
     cmd = term.applied_norm if getattr(term.cfg, "interface", "raw") != "raw" else term.raw_action.clamp(-1.0, 1.0)
+    cmd = cmd[:, :3]  # the base command (a robot with a learned arm has more actions after it)
     return torch.cat([pos, torch.sin(rel).unsqueeze(-1), torch.cos(rel).unsqueeze(-1),
                       _to_frame(env, robot, p.data.root_link_lin_vel_w), cmd], dim=-1)
 
@@ -2734,13 +2738,19 @@ def behind_box(env, robot: str, done_dist: float = 0.25) -> torch.Tensor:
     return torch.where(d > done_dist, cos.clamp(min=0.0), torch.zeros_like(cos))
 
 
+def agent_slice(env, agent: int) -> slice:
+    """Robot `agent`'s columns of the env action: its walker term's (3, or 9 with a learned arm), in AGENTS order."""
+    dims = [env.action_manager.get_term(f"walker_{a}").action_dim for a in AGENTS]
+    return slice(sum(dims[:agent]), sum(dims[:agent + 1]))
+
+
 def agent_action_rate(env, agent: int) -> torch.Tensor:
     """Squared change of the command this robot's walker actually gets (actions clipped to
     [-1, 1], so at most 12 per step). The env action is (anymal vx, vy, wz, spot vx, vy, wz).
     (Stage 2 penalized the raw policy output instead; unbounded outputs made that term blow up
     to -1e13 in the first two-robot run.)"""
     am = env.action_manager
-    sl = slice(3 * agent, 3 * agent + 3)
+    sl = agent_slice(env, agent)
     a, p = am.action[:, sl].clamp(-1.0, 1.0), am.prev_action[:, sl].clamp(-1.0, 1.0)
     return torch.sum(torch.square(a - p), dim=-1)
 
@@ -2749,7 +2759,7 @@ def agent_action_limit(env, agent: int) -> torch.Tensor:
     """How far this robot's raw policy output is past the walker's [-1, 1] clip (summed over vx,
     vy, wz; linear). Outputs past the clip change nothing the robot does, so this only keeps
     them from drifting without bound."""
-    a = env.action_manager.action[:, 3 * agent:3 * agent + 3]
+    a = env.action_manager.action[:, agent_slice(env, agent)]
     return torch.sum(torch.relu(a.abs() - 1.0), dim=-1)
 
 

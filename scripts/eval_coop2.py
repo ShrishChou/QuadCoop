@@ -96,7 +96,7 @@ def models_for(a) -> tuple[dict, str]:
             if a.solo not in robot_of(pair):
                 raise SystemExit(f"--solo {a.solo}: this checkpoint's robots are {list(robot_of(pair))}")
             what = f"{a.solo} alone, trained actor from {what}"
-        if not sel:
+        if not sel or pair == "spot_arm":  # (Spot-arm: RAI's walker, nothing registered)
             return resolve_models(variant, pair), what
         reg = load()
         out = {"selection": sel, "walker_ckpt": {}, "walker_env": {}, "policy": {}, "pair": pair}
@@ -125,7 +125,10 @@ def main() -> int:
     ap.add_argument("--solo", help="only this robot acts, the other is parked far away (a slot name: anymal / "
                                    "spot, anymal1 / anymal2, ...): its Stage 2 policy, or with --checkpoint "
                                    "its trained actor")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot"), default="mixed",
+    ap.add_argument("--arm-lock", default="",
+                    help="Spot-arm checkpoints with learned arms: comma list of robots whose arm is held stowed "
+                         "(their arm outputs ignored), or 'all': the arm ablation")
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm"), default="mixed",
                     help="frozen pair / solo: which two robots (a checkpoint carries its own)")
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
     ap.add_argument("--partner-map", action="store_true",
@@ -169,7 +172,7 @@ def main() -> int:
     from quadcoop import falls
     from quadcoop.coop2 import mdp as cm
     from quadcoop.coop2.env_cfg import SPECS, make_coop2_env_cfg
-    from quadcoop.coop2.marl import PairPolicy
+    from quadcoop.coop2.marl import PairPolicy, action_slices
     from quadcoop.coop2.mdp import AGENTS
     from quadcoop.coop2.video import Camera, render_episode
     from quadcoop.stage1.mdp import wrap, yaw_of
@@ -180,6 +183,11 @@ def main() -> int:
 
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     variant, partner_map, reward_set = a.variant, a.partner_map, "r3"
+    arm_mode = "stowed"
+    if a.checkpoint:
+        arm_mode = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {}).get("arm") or "stowed"
+    if models.get("pair") == "spot_arm" and not a.checkpoint:
+        raise SystemExit("the spot_arm pair has no Stage 2 policies: give --checkpoint")
     if a.checkpoint:
         ck_ = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
         variant = ck_.get("variant", "b")
@@ -213,7 +221,7 @@ def main() -> int:
 
     for mass in masses:
         cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set,
-                                 push_sensors=a.recovery)
+                                 push_sensors=a.recovery, arm=arm_mode)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
@@ -268,6 +276,14 @@ def main() -> int:
         policy = PairPolicy(obs, device, variant, checkpoint=a.checkpoint,
                             singles=None if a.checkpoint else models["policy"])
         active = [ag for ag in AGENTS if a.solo is None or ag == a.solo]
+        act_sl = action_slices(base)  # each robot's columns of the env action (3, or 9 with a learned arm)
+        locked = list(AGENTS) if a.arm_lock == "all" else [x.strip() for x in a.arm_lock.split(",") if x.strip()]
+        for ag in locked:
+            term_ = base.action_manager.get_term(f"walker_{ag}")
+            assert hasattr(term_, "arm_locked"), f"--arm-lock {ag}: not a Spot-arm robot"
+            term_.arm_locked[:] = True
+        if locked and mass == masses[0]:
+            print(f"arms held stowed: {locked} (checkpoint arm mode: {arm_mode})", flush=True)
 
         dt = base.step_dt
         steps = int(a.horizon / dt)
@@ -341,7 +357,7 @@ def main() -> int:
                 act = policy(obs, env=base)
                 for k, ag in enumerate(AGENTS):
                     if ag not in active:
-                        act[:, 3 * k:3 * k + 3] = 0.0
+                        act[:, act_sl[ag]] = 0.0  # stand still (a Spot-arm robot: arm stowed)
                 o, _, _, _, _ = base.step(act)
                 obs = TensorDict({k: v for k, v in o.items() if not k.startswith("walker_")}, batch_size=[n])
                 t = (i + 1) * dt
