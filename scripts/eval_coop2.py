@@ -183,9 +183,10 @@ def main() -> int:
 
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     variant, partner_map, reward_set = a.variant, a.partner_map, "r3"
-    arm_mode = "stowed"
+    arm_mode, hand_obs = "stowed", False
     if a.checkpoint:
-        arm_mode = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {}).get("arm") or "stowed"
+        _rc = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {})
+        arm_mode, hand_obs = _rc.get("arm") or "stowed", bool(_rc.get("hand_obs"))
     if models.get("pair") == "spot_arm" and not a.checkpoint:
         raise SystemExit("the spot_arm pair has no Stage 2 policies: give --checkpoint")
     if a.checkpoint:
@@ -221,7 +222,7 @@ def main() -> int:
 
     for mass in masses:
         cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set,
-                                 push_sensors=a.recovery, arm=arm_mode)
+                                 push_sensors=a.recovery, arm=arm_mode, hand_obs=hand_obs)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}

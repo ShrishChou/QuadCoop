@@ -4,15 +4,15 @@
     python scripts/spot_arm/pair_eval.py --report sa-pilot-<run1>,sa-pilot-<run2>,...     # systems side by side
 
 Tasks (the same for every checkpoint: --seed): one elongated object ("long", --mass 20 kg), goal 1 m ahead with the
-heading turned left (+30 deg), straight (0) or right (-30 deg); the robots start behind it at -35 / +35 deg
+heading turned left (+--turn deg, default 30), straight (0) or right (---turn deg); the robots start behind it at -35 / +35 deg
 (+-10 deg jitter, 0.3-0.6 m clear, object heading jittered +-10 deg), each task also with the two start places
 exchanged; --reps placements per turn. Success: within 0.10 m and 6 deg for 1 s inside --horizon; a fall ends
 the episode as a failure.
-Arm modes, all in one build for a learned-arm checkpoint (the policy is the same, only what its arm outputs may
+Arm modes, all in one build for a learned-arm checkpoint (joint targets or hand position) (the policy is the same, only what its arm outputs may
 do differs): both (as trained), only_1 / only_2 (the other robot's arm held stowed), none (both held stowed).
 A stowed-arm checkpoint has the one mode "stowed".
 Per episode: success, time, final position and signed heading error, falls, each robot's arm and trunk contact
-share and mean arm contact force. Videos: rep 0, unswapped, of each turn, in every arm mode (captions: wanted and
+share and mean arm contact force, the goal heading change as placed (realized), the hand's mean extension. Videos: rep 0, unswapped, of each turn, in every arm mode (captions: wanted and
 actual object heading). Writes evals/<name>/episodes.csv and summary.md; videos to logs/evals/<name>/.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
-TURNS = (("left", 30.0), ("straight", 0.0), ("right", -30.0))
+TURNS = [("left", 30.0), ("straight", 0.0), ("right", -30.0)]  # --turn sets the magnitude
 POS_TOL, YAW_TOL_DEG, HOLD_S = 0.10, 6.0, 1.0
 
 
@@ -98,7 +98,7 @@ def tables(rows: list[dict], label: str = "") -> list[str]:
     return md
 
 
-def report(names: list[str]) -> int:
+def report(names: list[str], out_path: str = "evals/spot_arm/pilot_report.md") -> int:
     md = ["# Spot-arm turn pilot: systems on the same held-out tasks", ""]
     runs = {n: load(n) for n in names}
     md += ["| system | arm mode | success | falls | abs heading error left / straight / right, median deg |", "|---|---|---|---|---|"]
@@ -124,7 +124,7 @@ def report(names: list[str]) -> int:
                       f"{sum(x < 0 for x in d)} |")
     for n, rows in runs.items():
         md += [""] + tables(rows, n)
-    out = ROOT / "evals" / "spot_arm" / "pilot_report.md"
+    out = ROOT / out_path
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(md) + "\n")
     print("\n".join(md))
@@ -135,7 +135,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--checkpoint")
     ap.add_argument("--name")
-    ap.add_argument("--report", default="", help="comma list of evaluation names: write evals/spot_arm/pilot_report.md")
+    ap.add_argument("--report", default="", help="comma list of evaluation names: write --report-out")
+    ap.add_argument("--report-out", default="evals/spot_arm/pilot_report.md")
     ap.add_argument("--object", default="long")
     ap.add_argument("--mass", type=float, default=20.0)
     ap.add_argument("--dist", type=float, default=1.0)
@@ -143,9 +144,11 @@ def main() -> int:
     ap.add_argument("--horizon", type=float, default=20.0)
     ap.add_argument("--seed", type=int, default=7100)
     ap.add_argument("--videos", type=int, default=1)
+    ap.add_argument("--turn", type=float, default=30.0, help="left / right goal heading change, deg")
     a = ap.parse_args()
+    TURNS[0], TURNS[2] = ("left", abs(a.turn)), ("right", -abs(a.turn))
     if a.report:
-        return report([x.strip() for x in a.report.split(",") if x.strip()])
+        return report([x.strip() for x in a.report.split(",") if x.strip()], a.report_out)
     if not (a.checkpoint and a.name):
         ap.error("give --checkpoint and --name (or --report)")
     os.environ["QUADCOOP_SHAPES"] = "v2"
@@ -171,7 +174,7 @@ def main() -> int:
     rc = ck.get("cfg", {})
     assert rc.get("pair") == "spot_arm", f"{a.checkpoint}: pair {rc.get('pair')}"
     arm = rc.get("arm") or "stowed"
-    modes = ["both", "only_1", "only_2", "none"] if arm == "learned" else ["stowed"]
+    modes = ["both", "only_1", "only_2", "none"] if arm in ("learned", "hand") else ["stowed"]
     lock = {"both": (0, 0), "only_1": (0, 1), "only_2": (1, 0), "none": (1, 1), "stowed": (0, 0)}
     base_cases = [(t, r) for t in range(len(TURNS)) for r in range(a.reps)]
     cases = [(t, r, w, m) for m in modes for w in (0, 1) for (t, r) in base_cases]
@@ -179,7 +182,8 @@ def main() -> int:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     cfg = make_coop2_env_cfg(ck.get("variant", "b"), play=True, partner_map=bool(rc.get("partner_map")),
                              reward_set=rc.get("reward_set", "r7"), arm=arm,
-                             pilot_level=tuple(rc.get("pilot_level") or ()), dyaw_choices=bool(rc.get("dyaw_choices")))
+                             pilot_level=tuple(rc.get("pilot_level") or ()), dyaw_choices=bool(rc.get("dyaw_choices")),
+                             hand_obs=bool(rc.get("hand_obs")))
     if rc.get("pilot_level"):
         cfg.commands["goal"].start_level = 0
     cfg.scene.num_envs = n
@@ -233,7 +237,8 @@ def main() -> int:
     t_succ = torch.full((n,), float("nan"), device=dev)
     pos_err, yaw_err = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
     live_steps = torch.zeros(n, device=dev)
-    acc = {f"{p}_{ag}": torch.zeros(n, device=dev) for ag in AGENTS for p in ("arm", "trunk", "force")}
+    acc = {f"{p}_{ag}": torch.zeros(n, device=dev) for ag in AGENTS for p in ("arm", "trunk", "force", "ext")}
+    realized = torch.rad2deg(g.goal_turn.clone())  # the goal heading change as placed (the object's symmetry caps it)
     with torch.no_grad():
         for i in range(int(a.horizon / dt)):
             act = policy(obs, env=env)
@@ -254,6 +259,7 @@ def main() -> int:
                 acc[f"arm_{ag}"] += on.float()
                 acc[f"force_{ag}"] += torch.linalg.norm(sd.force.view(n, -1, 3).sum(1), dim=-1) * on.float()
                 acc[f"trunk_{ag}"] += (env.scene[f"trunk_{ag}"].data.found.view(n, -1).any(-1) & live).float()
+                acc[f"ext_{ag}"] += terms[ag].blend * live.float()
             inside = (d < POS_TOL) & (e.abs() < math.radians(YAW_TOL_DEG))
             hold = torch.where(inside & live, hold + dt, torch.zeros_like(hold))
             new = live & (hold >= HOLD_S)
@@ -282,13 +288,15 @@ def main() -> int:
     rows = []
     for j, c in enumerate(cases):
         ls = max(float(live_steps[j]), 1.0)
-        rows.append({"turn": TURNS[c[0]][0], "turn_deg": TURNS[c[0]][1], "rep": c[1], "swap": c[2], "arm_mode": c[3],
+        rows.append({"turn": TURNS[c[0]][0], "turn_deg": TURNS[c[0]][1], "turn_realized_deg": round(float(realized[j]), 2),
+                     "rep": c[1], "swap": c[2], "arm_mode": c[3],
                      "success": int(bool(succ[j])), "fell": int(bool(fell[AGENTS[0]][j] | fell[AGENTS[1]][j])),
                      **{f"fell_{ag}": int(bool(fell[ag][j])) for ag in AGENTS},
                      "t_success": "" if not bool(succ[j]) else round(float(t_succ[j]), 2),
                      "pos_err": round(float(pos_err[j]), 4), "yaw_err_deg": round(math.degrees(float(yaw_err[j])), 2),
                      **{f"arm_touch_{ag}": round(float(acc[f'arm_{ag}'][j]) / ls, 4) for ag in AGENTS},
                      **{f"trunk_touch_{ag}": round(float(acc[f'trunk_{ag}'][j]) / ls, 4) for ag in AGENTS},
+                     **{f"extension_{ag}": round(float(acc[f'ext_{ag}'][j]) / ls, 4) for ag in AGENTS},
                      **{f"arm_force_{ag}": round(float(acc[f'force_{ag}'][j]) / max(float(acc[f'arm_{ag}'][j]), 1.0), 1)
                         for ag in AGENTS}})
     out = ROOT / "evals" / a.name
@@ -300,7 +308,9 @@ def main() -> int:
     srows = [{k: str(v) for k, v in r.items()} for r in rows]
     md = [f"# Spot-arm turn pilot: {a.name}", "",
           f"{a.checkpoint}, iteration {ck['iter']}, {ck['algo']}, arms {arm}. {a.object} {a.mass:g} kg, {a.dist:g} m, "
-          f"{a.reps} placements per turn x swap, horizon {a.horizon:g} s, seed {a.seed}.", ""] + tables(srows)
+          f"{a.reps} placements per turn x swap, horizon {a.horizon:g} s, seed {a.seed}. Goal heading change as placed: "
+          + ", ".join(f"{t} {min(float(r['turn_realized_deg']) for r in rows if r['turn'] == t):+.1f} to "
+                      f"{max(float(r['turn_realized_deg']) for r in rows if r['turn'] == t):+.1f} deg" for t, _ in TURNS) + ".", ""] + tables(srows)
     (out / "summary.md").write_text("\n".join(md) + "\n")
     print("\n".join(md), flush=True)
     if film:

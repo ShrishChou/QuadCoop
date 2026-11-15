@@ -4,8 +4,13 @@ Action per robot (docs/spot_arm_pair.md), 50 Hz:
   arm "stowed"   3: forward, lateral, yaw velocity (the same ranges and smoothing as the other robots' walker term)
   arm "learned"  9: those 3 + six arm joint targets. Arm action a in [-1, 1] per joint -> target = stowed pose +
                  a x ARM_SPAN, clamped to the joint limits (a = 0 is the stowed arm; + unfolds the shoulder and the
-                 elbow), then rate-limited to ``arm_rate`` rad/s: the walker stays up through a gradual arm motion
-                 and falls when the arm is snapped outward (port acceptance, docs/spot_arm.md). Gripper held closed.
+                 elbow).
+  arm "hand"     7: those 3 + a hand point (3, body frame: HAND_CENTER + a x HAND_SPAN, m) + extension (1). The
+                 joint targets are stowed + w x (IK(hand point) - stowed), w = clamp(extension, 0, 1): extension <= 0
+                 is the stowed arm whatever the hand point, small positive values start the reach from stowed, 1 is
+                 the commanded reach. IK: sa.hand_ik (gripper level, out-of-reach points brought within reach).
+Arm targets (both arm modes) are rate-limited to ``arm_rate`` rad/s: the walker stays up through a gradual arm
+motion and falls when the arm is snapped outward (port acceptance, docs/spot_arm.md). Gripper held closed.
 The applied command (base velocity, arm targets, default torso) goes to the walker, whose leg targets and the arm
 targets go to the model's own position actuators.
 
@@ -24,7 +29,8 @@ from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from quadcoop.robots import spot_arm as sa
 
 N_ARM = 6
-ARM_MODES = ("stowed", "learned")
+ARM_MODES = ("stowed", "learned", "hand")  # "learned": joint targets
+N_HAND = 4
 
 
 class SpotArmAction(ActionTerm):
@@ -38,7 +44,7 @@ class SpotArmAction(ActionTerm):
         self.robot = env.scene[cfg.entity_name]
         self.walker = sa.RaiWalker(self.robot, self.device)
         n, dev = self.num_envs, self.device
-        self._dim = 3 + (N_ARM if cfg.arm == "learned" else 0)
+        self._dim = 3 + {"stowed": 0, "learned": N_ARM, "hand": N_HAND}[cfg.arm]
         self._raw = torch.zeros(n, self._dim, device=dev)
         self._lo = torch.tensor([cfg.vx_range[0], cfg.vy_range[0], cfg.wz_range[0]], device=dev)
         self._hi = torch.tensor([cfg.vx_range[1], cfg.vy_range[1], cfg.wz_range[1]], device=dev)
@@ -50,9 +56,13 @@ class SpotArmAction(ActionTerm):
         self.arm_goal = self.stow.repeat(n, 1)  # what the policy asked for (after the clamp)
         self.arm_target = self.stow.repeat(n, 1)  # what the arm actuators get (rate-limited)
         self.arm_locked = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.hand_c = torch.tensor(sa.HAND_CENTER, device=dev)
+        self.hand_s = torch.tensor(sa.HAND_SPAN, device=dev)
+        self.hand_cmd = self.hand_c.repeat(n, 1)  # hand mode: the commanded hand point (body frame)
+        self.blend = torch.zeros(n, device=dev)  # hand mode: w, 0 stowed .. 1 the commanded reach
         self.walker_action = self.walker.prev  # (n, 12) the walker's last leg action
         print(f"[spot_arm] {cfg.entity_name}: RAI walker, arm {cfg.arm} ({self._dim} actions"
-              + (f", arm targets rate-limited to {cfg.arm_rate:g} rad/s" if cfg.arm == "learned" else "") + ")")
+              + (f", arm targets rate-limited to {cfg.arm_rate:g} rad/s" if cfg.arm != "stowed" else "") + ")")
 
     @property
     def action_dim(self) -> int:
@@ -70,9 +80,14 @@ class SpotArmAction(ActionTerm):
         self.applied_norm[:] = a[:, :3]
         s = self.cfg.smoothing
         twist.vel_command_b[:] = (1.0 - s) * twist.vel_command_b + s * target
-        if self._dim > 3:
+        if self.cfg.arm == "learned":
             goal = torch.maximum(torch.minimum(self.stow + a[:, 3:] * self.span, self.arm_hi), self.arm_lo)
             goal = torch.where(self.arm_locked.unsqueeze(-1), self.stow.expand_as(goal), goal)
+        elif self.cfg.arm == "hand":
+            self.hand_cmd[:] = self.hand_c + a[:, 3:6] * self.hand_s
+            w = torch.where(self.arm_locked, torch.zeros_like(a[:, 6]), a[:, 6].clamp(0.0, 1.0))
+            self.blend[:] = w
+            goal = self.stow + w.unsqueeze(-1) * (sa.hand_ik(self.hand_cmd) - self.stow)
         else:
             goal = self.stow.expand(self.num_envs, N_ARM)
         self.arm_goal[:] = goal
@@ -92,13 +107,15 @@ class SpotArmAction(ActionTerm):
         self.applied_norm[ids] = 0.0
         self.arm_goal[ids] = self.stow
         self.arm_target[ids] = self.stow
+        self.hand_cmd[ids] = self.hand_c
+        self.blend[ids] = 0.0
         self.walker.reset(env_ids)
 
 
 @dataclass(kw_only=True)
 class SpotArmActionCfg(ActionTermCfg):
     twist_name: str = "twist"
-    arm: str = "stowed"  # "stowed" | "learned"
+    arm: str = "stowed"  # "stowed" | "learned" (joint targets) | "hand" (hand point + extension)
     vx_range: tuple[float, float] = (-0.6, 0.8)  # WalkerCommandActionCfg's (the walker tracks 1.0 m/s)
     vy_range: tuple[float, float] = (-0.5, 0.5)
     wz_range: tuple[float, float] = (-0.7, 0.7)
@@ -128,6 +145,39 @@ def _fngr(env, robot: str) -> int:
 
 def gripper_pos_w(env, robot: str) -> torch.Tensor:
     return env.scene[robot].data.body_link_pos_w[:, _fngr(env, robot)]
+
+
+def _wrist(env, robot: str) -> int:
+    cache = env.__dict__.setdefault("_spot_arm_wrist", {})
+    if robot not in cache:
+        cache[robot] = int(env.scene[robot].find_bodies(sa.WRIST_BODY)[0][0])
+    return cache[robot]
+
+
+def hand_pos_w(env, robot: str) -> torch.Tensor:
+    """(n, 3) the hand point (sa.HAND_OFF in the wrist frame), world."""
+    from mjlab.utils.lab_api.math import quat_apply
+
+    d = env.scene[robot].data
+    k = _wrist(env, robot)
+    off = torch.tensor(sa.HAND_OFF, device=env.device).expand(env.num_envs, 3)
+    return d.body_link_pos_w[:, k] + quat_apply(d.body_link_quat_w[:, k], off)
+
+
+def hand_pos_b(env, robot: str) -> torch.Tensor:
+    """(n, 3) the measured hand point in the robot's body frame (the frame of the hand command)."""
+    from mjlab.utils.lab_api.math import quat_apply_inverse
+
+    d = env.scene[robot].data
+    return quat_apply_inverse(d.root_link_quat_w, hand_pos_w(env, robot) - d.root_link_pos_w)
+
+
+def hand_state(env, robot: str, action_name: str) -> torch.Tensor:
+    """(7) the measured hand point in the body frame relative to HAND_CENTER (3), the commanded hand point relative
+    to HAND_CENTER (3; 0 unless arm "hand"), the extension w (1; 0 unless arm "hand")."""
+    term = env.action_manager.get_term(action_name)
+    hb = hand_pos_b(env, robot) - term.hand_c
+    return torch.cat([hb, term.hand_cmd - term.hand_c, term.blend.unsqueeze(-1)], -1)
 
 
 def arm_state(env, robot: str, action_name: str) -> torch.Tensor:

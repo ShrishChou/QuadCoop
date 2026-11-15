@@ -1,6 +1,6 @@
 # Two Spots with arms: IPPO / MAPPO, arms stowed vs learned
 
-Status (2026-11-15): pair wired into the trainer and evaluator; wiring test passed (job 29207519); the four pilot runs are queued (training jobs 29212430, 29212432, 29212434, 29212436, relaunched with the full visual model; evaluations 29212431, 29212433, 29212435, 29212437). No pilot result yet.
+Status (2026-11-15): turn pilot (A-D, ±30°) training, evaluations queued; hand-position wave (H1-H4, MAPPO, ±30° / ±60°) preflight passed and submitted. No evaluation result yet.
 
 **Questions.**
 - Does learning to use the arms improve transport? Compare arms learned against arms stowed, on the same bodies.
@@ -118,6 +118,105 @@ iterations. One seed shows that the system learns and renders; an algorithm clai
   side and turn direction.
 - Videos: the first placement of each turn, in every arm mode, with wanted and actual object heading in the caption.
 - `pair_eval.py --report <names>` puts the four systems side by side on the same tasks.
+
+**Mid-run reading (iteration ~950, training statistics).** Both learned-arm runs train well (IPPO 0.86, MAPPO 0.93
+success) but mostly with the body: arm on the object 0.0-1.5% of the time vs the trunk 17-20%. The arm outputs'
+exploration noise has stayed at its initial 0.60 while the base noise fell to 0.44-0.54. This says the robots
+usually solve the ±30° task by body pushing; it does not show that the arm outputs learned nothing (their mean can
+still depend on the object or goal) or cost nothing. The matched evaluation and the arm ablation answer that.
+
+## Hand-position control and the ±60° turn (wave 2)
+
+Two separate questions: does hand-position control make useful arm actions easier to learn, and does using the arms
+improve transport when a larger turn is required?
+
+**Interface** (`--arm hand`, `quadcoop/coop2/spot_arm_term.py`; IK in `quadcoop/robots/spot_arm.py`). 7 actions per
+robot:
+- base: forward, lateral and yaw velocity, as before;
+- hand point (3), in the robot's body frame: (0.80, 0, -0.05) m + a × (0.25, 0.45, 0.25), i.e. 0.55-1.05 m ahead
+  (the trunk front is at 0.42), ±0.45 m to the side, 0.30 m below to 0.20 m above the shoulder line;
+- extension (1), one job only: w = clamp(a, 0, 1) blends the joint targets from stowed (w = 0) to the IK solution of
+  the hand point (w = 1). A zero action is still "stand still, arm stowed", and small positive exploration starts
+  the reach from the initial pose.
+
+The IK is closed form: the model's yaw, pitch and pitch joints, gripper kept level, rolls 0. It matches MuJoCo's
+forward kinematics to under 1 mm wherever the point is reachable, which is 81% of the box. In the near corners
+(beside the shoulder) and the far low corners, the joint limits bring the hand to the nearest point the arm can
+reach. Targets are rate-limited at 1.5 rad/s as before, and the gripper stays closed. Where and when to reach
+stays with the policy.
+
+**Observations** (`--hand-obs`, every arm mode in this wave): as before plus the measured hand point and the
+commanded one (body frame) and the extension (7 numbers). Joint-target and stowed runs get zeros for the command
+and the extension.
+
+**Preflight** (`slurm/spot_arm_hand_wiring.sbatch`, `scripts/spot_arm/hand_reach.py`). The trainer builds and
+updates for MAPPO with hand, joint-target and stowed arms at ±60°. Then each Spot runs alone (partner parked) from
+6 matched starts straight behind the 20 kg long object. It reaches left (y = +0.35 m), reaches right (−0.35 m) or
+keeps the arm stowed, then walks forward at 0.25 m/s with the same base command in every case. Recorded:
+requested vs measured hand point, hand and trunk contact and which comes first, signed object rotation, travel,
+falls. Videos for each robot and condition.
+
+Pass criteria:
+- the hand gets within 5 cm of the requested point;
+- no falls;
+- the hand touches before the trunk;
+- the left reach turns the object clockwise and the right reach counter-clockwise, each by at least 3° more than
+  with the arm stowed.
+
+**Preflight result (jobs 29222369, 29222956, 29223636): passed at 0.5 m/s.** Trainer checks built and updated in all
+three arm modes; each actor reads 85 numbers in this wave. Each Spot alone, 6 matched starts per condition, the same
+walking command:
+
+| walking command | condition | rotation, Spot 1 / Spot 2 (mean, deg) | travel (m) | hand / trunk contact | falls |
+|---|---|---|---|---|---|
+| 0.25 m/s | hand left / right / stowed | −0.6 / −0.4, +1.3 / +2.0, +0.6 / −0.1 | 0.01-0.06 | hand first in all reaches | 0 |
+| 0.5 m/s | hand left | −15.5 / −25.9 | 0.41-0.52 | hand first 6/6 each, trunk ≤ 2% | 0 |
+| 0.5 m/s | hand right | +34.6 / +31.0 | 0.43-0.44 | hand first 6/6 each, trunk ≤ 1% | 0 |
+| 0.5 m/s | stowed (trunk) | +4.5 / +7.1 | 0.28-0.41 | trunk 46-47% | 0 |
+| 0.8 m/s | hand left / right / stowed | −40.6 / −38.5, +38.0 / +37.9, +37.7 / +18.6 | 0.59-0.77 | | 0 |
+
+- A placed hand steers the object. At 0.5 m/s, left and right reaches with the same base command end 50-57° apart,
+  each 20-33° from the stowed push, in the expected direction, upright.
+- At 0.25 m/s nothing moves 20 kg, with the trunk either: the walker's push grows with its velocity error.
+- At 0.8 m/s the stowed push alone already swings the object 19-38°.
+- The test speed is therefore 0.5 m/s.
+
+The hand sits 8.5-9 cm from the requested point before any contact. That is gravity sag of the arm's position
+actuators (120 Nm/rad), not the IK. Pushing moves it further: mid-push it was measured at (0.67, 0.31, −0.23) m
+against (0.80, 0.35, −0.05) m. The tolerance was set at 5 cm before measuring and is now 10 cm. The policy reads the
+measured hand point.
+
+Videos: `evals/spot_arm/hand_reach/spotarm{1,2}_{left,right,stowed}.mp4` (0.5 m/s; the 0.5 and 0.8 m/s sweeps are in
+`hand_reach_vx0.5/`, `hand_reach_vx0.8/`, the 0.5 m/s ones with a camera that frames the parked partner too).
+
+**Turns.** The goal heading change is 0 or ±60° (equally often); everything else is the turn pilot's. The long box
+allows up to 81° (0.9 × its 90° symmetry), so 60° is not capped. A cube would cap at 40.5°. The evaluation records
+the goal heading change as placed (`turn_realized_deg`), and training logs `Task/goal_turn_*`.
+
+**Runs** (`slurm/submit_spot_arm_hand.sh`), all MAPPO, from scratch (seed 0), r7, 4096 envs × 24 steps × 2000
+iterations, evaluated on the same held-out starts with the four-way arm ablation:
+
+| run | arm | turns | compared with | tells |
+|---|---|---|---|---|
+| H1 `sa_mappo_hand30_s0` | hand position | 0 / ±30° | pilot D (joint targets, ±30°) | the interface change alone (H1 also reads the hand inputs) |
+| H2 `sa_mappo_stowed60_s0` | stowed | 0 / ±60° | | how far body pushing gets on the larger turn |
+| H3 `sa_mappo_learned60_s0` | joint targets | 0 / ±60° | H2 | whether the larger turn alone brings arm use |
+| H4 `sa_mappo_hand60_s0` | hand position | 0 / ±60° | H2, H3 | arm advantage (vs H2), interface advantage (vs H3) |
+
+Submitted 2026-11-15: training H1 29224198, H2 29224200, H3 29224202, H4 29224204; evaluations (`--turn 30` for
+H1, `--turn 60` for the others) 29224199, 29224201, 29224203, 29224206. Report:
+`pair_eval.py --report sa-hand-sa_mappo_stowed60_s0,sa-hand-sa_mappo_learned60_s0,sa-hand-sa_mappo_hand60_s0
+--report-out evals/spot_arm/hand_report.md`; H1 against pilot D with `--report sa-pilot-sa_mappo_learned_s0,sa-hand-sa_mappo_hand30_s0`.
+
+**What decides the next run.**
+- If hand control turns better than both stowed and joint control: IPPO vs MAPPO with hand control, matched
+  budgets, several seeds.
+- If a scripted hand placement steers the object (the preflight) but PPO still trunk-pushes: initialize the arm
+  from successful scripted reaches and compare demonstration-assisted PPO with PPO alone.
+- If stowed control already solves ±60° reliably: stop enlarging the turn or shortening the clock, and switch to a
+  task that needs a reach, e.g. correcting a long object's heading with its centre already at the goal.
+
+Arm contact stays out of the reward.
 
 **Next, if the pilot learns:** the ordinary approach distance and 40 kg; then the four policies on the ten-object,
 20–80 kg benchmark (`eval_coop2.py` already takes these checkpoints); three seeds for B and D. If PPO mostly

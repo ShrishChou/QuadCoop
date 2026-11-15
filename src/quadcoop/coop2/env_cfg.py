@@ -219,7 +219,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        train_mass: tuple = (), fixed_difficulty: bool = False, track: bool = False,
                        track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
-                       dyaw_choices: bool = False) -> ManagerBasedRlEnvCfg:
+                       dyaw_choices: bool = False, hand_obs: bool = False) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -280,6 +280,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     turning that grows as the object nears its goal); contact_mix may carry a 5th weight for it.
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed.
     arm (Spot-arm slots): "stowed" (3 actions per robot, arm held stowed) or "learned" (9: + six arm joint targets).
+      or "hand" (7: + hand point and extension). hand_obs: Spot-arm actors also read the hand point (measured,
+      commanded) and the extension (7 numbers, last), in every arm mode.
     pilot_level: one level row replacing the table (columns as CoopPush2CommandCfg.levels), pilot_episode_s its
     episode length; dyaw_choices: the goal heading change is -1, 0 or +1 x the level's value, equally often."""
     assert variant in ("b", "ctrl"), variant
@@ -397,6 +399,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                                                                    push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
                                                                    effort=effort, contact_sense=contact_sense),
                                                 concatenate_terms=True, enable_corruption=False)
+        if hand_obs and ARM[a]:  # the hand point measured and commanded, the extension (last; docs/spot_arm_pair.md)
+            for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.02, n_max=0.02)), (f"state_{a}", None)):
+                obs[grp].terms["hand_state"] = T(func=sat.hand_state, params={"robot": a, "action_name": f"walker_{a}"},
+                                                 noise=nz)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
                                                   concatenate_terms=True, enable_corruption=False)

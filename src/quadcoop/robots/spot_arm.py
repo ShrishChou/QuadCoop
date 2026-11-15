@@ -20,6 +20,7 @@ robots (with RAI's priority the robot's 0.15 would have overridden the object's 
 from __future__ import annotations
 
 import ast
+import math
 import os
 from pathlib import Path
 
@@ -46,6 +47,42 @@ ARM_HI = (3.1416, 0.5236, 3.1416, 2.7925, 1.8326, 2.8798)
 ARM_SPAN = (1.5, 2.6, -2.6, 1.5, 1.5, 1.5)  # rad per unit action from the stowed pose (+ = unfold on sh1 / el0)
 ARM_BASE_BODY = "arm_link_sh0"
 GRIPPER_BODY = "arm_link_fngr"
+# hand-position control (spot_arm_term.py, arm "hand"): planar two-link IK of the model's arm. Body frame; sh0 yaws
+# about z at the shoulder, sh1 / el0 pitch about y (pitch q points a link along (cos q, 0, -sin q)); el1 and wr1 roll
+# (held 0); wr0 keeps the gripper level (wr0 = -(sh1 + el0)).
+SHOULDER_B = (0.292, 0.0, 0.188)  # arm_link_sh0 in the body frame
+UPPER_ARM = 0.3385  # sh1 -> el0, along the link
+FOREARM = (0.4033, 0.075)  # el0 -> wrist (el1 / wr0 origin): along the link, up
+WRIST_BODY = "arm_link_wr1"
+HAND_OFF = (0.20, 0.0, -0.04)  # the hand point (between the closed jaws, near their front) in the wrist frame
+HAND_CENTER = (0.80, 0.0, -0.05)  # hand action 0 (body frame, m): ahead of the trunk front (0.42), bumper height
+HAND_SPAN = (0.25, 0.45, 0.25)  # m per unit action: x 0.55-1.05, y +-0.45, z -0.30..+0.20 (world ~0.2-0.7 m)
+
+
+def hand_ik(h: torch.Tensor) -> torch.Tensor:
+    """(..., 3) hand point in the body frame -> (..., 6) arm joint targets (gripper level, rolls 0), clamped to the
+    joint limits; an out-of-reach target gets the reachable point on the line from the shoulder to it."""
+    sx, _, sz = SHOULDER_B
+    L1 = UPPER_ARM
+    L2 = math.hypot(*FOREARM)
+    phi2 = math.atan2(FOREARM[1], FOREARM[0])
+    px, py = h[..., 0] - sx, h[..., 1]
+    sh0 = torch.atan2(py, px)
+    rw = torch.sqrt(px * px + py * py) - HAND_OFF[0]  # wrist, in the arm's vertical plane (gripper level)
+    zw = h[..., 2] - sz - HAND_OFF[2]
+    D = torch.sqrt(rw * rw + zw * zw).clamp(min=1e-6)
+    Dc = D.clamp(abs(L1 - L2) + 0.05, 0.97 * (L1 + L2))
+    rw, zw = rw * Dc / D, zw * Dc / D
+    c = ((Dc * Dc - L1 * L1 - L2 * L2) / (2 * L1 * L2)).clamp(-1.0, 1.0)
+    beta = -torch.acos(c)  # forearm below the upper arm: elbow up
+    el0 = phi2 - beta
+    alpha1 = torch.atan2(zw, rw) - torch.atan2(L2 * torch.sin(beta), L1 + L2 * torch.cos(beta))
+    sh1 = -alpha1
+    z = torch.zeros_like(sh0)
+    q = torch.stack([sh0, sh1, el0, z, -(sh1 + el0), z], -1)
+    lo = torch.tensor(ARM_LO, device=h.device, dtype=h.dtype)
+    hi = torch.tensor(ARM_HI, device=h.device, dtype=h.dtype)
+    return torch.maximum(torch.minimum(q, hi), lo)
 _NAMES = ("ISAAC_TO_MUJOCO_INDICES_12", "MUJOCO_TO_ISAAC_INDICES_19", "LOCOMOTION_DEFAULT_JOINTS_OFFSET",
           "LOCOMOTION_DEFAULT_LEGS_OFFSET")
 

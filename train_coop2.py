@@ -153,9 +153,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--algo", choices=("ippo", "mappo"), required=True)
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
-    ap.add_argument("--arm", choices=("stowed", "learned"), default="stowed",
+    ap.add_argument("--hand-obs", action="store_true",
+                    help="--pair spot_arm: actors also read the hand point (measured, commanded) and the extension")
+    ap.add_argument("--arm", choices=("stowed", "learned", "hand"), default="stowed",
                     help="--pair spot_arm: each robot's arm held stowed (3 actions per robot) or policy-controlled "
-                         "(9: + six rate-limited arm joint targets)")
+                         "(learned: 9, + six rate-limited arm joint targets; hand: 7, + hand point and extension)")
     ap.add_argument("--pilot-level", default="",
                     help="one level row replacing the level table, 11 comma-separated values: d_lo, d_hi, robot "
                          "spread deg, behind offset deg, object start yaw deg, goal yaw change deg, pos tol m, yaw tol "
@@ -474,7 +476,8 @@ def main() -> int:
                                  resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes, train_mass=train_mass,
                                  fixed_difficulty=a.fixed_difficulty, track=a.track, track_w=a.track_w,
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
-                                 pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices)
+                                 pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
+                                 hand_obs=a.hand_obs)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     drop_rewards = tuple(x.strip() for x in a.drop_rewards.split(",") if x.strip())
@@ -512,7 +515,7 @@ def main() -> int:
                   contact_sense=a.contact_sense, acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   arm=a.arm if a.pair == "spot_arm" else "", pilot_level=pilot_level,
-                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
+                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
                   resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std,

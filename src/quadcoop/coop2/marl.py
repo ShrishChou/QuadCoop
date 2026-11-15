@@ -86,10 +86,11 @@ class MarlCfg:
     partner_map: bool = False  # env option (recorded so evaluations rebuild the same env)
     reward_set: str = "r3"  # env option, see quadcoop/coop2/env_cfg.py
     pair: str = "mixed"  # which two robots (quadcoop/coop2/pairs.py), recorded for evaluations
-    arm: str = ""  # Spot-arm pairs (recorded): "stowed" (3 actions per robot) or "learned" (9: + six arm targets)
+    arm: str = ""  # Spot-arm pairs (recorded): "stowed" (3 per robot), "learned" (9: + six joint targets), "hand" (7)
     pilot_level: tuple = ()  # env option (recorded): one level row replacing the level table
     pilot_episode_s: float = 0.0  # env option (recorded)
     dyaw_choices: bool = False  # env option (recorded): goal heading change in {-1, 0, +1} x the level's value
+    hand_obs: bool = False  # env option (recorded): Spot-arm actors read the hand point and extension
     num_envs: int = 4096
     num_steps_per_env: int = 24
     max_iterations: int = 6000
@@ -490,7 +491,12 @@ class MarlTrainer:
         if not arms:
             return
         env = self.env
-        e = torch.rad2deg(env.command_manager.get_term("goal").errors()[1].abs())
+        g = env.command_manager.get_term("goal")
+        e = torch.rad2deg(g.errors()[1].abs())
+        turn = torch.rad2deg(g.goal_turn)  # the goal heading change drawn at reset, this episode
+        logs["Task/goal_turn_abs_deg"].append(float(turn.abs().mean()))
+        logs["Task/goal_turn_left"].append(float((turn > 5).float().mean()))
+        logs["Task/goal_turn_right"].append(float((turn < -5).float().mean()))
         prev = getattr(self, "_arm_prev_e", None)
         self._arm_prev_e = e.clone()
         closing = None if prev is None else torch.where(ended, torch.zeros_like(e), (prev - e) / self.dt)
@@ -501,6 +507,12 @@ class MarlTrainer:
             logs[f"Arm/trunk_touch_{a}"].append(float(env.scene[f"trunk_{a}"].data.found.view(self.n, -1).any(-1).float().mean()))
             term = env.action_manager.get_term(f"walker_{a}")
             logs[f"Arm/unfold_{a}"].append(float((term.arm_target - term.stow)[:, 1:3].abs().sum(-1).mean()))
+            if term.cfg.arm == "hand":  # extension, and how far the measured hand is from the commanded point at w = 1
+                from quadcoop.coop2.spot_arm_term import hand_pos_b
+                logs[f"Arm/extension_{a}"].append(float(term.blend.mean()))
+                full = term.blend > 0.95
+                if bool(full.any()):
+                    logs[f"Arm/hand_err_{a}"].append(float(torch.linalg.norm(hand_pos_b(env, a) - term.hand_cmd, dim=-1)[full].mean()))
             if bool(on.any()):
                 logs[f"Arm/force_{a}"].append(float(torch.linalg.norm(sd.force.view(self.n, -1, 3).sum(1), dim=-1)[on].mean()))
                 if closing is not None:

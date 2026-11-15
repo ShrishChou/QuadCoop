@@ -142,6 +142,7 @@ class CoopPush2Command(Push2Command):
         self.shape = torch.zeros(n, dtype=torch.long, device=dev)
         self.goal_xy = torch.zeros(n, 2, device=dev)
         self.goal_yaw = torch.zeros(n, device=dev)
+        self.goal_turn = torch.zeros(n, device=dev)  # the goal heading change drawn at reset (rad, signed, folded)
         self.env_level = torch.zeros(n, dtype=torch.long, device=dev)
         self.prev_dist = torch.zeros(n, device=dev)
         self.prev_yaw_err = torch.zeros(n, device=dev)
@@ -1871,6 +1872,7 @@ class CoopPush2Command(Push2Command):
             gaps = sc.get("gaps", gaps)
             yaw_noise = sc.get("yaw_noise", yaw_noise)
             park = sc.get("park", park)  # eval "solo": the other robot stands far away
+        self.goal_turn[env_ids] = fold(wrap(goal_yaw - obj_heading), self.sym[shape])
         if self.draw_log is not None:  # task bank generation: everything the placement below depends on
             self.draw_log.update(
                 env_ids=env_ids.clone(), level=lvl.clone(), shape=shape.clone(), obj_xy_rel=(obj_xy - origin).clone(),
