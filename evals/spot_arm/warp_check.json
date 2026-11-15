@@ -1,0 +1,391 @@
+{
+ "rai": {
+  "timestep": 0.01,
+  "decimation": 2,
+  "pass": true,
+  "cases": [
+   {
+    "arm": "stowed",
+    "case": "stand",
+    "cmd": [
+     0,
+     0,
+     0
+    ],
+    "achieved": [
+     -0.001,
+     -0.001,
+     0.0
+    ],
+    "error": 0.001,
+    "fell_share": 0.0,
+    "height": 0.469
+   },
+   {
+    "arm": "stowed",
+    "case": "forward 0.5",
+    "cmd": [
+     0.5,
+     0,
+     0
+    ],
+    "achieved": [
+     0.494,
+     0.003,
+     0.0
+    ],
+    "error": 0.006,
+    "fell_share": 0.0,
+    "height": 0.5
+   },
+   {
+    "arm": "stowed",
+    "case": "forward 1.0",
+    "cmd": [
+     1.0,
+     0,
+     0
+    ],
+    "achieved": [
+     0.948,
+     -0.001,
+     0.029
+    ],
+    "error": 0.06,
+    "fell_share": 0.0,
+    "height": 0.537
+   },
+   {
+    "arm": "stowed",
+    "case": "lateral 0.3",
+    "cmd": [
+     0,
+     0.3,
+     0
+    ],
+    "achieved": [
+     0.018,
+     0.279,
+     0.009
+    ],
+    "error": 0.03,
+    "fell_share": 0.0,
+    "height": 0.478
+   },
+   {
+    "arm": "stowed",
+    "case": "turn 0.5",
+    "cmd": [
+     0,
+     0,
+     0.5
+    ],
+    "achieved": [
+     0.022,
+     0.026,
+     0.461
+    ],
+    "error": 0.052,
+    "fell_share": 0.0,
+    "height": 0.471
+   },
+   {
+    "arm": "out",
+    "case": "stand",
+    "cmd": [
+     0,
+     0,
+     0
+    ],
+    "achieved": [
+     -0.003,
+     -0.0,
+     -0.011
+    ],
+    "error": 0.012,
+    "fell_share": 0.0,
+    "height": 0.481
+   },
+   {
+    "arm": "out",
+    "case": "forward 0.5",
+    "cmd": [
+     0.5,
+     0,
+     0
+    ],
+    "achieved": [
+     0.477,
+     -0.007,
+     0.008
+    ],
+    "error": 0.025,
+    "fell_share": 0.0,
+    "height": 0.504
+   },
+   {
+    "arm": "out",
+    "case": "forward 1.0",
+    "cmd": [
+     1.0,
+     0,
+     0
+    ],
+    "achieved": [
+     0.928,
+     -0.006,
+     0.028
+    ],
+    "error": 0.078,
+    "fell_share": 0.0,
+    "height": 0.538
+   },
+   {
+    "arm": "out",
+    "case": "lateral 0.3",
+    "cmd": [
+     0,
+     0.3,
+     0
+    ],
+    "achieved": [
+     -0.014,
+     0.282,
+     0.007
+    ],
+    "error": 0.024,
+    "fell_share": 0.0,
+    "height": 0.494
+   },
+   {
+    "arm": "out",
+    "case": "turn 0.5",
+    "cmd": [
+     0,
+     0,
+     0.5
+    ],
+    "achieved": [
+     -0.009,
+     0.019,
+     0.473
+    ],
+    "error": 0.034,
+    "fell_share": 0.0,
+    "height": 0.472
+   },
+   {
+    "arm": "out",
+    "case": "forward 0.5, arm sweeping",
+    "cmd": [
+     0.5,
+     0,
+     0
+    ],
+    "achieved": [
+     0.475,
+     -0.002,
+     0.014
+    ],
+    "error": 0.029,
+    "fell_share": 0.0,
+    "height": 0.505
+   }
+  ]
+ },
+ "quadcoop": {
+  "timestep": 0.005,
+  "decimation": 4,
+  "pass": true,
+  "cases": [
+   {
+    "arm": "stowed",
+    "case": "stand",
+    "cmd": [
+     0,
+     0,
+     0
+    ],
+    "achieved": [
+     -0.002,
+     -0.003,
+     -0.003
+    ],
+    "error": 0.005,
+    "fell_share": 0.0,
+    "height": 0.472
+   },
+   {
+    "arm": "stowed",
+    "case": "forward 0.5",
+    "cmd": [
+     0.5,
+     0,
+     0
+    ],
+    "achieved": [
+     0.496,
+     0.002,
+     0.0
+    ],
+    "error": 0.004,
+    "fell_share": 0.0,
+    "height": 0.494
+   },
+   {
+    "arm": "stowed",
+    "case": "forward 1.0",
+    "cmd": [
+     1.0,
+     0,
+     0
+    ],
+    "achieved": [
+     0.952,
+     -0.005,
+     0.026
+    ],
+    "error": 0.055,
+    "fell_share": 0.0,
+    "height": 0.53
+   },
+   {
+    "arm": "stowed",
+    "case": "lateral 0.3",
+    "cmd": [
+     0,
+     0.3,
+     0
+    ],
+    "achieved": [
+     0.018,
+     0.281,
+     0.009
+    ],
+    "error": 0.028,
+    "fell_share": 0.0,
+    "height": 0.477
+   },
+   {
+    "arm": "stowed",
+    "case": "turn 0.5",
+    "cmd": [
+     0,
+     0,
+     0.5
+    ],
+    "achieved": [
+     0.022,
+     0.028,
+     0.463
+    ],
+    "error": 0.051,
+    "fell_share": 0.0,
+    "height": 0.473
+   },
+   {
+    "arm": "out",
+    "case": "stand",
+    "cmd": [
+     0,
+     0,
+     0
+    ],
+    "achieved": [
+     -0.004,
+     -0.004,
+     -0.011
+    ],
+    "error": 0.012,
+    "fell_share": 0.0,
+    "height": 0.48
+   },
+   {
+    "arm": "out",
+    "case": "forward 0.5",
+    "cmd": [
+     0.5,
+     0,
+     0
+    ],
+    "achieved": [
+     0.481,
+     -0.006,
+     0.007
+    ],
+    "error": 0.021,
+    "fell_share": 0.0,
+    "height": 0.507
+   },
+   {
+    "arm": "out",
+    "case": "forward 1.0",
+    "cmd": [
+     1.0,
+     0,
+     0
+    ],
+    "achieved": [
+     0.929,
+     -0.006,
+     0.029
+    ],
+    "error": 0.077,
+    "fell_share": 0.0,
+    "height": 0.542
+   },
+   {
+    "arm": "out",
+    "case": "lateral 0.3",
+    "cmd": [
+     0,
+     0.3,
+     0
+    ],
+    "achieved": [
+     -0.014,
+     0.283,
+     0.008
+    ],
+    "error": 0.023,
+    "fell_share": 0.0,
+    "height": 0.489
+   },
+   {
+    "arm": "out",
+    "case": "turn 0.5",
+    "cmd": [
+     0,
+     0,
+     0.5
+    ],
+    "achieved": [
+     -0.007,
+     0.021,
+     0.474
+    ],
+    "error": 0.034,
+    "fell_share": 0.0,
+    "height": 0.472
+   },
+   {
+    "arm": "out",
+    "case": "forward 0.5, arm sweeping",
+    "cmd": [
+     0.5,
+     0,
+     0
+    ],
+    "achieved": [
+     0.48,
+     -0.004,
+     0.012
+    ],
+    "error": 0.024,
+    "fell_share": 0.0,
+    "height": 0.509
+   }
+  ]
+ },
+ "pass": true
+}

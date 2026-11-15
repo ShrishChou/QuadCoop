@@ -60,16 +60,18 @@ def run(timestep: float, decimation: int, copies: int, device: str) -> list[dict
     acc = torch.zeros(n, 3, device=dev)
     cnt = 0
     fell = torch.zeros(n, dtype=torch.bool, device=dev)
-    for k in range(400):
+    stow = torch.tensor(sa.ARM_STOWED, device=dev).expand(n, 7)
+    for k in range(500):  # 0-1.5 s: the arm moves from stowed to its pose; 2 s: the command; last 3 s measured
         t = k * dt
-        a = arm.clone()
-        a[:, 0] = torch.where(sweep, torch.full_like(a[:, 0], 0.8 * math.sin(2 * math.pi * 0.25 * t)), a[:, 0])
-        a[:, 1] = torch.where(sweep, torch.full_like(a[:, 1], -0.9 + 0.4 * math.sin(2 * math.pi * 0.2 * t)), a[:, 1])
-        cmd = walker.command(vel if t >= 1.0 else torch.zeros_like(vel), a)
+        a = stow + min(1.0, t / 1.5) * (arm - stow)
+        if t >= 2.0:
+            a[:, 0] = torch.where(sweep, torch.full_like(a[:, 0], 0.8 * math.sin(2 * math.pi * 0.25 * (t - 2))), a[:, 0])
+            a[:, 1] = torch.where(sweep, torch.full_like(a[:, 1], -0.9 + 0.4 * math.sin(2 * math.pi * 0.2 * (t - 2))), a[:, 1])
+        cmd = walker.command(vel if t >= 2.0 else torch.zeros_like(vel), a)
         env.step(walker.targets(cmd))
         d = robot.data
         fell |= (d.root_link_pos_w[:, 2] < 0.25) | (d.projected_gravity_b[:, 2] > -0.5)
-        if t >= 5.0:
+        if t >= 7.0:
             acc += torch.cat([d.root_link_lin_vel_b[:, :2], d.root_link_ang_vel_b[:, 2:3]], -1)
             cnt += 1
     got = (acc / cnt).view(len(cases), copies, 3).mean(1)

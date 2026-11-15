@@ -102,3 +102,18 @@ friction 0.5, plus the two fixed baselines.
 30–40 kg, the walker itself must be trained with push loads. RAI released no training code, so that means training
 our own Spot-arm walker in mjlab, started from RAI's weights (same network shape, 84 → 512 → 256 → 128 → 12).
 The mjlab port (step 1) is needed for either route and is still not started.
+
+## Port acceptance (2026-11-15): passed
+
+`src/quadcoop/robots/spot_arm.py` (robot from RAI's model, `RaiWalker`) and `scripts/spot_arm/warp_check.py`, job
+29147569, `evals/spot_arm/warp_check.json`. 11 cases × 16 envs on MuJoCo Warp, under RAI's timing (0.01 s × 2) and
+QuadCoop's (0.005 s × 4).
+
+- **Both timings pass:** no falls, every achieved velocity within 0.08 of the command, and within 0.01 of the CPU
+  numbers (forward 0.5 → 0.48–0.50, forward 1.0 → 0.93–0.95, sideways 0.3 → 0.28, turn 0.5 → 0.46–0.47).
+- **QuadCoop's timestep works,** so Spot-arm can share a scene with ANYmal without changing the physics rate.
+- **The arm must be moved gradually.** The first run (job 29146215) snapped the arm from stowed to out at the instant
+  of the drop, and every arm-out env fell. Ramping it over 1.5 s removes that. The pusher's arm command needs a
+  rate limit.
+
+Next: the 20 kg steering pusher (step 3), arm active against arm stowed.
