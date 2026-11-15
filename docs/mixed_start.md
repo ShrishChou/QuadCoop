@@ -57,3 +57,53 @@ The unswapped standard rows at seed 7100 are the original 480-task benchmark.
 
 **Scope.** 10 points on cylinder is 1 point on the ten-object average. Reaching 70% overall needs gains on heavy loads
 and on the long move-and-turn.
+
+## Results (2026-11-14): no fix for cylinder, no cost elsewhere; F is not adopted
+
+**Delivered as designed.** From `bank_5000.pt`, F's 42,895 training episodes:
+- 75.0% original starts, 12.6% flank and 12.4% goal_behind;
+- about 1,000 cylinder episodes in the new formations.
+
+In training the new formations were not harder than the original starts: 63% and 61% success, against 61%. The
+level-4 training starts already cover most of the circle.
+
+**Cylinder** (two runs per arm and seed, swaps pooled; full reports in `evals/mixed_start/F_vs_A_seed{7100,7300}.md`):
+
+| | standard | flank | goal_behind |
+|---|---|---|---|
+| A, seed 7100 | 44.3% | 35.4% | 35.9% |
+| F, seed 7100 | 46.4% | 35.4% | 35.9% |
+| F − A, seed 7100 | +2.1 [−3.6, +7.8] | +0.0 [−5.7, +5.7] | +0.0 [−5.2, +4.7] |
+| A, seed 7300 (fresh) | 45.3% | 41.7% | 34.4% |
+| F, seed 7300 (fresh) | 47.9% | 39.6% | 37.5% |
+| F − A, seed 7300 | +2.6 [−4.2, +9.9] | −2.1 [−7.3, +2.6] | +3.1 [−1.6, +7.8] |
+
+- **Primary question: no.** Cylinder stays below 40% in both new formations on both seeds, and F matches A on
+  matched tasks.
+- **Cylinder mechanism, unchanged:**
+  - the push starts in nearly every episode, with the first 0.25 m at 2.5–3.1 s in the new formations;
+  - failures end a median 0.15–0.36 m from the goal;
+  - falls are 16–28%.
+
+**Everything else, F − A:**
+- **Overall, standard formation:** +0.2 points on both seeds.
+- **Overall, flank:** +0.3 and +0.4.
+- **Overall, goal_behind:** −1.3 [−3.2, +0.6] at seed 7100, +2.3 [+0.5, +4.2] at seed 7300. Not consistent across
+  seeds.
+- **Falls:** 13.1% against 12.8% at seed 7100, 12.3% against 13.4% at seed 7300.
+- **Sphere, standard:** −4.7 [−9.4, −0.5] and −3.6 [−8.3, +0.5]. A small cost, still at 93–95%.
+- **Arch, standard:** −4.2 and −6.2, both intervals including 0.
+
+**Reading:**
+- Adding 25% opposite-face and goal-side starts for 1000 iterations changed neither the cylinder weakness nor
+  overall success.
+- The weakness is not a lack of exposure to those relative positions: training already contains them, and the
+  policy does as well there as from its other training starts.
+- What remains for cylinder is finishing: a near miss with the object moving, plus falls.
+  - The next look is at cylinder failure videos and traces from the new formations: overshoot, rolling or the hold,
+    and who falls.
+  - Changing the start distribution further is not the next step.
+- **Parent stays iteration 4000; control stays arm A.** F is not adopted.
+- **The course result stands:** in the swap test, the leader follows the start place (`docs/placement_eval.md`).
+- For performance, the larger gaps are still heavy loads (about 27% at 80 kg; see the contribution analysis in
+  `docs/recovery_eval.md`) and the long move-and-turn.
