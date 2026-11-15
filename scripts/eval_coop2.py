@@ -137,6 +137,10 @@ def main() -> int:
     ap.add_argument("--videos", type=int, default=1, help="1 = one video per object at --video-mass, 0 = none")
     ap.add_argument("--video-mass", type=float, default=None, help="default: the heaviest mass below 70 kg")
     ap.add_argument("--video-size", default="640x480")
+    ap.add_argument("--video-tasks", default=None,
+                    help="film these tasks whatever their outcome (presentation sets, same tasks for every system): "
+                         "OBJECTS/MASSES/SCENARIOS/REPS, comma lists or 'all', e.g. arch,long/40,80/A_straight,D_far_turn/0; "
+                         "standard formation, unswapped. Default: one video per object at --video-mass")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--formations", default="standard", help="comma list of standard, flank, goal_behind")
@@ -185,6 +189,12 @@ def main() -> int:
     objects = list(SHAPE_NAMES2) if a.objects == "all" else [o.strip() for o in a.objects.split(",")]
     masses = [float(x) for x in a.masses.split(",")]
     video_mass = a.video_mass if a.video_mass is not None else max([m for m in masses if m < 70] or masses[:1])
+    vsel = None
+    if a.video_tasks:
+        parts = a.video_tasks.split("/")
+        assert len(parts) == 4, "--video-tasks OBJECTS/MASSES/SCENARIOS/REPS"
+        pick = lambda x, f: None if x == "all" else {f(v.strip()) for v in x.split(",")}  # noqa: E731
+        vsel = (pick(parts[0], str), pick(parts[1], float), pick(parts[2], str), pick(parts[3], int))
     vw, vh = (int(x) for x in a.video_size.lower().split("x"))
     out = ROOT / "logs" / "evals" / a.name / "pair"
     stats_dir = ROOT / "evals" / a.name / "eval" / "pair"
@@ -261,7 +271,7 @@ def main() -> int:
 
         dt = base.step_dt
         steps = int(a.horizon / dt)
-        film = a.videos > 0 and mass == video_mass
+        film = a.videos > 0 and (mass == video_mass if vsel is None else (vsel[1] is None or mass in vsel[1]))
         stride = 2
         rec_q, rec_mp, rec_mq, rec_pts = [], [], [], []
         nmocap = base.sim.mj_model.nmocap
@@ -470,13 +480,21 @@ def main() -> int:
                 Q, P = np.stack(rec_q, 1), np.stack(rec_pts, 1)  # (n, F, ...)
                 MP = np.stack(rec_mp, 1) if rec_mp else None
                 MQ = np.stack(rec_mq, 1) if rec_mq else None
-                for o in objects:
-                    js = [j for j, c in enumerate(cases) if c[0] == o and c[3] == formations[0] and not c[4]]
-                    wins = [j for j in js if how[j] == "success"]
-                    j = wins[0] if wins else js[0]
+                if vsel is None:  # one per object: the first success, else the first failure
+                    picks = []
+                    for o in objects:
+                        js = [j for j, c in enumerate(cases) if c[0] == o and c[3] == formations[0] and not c[4]]
+                        wins = [j for j in js if how[j] == "success"]
+                        picks.append(wins[0] if wins else js[0])
+                else:  # the preselected tasks, every outcome
+                    picks = [j for j, c in enumerate(cases) if c[3] == "standard" and not c[4]
+                             and (vsel[0] is None or c[0] in vsel[0]) and (vsel[2] is None or SCENARIOS[c[1]][0] in vsel[2])
+                             and (vsel[3] is None or c[2] in vsel[3])]
+                for j in picks:
+                    o = cases[j][0]
                     F = min(Q.shape[1], int(float(t_end[j]) / (stride * dt)) + int(1.0 / (stride * dt)) + 1)
                     r_ = mine[j]
-                    name = f"{o}_{mass:g}kg_{r_['scenario']}__{how[j]}.mp4"
+                    name = f"{o}_{mass:g}kg_{r_['scenario']}{'' if vsel is None else f'_rep{r_['rep']}'}__{how[j]}.mp4"
                     cap_txt = f"{o} {mass:g} kg {r_['scenario']} (turn {r_['turn']:g}) -> {how[j]}"
                     render_episode(cam, j, Q[j, :F], None if MP is None else MP[j, :F], None if MQ is None else MQ[j, :F],
                                    P[j, :F], out / "videos" / name, 1.0 / (stride * dt),
