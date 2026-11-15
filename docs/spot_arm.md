@@ -73,3 +73,32 @@ needs 0.52 m.)
 
 **Risks:** the walker stalls at loads the ANYmal handles; RAI's model uses soft friction settings that differ from
 ours; MIT licence, so the files can be vendored with attribution, but they are not copied into the repo yet.
+
+## Step 2 result (2026-11-14): the frozen walker cannot push 40 kg or more
+
+`scripts/spot_arm/push_capability.py` (CPU job 29136861; `evals/spot_arm/push_capability.json`). Per mass: 150 random
+constant commands (speed 0.3–1.2 m/s, torso pitch and height, arm pose) held for 10 s against a 0.6 m cube with
+friction 0.5, plus the two fixed baselines.
+
+| box | baseline, arm stowed | best of 150 commands | commands moving it more than 1 m | commands that fell |
+|---|---|---|---|---|
+| 20 kg | 0.59 m | 3.23 m | 21 | 44 |
+| 40 kg | 0.05 m | 0.19 m | 0 | 47 |
+| 60 kg | 0.01 m | 0.06 m | 0 | 47 |
+
+**Reading:**
+- **At 20 kg the command matters a lot:** 0.6 m by walking into the box, 3.2 m with a low torso and the arm braced
+  on it. A pusher policy over these commands has something to learn. The best commands also turn the box about 60°,
+  so they need steering.
+- **At 40 kg and above nothing works.** No constant command moves the box 0.2 m in 10 s. The walker was trained to
+  track velocity, not to push, and gives way.
+- **Traction also caps Spot.** With RAI's foot friction of 0.7, a robot of roughly 40 kg can push at most about
+  275 N. A 60 kg box at friction 0.5 needs about 295 N. Spot with an arm cannot move the heavy objects alone
+  whatever the controller. That is the case for the mixed team: the heavier ANYmal translates, Spot steers.
+- About 30% of random commands made it fall, so the pusher's command range has to be limited.
+- Constant commands only, one seed, plain MuJoCo with RAI's contact settings.
+
+**Consequence for the plan.** Step 3 changes: a pusher on the frozen walker is limited to about 20 kg. To push
+30–40 kg, the walker itself must be trained with push loads. RAI released no training code, so that means training
+our own Spot-arm walker in mjlab, started from RAI's weights (same network shape, 84 → 512 → 256 → 128 → 12).
+The mjlab port (step 1) is needed for either route and is still not started.
