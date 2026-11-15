@@ -91,6 +91,18 @@ class MarlCfg:
     pilot_episode_s: float = 0.0  # env option (recorded)
     dyaw_choices: bool = False  # env option (recorded): goal heading change in {-1, 0, +1} x the level's value
     hand_obs: bool = False  # env option (recorded): Spot-arm actors read the hand point and extension
+    turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
+    # demonstrations (docs/spot_arm_pair.md, "Turn in place"): a file of actor observations and the env action from
+    # scripts/spot_arm/collect_demos.py. The actors' normalizers are fitted to the demonstrations (then frozen, as for
+    # warm-started actors), the actors are behaviour-cloned for bc_pretrain_steps, and during PPO a separate
+    # imitation loss (squared error of the action mean on a demonstration minibatch) is added with weight bc_coef,
+    # fading linearly to 0 by iteration bc_iters. PPO itself updates on fresh rollouts only.
+    bc_data: str = ""
+    bc_coef: float = 0.0
+    bc_iters: int = 0
+    bc_pretrain_steps: int = 0
+    bc_batch: int = 4096
+    arm_hold_steps: int = 0  # env option (recorded): hand_rate arm actions latched for this many steps
     num_envs: int = 4096
     num_steps_per_env: int = 24
     max_iterations: int = 6000
@@ -1191,11 +1203,68 @@ class MarlTrainer:
             self.wandb.log({"video/train_env0": wandb.Video(str(path), format="mp4")}, step=self.it)
 
     # -- training loop ----------------------------------------------------------------------------------
+    # -- demonstrations ---------------------------------------------------------------------------
+    def _bc_load(self) -> None:
+        if not self.cfg.bc_data or getattr(self, "bc", None) is not None:
+            return
+        d = torch.load(self.cfg.bc_data, map_location=self.device, weights_only=False)
+        self.bc = d
+        self.bc_n = int(d["act"].shape[0])
+        assert d["act"].shape[1] == sum(self.act_dim.values()), (d["act"].shape, self.act_dim)
+        print(f"[marl2] demonstrations {self.cfg.bc_data}: {self.bc_n} samples, {d.get('episodes', '?')} episodes", flush=True)
+
+    def _bc_obs(self, a: str, idx: torch.Tensor) -> TensorDict:
+        gs = actor_groups(a, self.cfg.variant)
+        return TensorDict({g_: self.bc["obs"][g_][idx].float() for g_ in gs}, batch_size=[len(idx)])
+
+    def _bc_loss(self, a: str, idx: torch.Tensor | None = None) -> torch.Tensor:
+        """Squared error between the actor's action mean and the demonstrated action, on a demonstration minibatch."""
+        if idx is None:
+            idx = torch.randint(0, self.bc_n, (self.cfg.bc_batch,), device=self.device)
+        actor = self.actors[a]
+        actor(self._bc_obs(a, idx), stochastic_output=True)
+        mean = getattr(actor.distribution, "raw_mean", None)
+        if mean is None:
+            mean = actor.distribution.mean
+        return (mean - self.bc["act"][idx][:, self.act_sl[a]].float()).pow(2).sum(-1).mean()
+
+    def bc_pretrain(self) -> None:
+        """Fit the actors' normalizers to the demonstrations, then behaviour-clone the actors."""
+        self._bc_load()
+        cfg = self.cfg
+        for a in AGENTS:
+            gs = actor_groups(a, cfg.variant)
+            for s0 in range(0, self.bc_n, 8192):
+                idx = torch.arange(s0, min(s0 + 8192, self.bc_n), device=self.device)
+                self.actors[a].update_normalization(TensorDict({g_: self.bc["obs"][g_][idx].float() for g_ in gs},
+                                                               batch_size=[len(idx)]))
+        for a in AGENTS:
+            opt = torch.optim.Adam([p_ for p_ in self.actors[a].parameters() if p_.requires_grad], lr=1e-3)
+            for st in range(cfg.bc_pretrain_steps):
+                loss = self._bc_loss(a)
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.actors[a].parameters(), 1.0)
+                opt.step()
+                if st % 500 == 0 or st == cfg.bc_pretrain_steps - 1:
+                    print(f"[marl2] behaviour cloning {a}: step {st}, action mean squared error {loss.item():.4f}", flush=True)
+            self._log({f"BC/pretrain_mse_{a}": float(loss)}) if cfg.bc_pretrain_steps else None
+
+    def bc_weight(self) -> float:
+        c = self.cfg
+        if not c.bc_data or c.bc_coef <= 0 or c.bc_iters <= 0:
+            return 0.0
+        return c.bc_coef * max(0.0, 1.0 - self.it / c.bc_iters)
+
     def learn(self) -> None:
         from quadcoop.coop2.video import PairVideo
 
         cfg, n, T, dev = self.cfg, self.n, self.cfg.num_steps_per_env, self.device
         self._open_logs()
+        if cfg.bc_data:
+            self._bc_load()
+            if self.it == 0 and cfg.bc_pretrain_steps > 0:
+                self.bc_pretrain()
         video = PairVideo(self.env, self.log_dir / "videos", cfg.video_length) if cfg.video_interval > 0 else None
         if self.it == 0:
             what = "random initial policies" if self.cfg.scratch else "the warm-started policies"
@@ -1263,7 +1332,7 @@ class MarlTrainer:
                     done[t] = d
                     for c in self.critics.values():
                         c.update_normalization(obs)
-                    if cfg.scratch or cfg.residual:  # warm-started actors keep their loaded normalizers
+                    if (cfg.scratch and not cfg.bc_data) or cfg.residual:  # warm-started / cloned actors keep theirs
                         for m_ in self.actors.values():  # (residual: only the correction's normalizer updates)
                             m_.update_normalization(obs)
                     ended = d.bool()
@@ -1350,6 +1419,11 @@ class MarlTrainer:
                                 kl_s = self.kl_to_ref(a, o_mb)
                                 kl_ref = kl_s.mean()
                                 loss = loss + beta * (self.kl_weight(a, o_mb) * kl_s).mean()
+                            bw = self.bc_weight()
+                            if bw > 0:  # imitation on demonstrations, separate from the PPO samples
+                                bcl = self._bc_loss(a)
+                                loss = loss + bw * bcl
+                                stats[f"BC/loss_{a}"] += bcl.item()
                             if not torch.isfinite(loss):
                                 skipped += 1
                                 continue
@@ -1415,6 +1489,7 @@ class MarlTrainer:
             out["Perf/iteration_s"] = dt_s
             out["Train/critic_warmup"] = float(warm)
             out["Loss/kl_beta"] = beta
+            out["BC/weight"] = self.bc_weight()
             out["Train/skipped_updates"] = float(skipped)
             if cfg.residual:
                 out.update(self._residual_log(rstat))

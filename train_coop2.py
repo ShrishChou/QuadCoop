@@ -153,9 +153,19 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--algo", choices=("ippo", "mappo"), required=True)
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
+    ap.add_argument("--bc-data", default="", help="demonstrations (scripts/spot_arm/collect_demos.py): actors cloned, "
+                    "then an imitation loss during PPO")
+    ap.add_argument("--bc-coef", type=float, default=0.0, help="imitation loss weight at iteration 0")
+    ap.add_argument("--bc-iters", type=int, default=0, help="the imitation weight fades linearly to 0 by this iteration")
+    ap.add_argument("--bc-pretrain-steps", type=int, default=0, help="behaviour-cloning steps before PPO")
+    ap.add_argument("--turn-signs", action="store_true",
+                    help="goal heading change -1 or +1 x the --pilot-level value (turn in place)")
+    ap.add_argument("--start-opposite", action="store_true",
+                    help="one robot starts behind the object, one in front (turn in place)")
+    ap.add_argument("--arm-hold-steps", type=int, default=0, help="--arm hand_rate: latch the arm actions this many steps")
     ap.add_argument("--hand-obs", action="store_true",
                     help="--pair spot_arm: actors also read the hand point (measured, commanded) and the extension")
-    ap.add_argument("--arm", choices=("stowed", "learned", "hand"), default="stowed",
+    ap.add_argument("--arm", choices=("stowed", "learned", "hand", "hand_rate"), default="stowed",
                     help="--pair spot_arm: each robot's arm held stowed (3 actions per robot) or policy-controlled "
                          "(learned: 9, + six rate-limited arm joint targets; hand: 7, + hand point and extension)")
     ap.add_argument("--pilot-level", default="",
@@ -460,7 +470,7 @@ def main() -> int:
     from quadcoop.coop2.marl import MarlCfg, MarlTrainer
 
     env_cfg = make_coop2_env_cfg(a.variant, partner_map=a.partner_map, reward_set=a.reward,
-                                 start_mode="around" if a.start_around else "behind",
+                                 start_mode="around" if a.start_around else "opposite" if a.start_opposite else "behind",
                                  need_frac=a.need_frac, need_mass=a.need_mass, contacts=a.contacts,
                                  tol_levels=tol_levels, contact_mix=contact_mix, contact_start_at=a.contact_start_at,
                                  drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
@@ -477,7 +487,7 @@ def main() -> int:
                                  fixed_difficulty=a.fixed_difficulty, track=a.track, track_w=a.track_w,
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs)
+                                 hand_obs=a.hand_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     drop_rewards = tuple(x.strip() for x in a.drop_rewards.split(",") if x.strip())
@@ -500,7 +510,7 @@ def main() -> int:
                   scratch=a.scratch, actor_learning_rate=a.actor_lr, max_actor_learning_rate=a.max_actor_lr,
                   entropy_coef=a.entropy_coef, max_std_factor=a.max_std_factor,
                   mean_clip=a.mean_clip, bound_coef=a.bound_coef, kl_ref=a.kl_ref,
-                  kl_partner_scale=a.kl_partner_scale, start_mode="around" if a.start_around else "behind",
+                  kl_partner_scale=a.kl_partner_scale, start_mode="around" if a.start_around else "opposite" if a.start_opposite else "behind",
                   need_frac=a.need_frac, contacts=a.contacts, contact_mix=contact_mix,
                   contact_start_at=a.contact_start_at, tol_levels=tol_levels, kl_ramp=a.kl_ramp,
                   drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
@@ -516,6 +526,8 @@ def main() -> int:
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   arm=a.arm if a.pair == "spot_arm" else "", pilot_level=pilot_level,
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs,
+                  turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, bc_data=a.bc_data, bc_coef=a.bc_coef,
+                  bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
                   resid_std=a.resid_std, resid_objects=resid_objects, shape_bias=shape_bias, min_std=a.min_std,

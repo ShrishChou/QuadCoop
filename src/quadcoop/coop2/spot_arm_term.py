@@ -9,7 +9,13 @@ Action per robot (docs/spot_arm_pair.md), 50 Hz:
                  joint targets are stowed + w x (IK(hand point) - stowed), w = clamp(extension, 0, 1): extension <= 0
                  is the stowed arm whatever the hand point, small positive values start the reach from stowed, 1 is
                  the commanded reach. IK: sa.hand_ik (gripper level, out-of-reach points brought within reach).
-Arm targets (both arm modes) are rate-limited to ``arm_rate`` rad/s: the walker stays up through a gradual arm
+  arm "hand_rate" 7: those 3 + hand point rate (3) + extension rate (1): a persistent, bounded hand target. Zero holds
+                 the current target; the hand point moves at a x ``hand_speed`` m/s inside the HAND_CENTER +- HAND_SPAN
+                 box; the extension w moves at a x ``ext_rate`` /s inside [0, 1] (negative = retract). Joint targets
+                 as "hand": stowed + w x (IK(hand point) - stowed). Optional ``arm_hold_steps``: the arm part of the
+                 action is latched for that many steps (exploration setting), except that a retract (extension
+                 action < -0.5) acts at once. The action-rate cost skips these 4 outputs (mdp.agent_action_rate).
+Arm targets (all arm modes) are rate-limited to ``arm_rate`` rad/s: the walker stays up through a gradual arm
 motion and falls when the arm is snapped outward (port acceptance, docs/spot_arm.md). Gripper held closed.
 The applied command (base velocity, arm targets, default torso) goes to the walker, whose leg targets and the arm
 targets go to the model's own position actuators.
@@ -29,7 +35,7 @@ from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from quadcoop.robots import spot_arm as sa
 
 N_ARM = 6
-ARM_MODES = ("stowed", "learned", "hand")  # "learned": joint targets
+ARM_MODES = ("stowed", "learned", "hand", "hand_rate")  # "learned": joint targets
 N_HAND = 4
 
 
@@ -44,7 +50,7 @@ class SpotArmAction(ActionTerm):
         self.robot = env.scene[cfg.entity_name]
         self.walker = sa.RaiWalker(self.robot, self.device)
         n, dev = self.num_envs, self.device
-        self._dim = 3 + {"stowed": 0, "learned": N_ARM, "hand": N_HAND}[cfg.arm]
+        self._dim = 3 + {"stowed": 0, "learned": N_ARM, "hand": N_HAND, "hand_rate": N_HAND}[cfg.arm]
         self._raw = torch.zeros(n, self._dim, device=dev)
         self._lo = torch.tensor([cfg.vx_range[0], cfg.vy_range[0], cfg.wz_range[0]], device=dev)
         self._hi = torch.tensor([cfg.vx_range[1], cfg.vy_range[1], cfg.wz_range[1]], device=dev)
@@ -59,7 +65,9 @@ class SpotArmAction(ActionTerm):
         self.hand_c = torch.tensor(sa.HAND_CENTER, device=dev)
         self.hand_s = torch.tensor(sa.HAND_SPAN, device=dev)
         self.hand_cmd = self.hand_c.repeat(n, 1)  # hand mode: the commanded hand point (body frame)
-        self.blend = torch.zeros(n, device=dev)  # hand mode: w, 0 stowed .. 1 the commanded reach
+        self.blend = torch.zeros(n, device=dev)  # hand modes: w, 0 stowed .. 1 the commanded reach
+        self._held = torch.zeros(n, N_HAND, device=dev)  # hand_rate: the latched arm action (arm_hold_steps)
+        self._hold_k = 0
         self.walker_action = self.walker.prev  # (n, 12) the walker's last leg action
         print(f"[spot_arm] {cfg.entity_name}: RAI walker, arm {cfg.arm} ({self._dim} actions"
               + (f", arm targets rate-limited to {cfg.arm_rate:g} rad/s" if cfg.arm != "stowed" else "") + ")")
@@ -88,6 +96,20 @@ class SpotArmAction(ActionTerm):
             w = torch.where(self.arm_locked, torch.zeros_like(a[:, 6]), a[:, 6].clamp(0.0, 1.0))
             self.blend[:] = w
             goal = self.stow + w.unsqueeze(-1) * (sa.hand_ik(self.hand_cmd) - self.stow)
+        elif self.cfg.arm == "hand_rate":
+            ar = a[:, 3:7]
+            if self.cfg.arm_hold_steps > 1:  # latch the arm action; a retract acts at once
+                if self._hold_k % self.cfg.arm_hold_steps == 0:
+                    self._held[:] = ar
+                self._hold_k += 1
+                ret = ar[:, 3] < -0.5
+                ar = torch.where(ret.unsqueeze(-1), torch.cat([self._held[:, :3], ar[:, 3:]], -1), self._held)
+            dt = self._env.step_dt
+            self.hand_cmd[:] = torch.minimum(torch.maximum(self.hand_cmd + ar[:, :3] * self.cfg.hand_speed * dt,
+                                                           self.hand_c - self.hand_s), self.hand_c + self.hand_s)
+            w = (self.blend + ar[:, 3] * self.cfg.ext_rate * dt).clamp(0.0, 1.0)
+            self.blend[:] = torch.where(self.arm_locked, torch.zeros_like(w), w)
+            goal = self.stow + self.blend.unsqueeze(-1) * (sa.hand_ik(self.hand_cmd) - self.stow)
         else:
             goal = self.stow.expand(self.num_envs, N_ARM)
         self.arm_goal[:] = goal
@@ -109,13 +131,17 @@ class SpotArmAction(ActionTerm):
         self.arm_target[ids] = self.stow
         self.hand_cmd[ids] = self.hand_c
         self.blend[ids] = 0.0
+        self._held[ids] = 0.0
         self.walker.reset(env_ids)
 
 
 @dataclass(kw_only=True)
 class SpotArmActionCfg(ActionTermCfg):
     twist_name: str = "twist"
-    arm: str = "stowed"  # "stowed" | "learned" (joint targets) | "hand" (hand point + extension)
+    arm: str = "stowed"  # "stowed" | "learned" (joint targets) | "hand" (hand point + extension) | "hand_rate"
+    hand_speed: float = 0.6  # hand_rate: m/s of hand-target motion at action 1
+    ext_rate: float = 1.5  # hand_rate: extension change per second at action 1 (stowed -> full in 0.67 s)
+    arm_hold_steps: int = 0  # hand_rate: latch the arm action for this many steps (0/1: off)
     vx_range: tuple[float, float] = (-0.6, 0.8)  # WalkerCommandActionCfg's (the walker tracks 1.0 m/s)
     vy_range: tuple[float, float] = (-0.5, 0.5)
     wz_range: tuple[float, float] = (-0.7, 0.7)

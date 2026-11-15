@@ -219,7 +219,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        train_mass: tuple = (), fixed_difficulty: bool = False, track: bool = False,
                        track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
-                       dyaw_choices: bool = False, hand_obs: bool = False) -> ManagerBasedRlEnvCfg:
+                       dyaw_choices: bool = False, hand_obs: bool = False, turn_signs: bool = False,
+                       arm_hold_steps: int = 0) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -281,7 +282,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     tol_levels: success-tolerance curriculum ((pos m, yaw deg), ...), loose -> fine; () = fixed.
     arm (Spot-arm slots): "stowed" (3 actions per robot, arm held stowed) or "learned" (9: + six arm joint targets).
       or "hand" (7: + hand point and extension). hand_obs: Spot-arm actors also read the hand point (measured,
-      commanded) and the extension (7 numbers, last), in every arm mode.
+      commanded) and the extension (7 numbers, last), in every arm mode. "hand_rate" (7: + hand point and extension
+      rates, a persistent target; arm_hold_steps latches its arm actions). turn_signs: the goal heading change is
+      -1 or +1 x the level's value (turn in place, with start_mode "opposite").
     pilot_level: one level row replacing the table (columns as CoopPush2CommandCfg.levels), pilot_episode_s its
     episode length; dyaw_choices: the goal heading change is -1, 0 or +1 x the level's value, equally often."""
     assert variant in ("b", "ctrl"), variant
@@ -344,7 +347,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     cfg.actions = {}
     for a in AGENTS:
         if ARM[a]:
-            cfg.actions[f"walker_{a}"] = sat.SpotArmActionCfg(entity_name=a, twist_name=f"twist_{a}", arm=arm)
+            cfg.actions[f"walker_{a}"] = sat.SpotArmActionCfg(entity_name=a, twist_name=f"twist_{a}", arm=arm,
+                                                              arm_hold_steps=arm_hold_steps)
             continue
         joint_cfgs[a].entity_name = a
         cfg.actions[f"walker_{a}"] = s1.WalkerCommandActionCfg(
@@ -378,6 +382,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     if track:
         assert resid and contacts and push_cmd, "request tracking builds on the residual pilot (Stage 4e contacts)"
     cfg.commands["goal"].dyaw_choices = bool(dyaw_choices)
+    cfg.commands["goal"].dyaw_signs = bool(turn_signs)
     if pilot_level:  # one level of the caller's choosing (Spot-arm turn pilot: docs/spot_arm_pair.md)
         assert len(pilot_level) == len(cfg.commands["goal"].levels[0]), pilot_level
         cfg.commands["goal"].levels = (tuple(float(x) for x in pilot_level),)

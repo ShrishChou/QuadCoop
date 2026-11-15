@@ -1834,6 +1834,8 @@ class CoopPush2Command(Push2Command):
         dyaw = torch.minimum(torch.deg2rad(t[:, DYAW]), cap) * (2 * torch.rand(m, device=dev) - 1)
         if c.dyaw_choices:  # the goal heading change is one of -1, 0, +1 x the level's value, equally often
             dyaw = torch.minimum(torch.deg2rad(t[:, DYAW]), cap) * (torch.randint(0, 3, (m,), device=dev) - 1).float()
+        if c.dyaw_signs:  # turn in place: -1 or +1 x the level's value, equally often
+            dyaw = torch.minimum(torch.deg2rad(t[:, DYAW]), cap) * (2 * torch.randint(0, 2, (m,), device=dev) - 1).float()
         goal_yaw = wrap(obj_heading + dyaw)
         tt = torch.zeros(m, dtype=torch.bool, device=dev)
         if c.turn_frac > 0 and sc is None:  # turn practice (training only): a turn in place
@@ -1856,6 +1858,11 @@ class CoopPush2Command(Push2Command):
         # push them apart symmetrically to at least `sep`
         short = (sep - diff.abs()).clamp(min=0.0) * 0.5
         b0, b1 = b0 - side * short, b1 + side * short
+        if c.start_mode == "opposite":  # one robot behind the object, one in front (which one: random), mirrored
+            front = torch.rand(m, device=dev) < 0.5
+            b_back = gdir + math.pi + sym_u(t[:, SPREAD])
+            b_front = gdir + sym_u(t[:, SPREAD])
+            b0, b1 = torch.where(front, b_front, b_back), torch.where(front, b_back, b_front)
         if c.start_mode == "around":  # anywhere around the object, still at least `sep` apart
             b0 = 2 * math.pi * torch.rand(m, device=dev)
             b1 = b0 + U(torch.full((m,), sep, device=dev), torch.full((m,), 2 * math.pi - sep, device=dev))
@@ -2114,7 +2121,8 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     partner_map: bool = False  # second map channel: the partner's footprint
     track_approach: bool = False  # keep each robot's approach potential (r5's approach reward)
     # training-only options (evaluations place robots and objects themselves):
-    start_mode: str = "behind"  # "behind": robots start behind the object (level table); "around": anywhere
+    start_mode: str = "behind"  # "behind": robots start behind the object (level table); "around": anywhere;
+    # "opposite": one robot behind the object, one in front, each within the level's spread (turn in place)
     need_frac: float = 0.0  # share of episodes with a wide object heavy enough to need both robots
     need_mass: float = 45.0  # kg: about what one ANYmal can push alone
     need_extra: float = 20.0  # kg above the level's mass window allowed for those episodes
@@ -2274,6 +2282,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     # goal yaw change +- | pos tol [m] | yaw tol [deg] | hold [s] (tolerances: "hold" mode only;
     # "terminate" uses success_pos_tol / success_yaw_tol_deg) | max mass [kg] | min mass [kg]
     dyaw_choices: bool = False  # goal heading change drawn from {-1, 0, +1} x the level's value (turn pilot)
+    dyaw_signs: bool = False  # goal heading change drawn from {-1, +1} x the level's value (turn in place)
     levels: tuple[tuple[float, ...], ...] = field(default_factory=lambda: (
         (1.5, 3.0, 25, 0, 30, 30, 0.15, 10, 0.5, 40, 10),     # each robot could do it alone
         (2.0, 4.0, 40, 20, 60, 60, 0.12, 8, 0.5, 50, 20),
@@ -2753,6 +2762,9 @@ def agent_action_rate(env, agent: int) -> torch.Tensor:
     to -1e13 in the first two-robot run.)"""
     am = env.action_manager
     sl = agent_slice(env, agent)
+    term = am.get_term(f"walker_{AGENTS[agent]}")
+    if getattr(getattr(term, "cfg", None), "arm", "") == "hand_rate":  # its arm outputs are rates: base only
+        sl = slice(sl.start, sl.start + 3)
     a, p = am.action[:, sl].clamp(-1.0, 1.0), am.prev_action[:, sl].clamp(-1.0, 1.0)
     return torch.sum(torch.square(a - p), dim=-1)
 

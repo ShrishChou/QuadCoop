@@ -1,6 +1,6 @@
 # Two Spots with arms: IPPO / MAPPO, arms stowed vs learned
 
-Status (2026-11-15): turn pilot (A-D, ±30°) training, evaluations queued; hand-position wave (H1-H4, MAPPO, ±30° / ±60°) preflight passed and submitted. No evaluation result yet.
+Status (2026-11-15): turn pilot (A-D) done: the arms go unused. Hand wave: H2, H3 running; H1 and H4 paused (checkpoints at iterations 1200 and 600). Turn in place: scripted maneuver and demonstrations done, three MAPPO runs (T1-T3) submitted.
 
 **Questions.**
 - Does learning to use the arms improve transport? Compare arms learned against arms stowed, on the same bodies.
@@ -232,6 +232,94 @@ H1, `--turn 60` for the others) 29224199, 29224201, 29224203, 29224206. Report:
   task that needs a reach, e.g. correcting a long object's heading with its centre already at the goal.
 
 Arm contact stays out of the reward.
+
+## Turn in place (wave 3)
+
+**Why this task.** The ±30° and probably ±60° turns are solved by body pushing, so they cannot show what an arm
+adds.
+
+Here the 20 kg long object starts at its goal centre and must turn 40° clockwise or counter-clockwise and settle:
+centre within 0.10 m and heading within 6°, held 1 s, in 20 s. The largest centre drift during the maneuver is also
+recorded.
+
+With the gripper closed the robots can only push, and two pushes on the same face always add a net force, so the
+centre moves. A turn in place therefore needs a couple: the robot behind pushes forward at one end, the robot in
+front pushes back at the other. So one Spot starts behind the 1 m face and one in front (±15°), exchanged in half
+the placements. Which end each robot takes depends on the turn direction; no roles are assigned.
+
+H1 and H4 were stopped (checkpoints kept). With per-step noise on an absolute extension, the rate limiter tracks
+roughly the median of the command, i.e. stowed, so the hand never left. H2 and H3 run to completion as the ±60°
+controls.
+
+**Interface `--arm hand_rate`** (7 actions per robot), a persistent, bounded hand target:
+- base: as before;
+- hand point: moves at a × 0.6 m/s inside the hand box; zero holds it;
+- extension: moves at a × 1.5 /s inside [0, 1]; negative retracts; zero holds;
+- joint targets: as `hand`, rate-limited at 1.5 rad/s;
+- the action-rate cost skips these four arm outputs;
+- `--arm-hold-steps k` latches the arm action for k steps, but a retract still acts at once. It is implemented and
+  off in these runs: with a persistent target, zero already holds, and a latch would make PPO credit actions the
+  arm never executed.
+
+Captions and logs show the requested hand point and extension, the executed target (the rate limiter's lag in joint
+space) and the measured hand point.
+
+**Scripted maneuver** (`quadcoop/coop2/spot_arm_script.py`, `scripts/spot_arm/turn_inplace.py`). Each robot faces its
+face and stays centred on it, reaches to the end that makes the requested turn (counter-clockwise: each robot's
+right-hand end), walks in until the hand touches and pushes, slowing near the goal. The two robots trade push speed
+to cancel centre drift. Within 2.5° they retract and step back. In the stowed version the robot side-steps so its
+trunk pushes that end.
+
+Mirrored opposite starts, 8 placements × 2 directions × exchanged = 32 episodes per row:
+
+| scripted, ±40° | success | largest centre drift (median) | end heading error (median) |
+|---|---|---|---|
+| both hands | 78% (counter-clockwise 69%, clockwise 88%) | 0.02 m | 2.3° |
+| one hand + the partner's trunk | 47-59% | 0.06 m | 3.0-5.9° |
+| both stowed (trunks) | 25% (counter-clockwise 50%, clockwise 0%) | 0.03 m | 8.8° |
+| one robot alone (partner parked) | 0% | 0.13 m | 29° |
+
+There were no falls. At ±60° the hands reach 34% and the trunks 0%, both too slow for 20 s: mid-push the hand sits
+22 cm back and 15 cm below its target, because the push goes through a compliant arm. The task is set at ±40°.
+
+Videos: `evals/spot_arm/turn_inplace_40/{both_hands,stowed}_{ccw,cw}.mp4`, captions with wanted and actual heading,
+centre drift, and each robot's requested, executed and measured hand. The stowed result is this script's; a trained
+stowed pair may do better (run T1).
+
+**Demonstrations** (`scripts/spot_arm/collect_demos.py`, `logs/demos/turn40.pt`). The script in the training env
+(observation noise and resets as in training) succeeded on 781 of 1065 episodes (73%), giving 215,567 samples
+(every second step of successful episodes, up to success).
+
+**Trainer** (`--bc-data`, `--bc-pretrain-steps`, `--bc-coef`, `--bc-iters`):
+- the actor normalizers are fitted to the demonstrations and then frozen;
+- 2000 behaviour-cloning steps (action mean squared error 0.74 → 0.0012-0.0016);
+- PPO on fresh rollouts, plus a separate imitation loss on demonstration minibatches, weight 1 fading linearly to 0
+  by iteration 1000;
+- 50 critic-only iterations first.
+
+The cloned policy before any PPO update, on the held-out tasks (4 placements): 69% success (counter-clockwise 100%,
+clockwise 38%), centre drift 0.10 m. With any arm locked it fails, and alone it falls in half the episodes (Spot 2):
+it imitates and has not learned to adapt.
+
+**Runs** (`slurm/submit_spot_arm_turn.sh`, settings `slurm/spot_arm_turn.env`). All MAPPO, seed 0, 4096 envs × 24
+steps × 2000 iterations, r7 unchanged, no arm-contact reward:
+
+| run | arms | started from | evaluation |
+|---|---|---|---|
+| T1 `sa_turn_stowed_s0` | stowed | random | stowed, each robot alone |
+| T2 `sa_turn_hand_s0` | hand targets | random (PPO alone) | both hands, either arm stowed, both stowed, each robot alone |
+| T3 `sa_turn_bc_s0` | hand targets | cloned maneuver, then PPO + fading imitation | as T2 |
+
+Jobs: T1 29238126 (evaluation 29238127), T2 29238128 (29238129), T3 29238130 (29238131). The evaluation is
+`turn_inplace.py --checkpoint`: the same 192 held-out episodes, start places exchanged, videos of the same
+clockwise and counter-clockwise placement.
+
+What each comparison tells:
+- T3 vs T2: what demonstrations add to learning arm use.
+- T3 and T2 vs T1: what arm access adds.
+- Arm-stowed and partner-parked conditions: whether the trained pair relies on its arms and on its partner.
+
+If T3 improves settling, the next step is IPPO vs MAPPO with the same demonstrations, over several seeds.
 
 **Next, if the pilot learns:** the ordinary approach distance and 40 kg; then the four policies on the ten-object,
 20–80 kg benchmark (`eval_coop2.py` already takes these checkpoints); three seeds for B and D. If PPO mostly
