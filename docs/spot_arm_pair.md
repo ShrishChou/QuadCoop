@@ -1,6 +1,6 @@
 # Two Spots with arms: IPPO / MAPPO, arms stowed vs learned
 
-Status (2026-11-15): pair wired into the trainer and evaluator; wiring test passed (job 29207519); the four pilot runs are queued (training jobs 29207944, 29207946, 29207948, 29207950; evaluations 29207945, 29207947, 29207949, 29207951). No pilot result yet.
+Status (2026-11-15): pair wired into the trainer and evaluator; wiring test passed (job 29207519); the four pilot runs are queued (training jobs 29212430, 29212432, 29212434, 29212436, relaunched with the full visual model; evaluations 29212431, 29212433, 29212435, 29212437). No pilot result yet.
 
 **Questions.**
 - Does learning to use the arms improve transport? Compare arms learned against arms stowed, on the same bodies.
