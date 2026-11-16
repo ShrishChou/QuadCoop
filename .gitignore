@@ -37,3 +37,4 @@ install_*.py
 
 # copies of the models in use (scripts/select_models.py; evals/models.yaml says which)
 /models/
+!presentation_videos/**/*.mp4
