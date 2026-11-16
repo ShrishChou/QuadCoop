@@ -358,3 +358,29 @@ each phase change every env is reassigned a level and its object mass is redrawn
 
 Evaluation: `pair_eval.py --turn 60 --horizon 40` at 20 kg / 1 m, 40 kg / 2 m and 60 kg / 3 m (`sa-heavy-<run>-*`),
 swapped starts, arm ablation and solo_1 / solo_2. For the solo run, solo_1 is the trained condition.
+
+### Results (seed 0, 4000 iterations; `evals/sa-heavy-*`, 120 episodes per cell, swapped starts, 40 s)
+
+| task | pair, arms trained | same checkpoint, arms locked | pair, arms stowed (trained so) | solo control (trained alone) |
+|---|---|---|---|---|
+| 20 kg, 1 m | 99.2% | 100% | 100% | 100% |
+| 40 kg, 2 m | **73.3%** | 43.3% | 40.8% | 0% (object moved 0.7 m of 2) |
+| 60 kg, 3 m | 0% (moved 0.50 m of 3) | 0% (0.33 m) | 0% (0.31 m) | 0% (0.10 m) |
+
+- One trained robot does the light task alone (100%), so the light pilot never required teamwork. At 40 kg / 2 m
+  the solo policy fails every time and the pairs succeed: the second robot is what makes the heavier task possible.
+- On the heavier task the role split disappears: both robots are on the object for about 41% of the episode each, and
+  no episode has one robot idle (light task: up to 43 of 120 per seed).
+- Arms at 40 kg: arms trained 73.3% vs arms-stowed training 40.8%; locking the arms of the same checkpoint drops it
+  to 43.3% (paired: 50 tasks lost, 14 gained). Mostly robot 2's arm (only robot 2's arm free: 70.0%; only robot 1's:
+  47.5%). Arm contact is rare (<0.5% of the episode) but forceful (robot 2 mean arm force 28 N vs 8 N for robot 1).
+  One seed; check the videos before claiming a mechanism (bracing / yaw correction vs posture).
+- 60 kg / 3 m is out of reach in 40 s for every configuration at this budget.
+
+Light ±60° task, all seeds (120 episodes per mode): arms trained MAPPO 99.2 / 100 / 92.5%, IPPO 100 / 97.5%; arms
+stowed MAPPO 81.7 / 96.7%, IPPO 90.0 / 100%; locking a trained arm changes nothing (92.5-100%). The one-robot role split
+recurs (MAPPO learned s2: 43 of 120). Standard evaluator (long object, 20 / 40 kg): IPPO arms trained 29 / 8%, stowed
+90 / 22%, so none of the light-task Spot-arm policies transfer to 40 kg.
+
+Turn in place seed 1 (16 per direction): stowed 94%, PPO hands 100% (seed 0: 84%), demonstrations + PPO 91%; hand
+contact 0-5% in every case, so seed 1 confirms seed 0: the learned policies turn with the trunk, not the hands.
