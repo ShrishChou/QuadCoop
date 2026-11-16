@@ -5,6 +5,7 @@
     spot    two Spot                      slots "spot1", "spot2"
     spot_arm  two Spot with the arm, on RAI's frozen walker (quadcoop/robots/spot_arm.py; docs/spot_arm_pair.md)
                                           slots "spotarm1", "spotarm2"
+    anymal_arm  ANYmal C + Spot with the arm (RAI walker)   slots "anymal", "spotarm"
 
 A slot name is the robot's scene entity name and the suffix of its per-robot reward terms
 (push_credit_anymal2, ...). The slot's robot type picks its walker and its Stage 2 policy
@@ -24,7 +25,9 @@ PAIRS = {
     "anymal": (("anymal1", "anymal_c"), ("anymal2", "anymal_c")),
     "spot": (("spot1", "spot"), ("spot2", "spot")),
     "spot_arm": (("spotarm1", "spot_arm"), ("spotarm2", "spot_arm")),
+    "anymal_arm": (("anymal", "anymal_c"), ("spotarm", "spot_arm")),
 }
+ARM_PAIRS = tuple(p for p, sl in PAIRS.items() if any(t == "spot_arm" for _, t in sl))  # pairs with a Spot-arm slot
 ROLE = {"anymal_c": "anymal", "spot": "spot", "spot_arm": "spot_arm"}  # evals/models.yaml role suffix of each robot type
 
 

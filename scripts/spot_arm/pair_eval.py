@@ -154,8 +154,16 @@ def main() -> int:
         return report([x.strip() for x in a.report.split(",") if x.strip()], a.report_out)
     if not (a.checkpoint and a.name):
         ap.error("give --checkpoint and --name (or --report)")
-    os.environ["QUADCOOP_SHAPES"] = "v2"
-    os.environ["QUADCOOP_PAIR"] = "spot_arm"
+    import torch as _torch
+
+    # the team comes from the checkpoint (spot_arm: two Spot-arms; anymal_arm: ANYmal + Spot-arm; armless pairs too);
+    # set the env variables exactly as training does (walker checkpoints of non-Spot-arm slots)
+    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from train_coop2 import resolve_models, set_env
+
+    _ck = _torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    set_env(resolve_models(_ck.get("variant", "b"), (_ck.get("cfg") or {}).get("pair", "spot_arm")))
     import numpy as np
     import torch
     from tensordict import TensorDict
@@ -175,9 +183,14 @@ def main() -> int:
 
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
     rc = ck.get("cfg", {})
-    assert rc.get("pair") == "spot_arm", f"{a.checkpoint}: pair {rc.get('pair')}"
-    arm = rc.get("arm") or "stowed"
-    modes = (["both", "only_1", "only_2", "none"] if arm in ("learned", "hand") else ["stowed"]) + ["solo_1", "solo_2"]
+    from quadcoop.coop2.env_cfg import ARM
+    from quadcoop.coop2.pairs import ARM_PAIRS
+
+    assert rc.get("pair") in ARM_PAIRS or rc.get("pair") in ("anymal", "spot", "mixed"), f"{a.checkpoint}: pair {rc.get('pair')}"
+    arm = (rc.get("arm") or "stowed") if rc.get("pair") in ARM_PAIRS else "stowed"  # no arm: as trained + solo
+    n_arms = sum(ARM[ag] for ag in AGENTS)  # one Spot-arm (with ANYmal): "both" = its arm free, "none" = locked
+    free = (["both", "only_1", "only_2", "none"] if n_arms == 2 else ["both", "none"])
+    modes = (free if arm in ("learned", "hand") else ["stowed"]) + ["solo_1", "solo_2"]
     lock = {"both": (0, 0), "only_1": (0, 1), "only_2": (1, 0), "none": (1, 1), "stowed": (0, 0),
             "solo_1": (0, 0), "solo_2": (0, 0)}
     base_cases = [(t, r) for t in range(len(TURNS)) for r in range(a.reps)]
@@ -191,6 +204,13 @@ def main() -> int:
     if rc.get("pilot_level"):
         cfg.commands["goal"].start_level = 0
     cfg.scene.num_envs = n
+    from mjlab.sensor import ContactMatch, ContactSensorCfg
+
+    have = {sc_.name for sc_ in cfg.scene.sensors}
+    cfg.scene.sensors += tuple(ContactSensorCfg(  # whole-robot contact with the object (body_touch), every team
+        name=f"push_{ag}", primary=ContactMatch(mode="body", pattern=tuple(f"{o}/body" for o in OBJ_NAMES2)),
+        secondary=ContactMatch(mode="subtree", pattern=SPECS[ag].base_body, entity=ag),
+        fields=("found", "force"), reduce="netforce", num_slots=1) for ag in AGENTS if f"push_{ag}" not in have)
     cfg.episode_length_s = 1e5
     cfg.terminations = {}
     alpha = 0.5 * math.log(a.mass / NOMINAL_MASS)
@@ -228,6 +248,8 @@ def main() -> int:
     sl = action_slices(env)
     terms = {ag: env.action_manager.get_term(f"walker_{ag}") for ag in AGENTS}
     for k, ag in enumerate(AGENTS):
+        if not ARM[ag]:  # ANYmal: no arm to lock
+            continue
         terms[ag].arm_locked[:] = torch.tensor([bool(lock[c[3]][k]) for c in cases], device=dev)
     print(f"{a.checkpoint} (iteration {ck['iter']}, {ck['algo']}, arm {arm}; actions { {ag: s.stop - s.start for ag, s in sl.items()} }); "
           f"{len(base_cases)} tasks x swap x modes {modes} = {n} episodes, {a.object} {a.mass:g} kg", flush=True)
@@ -242,7 +264,8 @@ def main() -> int:
     t_succ = torch.full((n,), float("nan"), device=dev)
     pos_err, yaw_err = torch.zeros(n, device=dev), torch.zeros(n, device=dev)
     live_steps = torch.zeros(n, device=dev)
-    acc = {f"{p}_{ag}": torch.zeros(n, device=dev) for ag in AGENTS for p in ("arm", "trunk", "force", "ext")}
+    acc = {f"{p}_{ag}": torch.zeros(n, device=dev) for ag in AGENTS for p in ("arm", "trunk", "force", "ext", "body", "walk")}
+    last_xy = {ag: env.scene[ag].data.root_link_pos_w[:, :2].clone() for ag in AGENTS}
     realized = torch.rad2deg(g.goal_turn.clone())  # the goal heading change as placed (the object's symmetry caps it)
     with torch.no_grad():
         for i in range(int(a.horizon / dt)):
@@ -261,6 +284,12 @@ def main() -> int:
             for k, ag in enumerate(AGENTS):
                 f_ = falls.fallen(env, asset_name=ag, nominal_height=SPECS[ag].nominal_height) & live & ~park[k]
                 fell[ag] |= f_
+                acc[f"body_{ag}"] += (env.scene[f"push_{ag}"].data.found.view(n, -1).any(-1) & live).float()
+                xy = env.scene[ag].data.root_link_pos_w[:, :2]
+                acc[f"walk_{ag}"] += torch.linalg.norm(xy - last_xy[ag], dim=-1) * live.float()  # path length walked
+                last_xy[ag] = xy.clone()
+                if not ARM[ag]:
+                    continue
                 sd = env.scene[f"arm_{ag}"].data
                 on = sd.found.view(n, -1).any(-1) & live
                 acc[f"arm_{ag}"] += on.float()
@@ -303,6 +332,8 @@ def main() -> int:
                      "pos_err": round(float(pos_err[j]), 4), "yaw_err_deg": round(math.degrees(float(yaw_err[j])), 2),
                      **{f"arm_touch_{ag}": round(float(acc[f'arm_{ag}'][j]) / ls, 4) for ag in AGENTS},
                      **{f"trunk_touch_{ag}": round(float(acc[f'trunk_{ag}'][j]) / ls, 4) for ag in AGENTS},
+                     **{f"body_touch_{ag}": round(float(acc[f'body_{ag}'][j]) / ls, 4) for ag in AGENTS},
+                     **{f"walked_m_{ag}": round(float(acc[f'walk_{ag}'][j]), 2) for ag in AGENTS},
                      **{f"extension_{ag}": round(float(acc[f'ext_{ag}'][j]) / ls, 4) for ag in AGENTS},
                      **{f"arm_force_{ag}": round(float(acc[f'force_{ag}'][j]) / max(float(acc[f'arm_{ag}'][j]), 1.0), 1)
                         for ag in AGENTS}})

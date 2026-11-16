@@ -182,7 +182,7 @@ def main() -> int:
     ap.add_argument("--pilot-episode-s", type=float, default=0.0, help="episode length with --pilot-level")
     ap.add_argument("--dyaw-choices", action="store_true",
                     help="goal heading change is -1, 0 or +1 x the level's value, equally often (left / straight / right)")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm"), default="mixed",
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm"), default="mixed",
                     help="which two robots: ANYmal C + Spot (mixed), two ANYmal C, two Spot "
                          "(quadcoop/coop2/pairs.py); both start from that type's Stage 2 policy")
     ap.add_argument("--seed", type=int, default=0)
@@ -415,8 +415,8 @@ def main() -> int:
     if a.max_actor_lr is None:
         a.max_actor_lr = 1e-3 if a.scratch else 3e-4
     models = resolve_models(a.variant, a.pair)
-    if a.pair == "spot_arm" and not (a.scratch or a.resume or a.init_from or a.init_actors):
-        raise SystemExit("--pair spot_arm has no Stage 2 policies to start from: pass --scratch (or --resume / --init-from)")
+    if a.pair in _pairs().ARM_PAIRS and not (a.scratch or a.resume or a.init_from or a.init_actors):
+        raise SystemExit(f"--pair {a.pair}: a Spot-arm slot has no Stage 2 policies to start from: pass --scratch (or --resume / --init-from)")
     pilot_level = tuple(float(x) for x in a.pilot_level.split(",")) if a.pilot_level else ()
     extra_levels = tuple(tuple(float(x) for x in r.split(",")) for r in a.extra_levels.split(";")) if a.extra_levels else ()
     level_mix = tuple((int(ph.split(":")[0]), tuple(float(x) for x in ph.split(":")[1].split(",")))
@@ -537,7 +537,7 @@ def main() -> int:
                   over_push_w=a.over_push_w if a.effort else 0.0,
                   contact_sense=a.contact_sense, acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
-                  arm=a.arm if a.pair == "spot_arm" else "", pilot_level=pilot_level,
+                  arm=a.arm if a.pair in _pairs().ARM_PAIRS else "", pilot_level=pilot_level,
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
                   solo_agent=a.solo_agent, bc_data=a.bc_data, bc_coef=a.bc_coef,
