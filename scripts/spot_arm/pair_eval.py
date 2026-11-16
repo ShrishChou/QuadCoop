@@ -10,7 +10,8 @@ exchanged; --reps placements per turn. Success: within 0.10 m and 6 deg for 1 s 
 the episode as a failure.
 Arm modes, all in one build for a learned-arm checkpoint (joint targets or hand position) (the policy is the same, only what its arm outputs may
 do differs): both (as trained), only_1 / only_2 (the other robot's arm held stowed), none (both held stowed).
-A stowed-arm checkpoint has the one mode "stowed".
+A stowed-arm checkpoint has the mode "stowed". Every checkpoint also runs solo_1 / solo_2 (teamwork test: only robot k
+acts, the other is parked 40 m away and stands still; its falls are ignored).
 Per episode: success, time, final position and signed heading error, falls, each robot's arm and trunk contact
 share and mean arm contact force, the goal heading change as placed (realized), the hand's mean extension. Videos: rep 0, unswapped, of each turn, in every arm mode (captions: wanted and
 actual object heading). Writes evals/<name>/episodes.csv and summary.md; videos to logs/evals/<name>/.
@@ -61,13 +62,15 @@ def tables(rows: list[dict], label: str = "") -> list[str]:
                       f"{med([f(r, 'pos_err') for r in sel]):.3f} | {med([abs(f(r, 'yaw_err_deg')) for r in sel]):.1f} | "
                       f"{sum(f(r, 'yaw_err_deg') for r in sel) / len(sel):+.1f} |")
     key = lambda r: (r["turn"], r["rep"], r["swap"])  # noqa: E731
-    if "both" in modes:
-        base = {key(r): r for r in rows if r["arm_mode"] == "both"}
-        md += ["", "Arm ablation, paired per task against both arms active (the same policy; a locked arm stays stowed):", "",
+    b0 = "both" if "both" in modes else modes[0]
+    if len(modes) > 1:
+        base = {key(r): r for r in rows if r["arm_mode"] == b0}
+        md += ["", f"Ablation, paired per task against {b0} (the same policy; a locked arm stays stowed; solo_k: only "
+               "robot k, the other parked 40 m away):", "",
                "| arm mode | change in success [95% CI] | tasks lost | tasks gained | change in abs heading error, deg [95% CI] |",
                "|---|---|---|---|---|"]
         for m in modes:
-            if m == "both":
+            if m == b0:
                 continue
             oth = {key(r): r for r in rows if r["arm_mode"] == m}
             ks = sorted(set(base) & set(oth))
@@ -174,8 +177,9 @@ def main() -> int:
     rc = ck.get("cfg", {})
     assert rc.get("pair") == "spot_arm", f"{a.checkpoint}: pair {rc.get('pair')}"
     arm = rc.get("arm") or "stowed"
-    modes = ["both", "only_1", "only_2", "none"] if arm in ("learned", "hand") else ["stowed"]
-    lock = {"both": (0, 0), "only_1": (0, 1), "only_2": (1, 0), "none": (1, 1), "stowed": (0, 0)}
+    modes = (["both", "only_1", "only_2", "none"] if arm in ("learned", "hand") else ["stowed"]) + ["solo_1", "solo_2"]
+    lock = {"both": (0, 0), "only_1": (0, 1), "only_2": (1, 0), "none": (1, 1), "stowed": (0, 0),
+            "solo_1": (0, 0), "solo_2": (0, 0)}
     base_cases = [(t, r) for t in range(len(TURNS)) for r in range(a.reps)]
     cases = [(t, r, w, m) for m in modes for w in (0, 1) for (t, r) in base_cases]
     n = len(cases)
@@ -210,10 +214,11 @@ def main() -> int:
     bearings = [math.pi + torch.deg2rad(T(lambda c, k=k: (-35.0, 35.0)[sw(c, k)] + draw[c[:2]]["jit"][sw(c, k)])) for k in range(2)]
     gaps = [T(lambda c, k=k: draw[c[:2]]["gap"][sw(c, k)]) for k in range(2)]
     z = torch.zeros(n, device=dev)
+    park = [torch.tensor([c[3] == "solo_2" for c in cases], device=dev), torch.tensor([c[3] == "solo_1" for c in cases], device=dev)]
     sc = {"shape": torch.full((n,), SHAPE_NAMES2.index(a.object), device=dev), "obj_xy_rel": torch.zeros(n, 2, device=dev),
           "obj_heading": head, "goal_xy_rel": torch.tensor([a.dist, 0.0], device=dev).repeat(n, 1),
           "goal_yaw": wrap(head + turn), "bearings": bearings, "gaps": gaps, "yaw_noise": [z, z],
-          "park": [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]}
+          "park": park}
     g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids]) for k, v in sc.items()}
     obs, _ = env.reset()
     g.scenario = None
@@ -243,6 +248,8 @@ def main() -> int:
         for i in range(int(a.horizon / dt)):
             act = policy(obs, env=env)
             act[done] = 0.0  # finished episodes: stand still, arms stowed
+            for k, ag in enumerate(AGENTS):  # solo: the parked robot (40 m away) stands still
+                act[park[k], sl[ag]] = 0.0
             o, *_ = env.step(act)
             obs = td(o)
             t = (i + 1) * dt
@@ -251,8 +258,8 @@ def main() -> int:
             pos_err = torch.where(live, d, pos_err)
             yaw_err = torch.where(live, e, yaw_err)
             live_steps += live.float()
-            for ag in AGENTS:
-                f_ = falls.fallen(env, asset_name=ag, nominal_height=SPECS[ag].nominal_height) & live
+            for k, ag in enumerate(AGENTS):
+                f_ = falls.fallen(env, asset_name=ag, nominal_height=SPECS[ag].nominal_height) & live & ~park[k]
                 fell[ag] |= f_
                 sd = env.scene[f"arm_{ag}"].data
                 on = sd.found.view(n, -1).any(-1) & live
