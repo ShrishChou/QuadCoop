@@ -39,3 +39,4 @@ install_*.py
 /models/
 !presentation_videos/**/*.mp4
 presentation_export/
+evals/hd-*/

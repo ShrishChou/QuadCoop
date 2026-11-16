@@ -129,6 +129,13 @@ def run_test(task: str, test: str, args, device: str) -> dict:
     torch.manual_seed(args.seed)
     cfg = make_cfg(task, test, args)
     video_dir = getattr(args, "video_dir", None)
+    from quadcoop import render_hd
+
+    if video_dir and render_hd.ON:  # presentation renders: full HD, one robot, low three-quarter chase view
+        cfg.viewer.width, cfg.viewer.height = render_hd.SIZE
+        cfg.viewer.max_extra_envs = 0
+        cfg.viewer.azimuth, cfg.viewer.elevation, cfg.viewer.distance = render_hd.view(
+            cfg.viewer.azimuth, cfg.viewer.elevation, 4.0)
     base_env = ManagerBasedRlEnv(
         cfg=cfg, device=device, render_mode="rgb_array" if video_dir else None
     )

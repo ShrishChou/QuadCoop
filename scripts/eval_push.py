@@ -672,6 +672,10 @@ class VideoMaker:
         import mujoco
         from PIL import ImageFont
 
+        from quadcoop import render_hd
+
+        w, h = render_hd.size(w, h)  # HD: one clean overview panel at full size (render_hd.py)
+        self.hd = render_hd.ON
         self.mj, self.rec, self.folder, self.w, self.h = mujoco, rec, folder, w, h
         folder.mkdir(parents=True, exist_ok=True)
         m = base.sim.mj_model
@@ -680,6 +684,7 @@ class VideoMaker:
         disable_model_sameframe_shortcuts(m)  # else rotated geoms (lying cylinder) render wrongly
         m.vis.global_.offwidth = max(int(m.vis.global_.offwidth), w)
         m.vis.global_.offheight = max(int(m.vis.global_.offheight), h)
+        render_hd.tune(m)
         m.stat.extent = 12.0
         self.m, self.d = m, mujoco.MjData(m)
         self.r = mujoco.Renderer(m, height=h, width=w)
@@ -697,8 +702,10 @@ class VideoMaker:
                 self.geom_id[nm.split("/")[-1]] = gid
         self.sync = None  # optional callable(env) run before rendering that env (per-env geometry)
         self.overlay = None  # optional callable(env, frame index, PIL image) to draw extra panels
+        self.s = render_hd.font_px(13, h) / 13.0  # text and bar scale (1 unless HD)
         try:
-            self.font, self.big = ImageFont.load_default(size=13), ImageFont.load_default(size=20)
+            self.font = ImageFont.load_default(size=render_hd.font_px(13, h))
+            self.big = ImageFont.load_default(size=render_hd.font_px(20, h))
         except TypeError:
             self.font = self.big = ImageFont.load_default()
 
@@ -712,8 +719,12 @@ class VideoMaker:
         sub = self.folder / row["outcome"]
         sub.mkdir(parents=True, exist_ok=True)
         path = sub / f"{stem}.mp4"
-        wr = imageio_ffmpeg.write_frames(str(path), (2 * w, h), fps=rec.fps, quality=6, macro_block_size=8,
-                                         ffmpeg_log_level="error")
+        from quadcoop import render_hd
+
+        W = w if self.hd else 2 * w  # HD: overview only
+        s = self.s
+        wr = imageio_ffmpeg.write_frames(str(path), (W, h), fps=rec.fps, ffmpeg_log_level="error",
+                                         **{"macro_block_size": 8, **render_hd.writer_kwargs()})
         wr.send(None)
         tf = float(row["t_fall"]) if row["t_fall"] != "" else float("nan")
         # the geoms the old (training) contact rule flagged, painted red around that moment
@@ -746,9 +757,14 @@ class VideoMaker:
             want = (c, max(4.0, min(14.0, 1.1 * spread + 3.0)))
             look = want if look is None else (0.92 * look[0] + 0.08 * want[0], 0.96 * look[1] + 0.04 * want[1])
             self.cam.lookat[:] = [look[0][0], look[0][1], 0.3]
-            self.cam.distance, self.cam.azimuth, self.cam.elevation = look[1], az, -35.0
+            self.cam.azimuth, self.cam.elevation, self.cam.distance = render_hd.view(az, -35.0, look[1])
             self.r.update_scene(self.d, camera=self.cam, scene_option=self.opt)
             left = self.r.render().copy()
+            if self.hd:
+                im = Image.fromarray(left)
+                self._labels(im, label, row, rec, j, f, t, tf, tft, t_end_b, nf, W, h, s, paint=False)
+                wr.send(im.tobytes())
+                continue
             # close-up: side view of the robot
             qw, qx, qy, qz = q[self.rq[3]], q[self.rq[4]], q[self.rq[5]], q[self.rq[6]]
             yaw = math.degrees(math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz)))
@@ -768,37 +784,45 @@ class VideoMaker:
                 self.m.geom_rgba[gid] = rgba
 
             im = Image.fromarray(np.concatenate([left, right], axis=1))
-            dr = ImageDraw.Draw(im, "RGBA")
-            dist, yerr, hold, tilt = rec.info[f][j].tolist()
-            dr.rectangle([0, 0, 2 * w, 44], fill=(0, 0, 0, 160))
-            dr.text((6, 3), label, font=self.font, fill=(255, 255, 255))
-            dr.text((6, 23), f"t {t:5.1f} s   pos err {dist:5.2f} m   yaw err {yerr:5.1f} deg   "
-                             f"hold {hold:3.1f} s   robot tilt {tilt:3.0f} deg", font=self.font, fill=(220, 220, 220))
-            dr.text((w + 6, 23), "robot close-up" + ("  (red = what the old contact rule flagged)" if paint else ""),
-                    font=self.font, fill=(220, 220, 220))
-            if not math.isnan(tft) and t >= tft and (math.isnan(tf) or t < tf):
-                dr.rectangle([0, 44, 2 * w, 64], fill=(60, 60, 0, 150))
-                dr.text((6, 47), f"old training rule would have ended the episode at {tft:.1f} s "
-                                 f"({row['train_rule_detail']}); not a fall by pose", font=self.font,
-                        fill=(255, 240, 150))
-            if not math.isnan(tf) and t >= tf:
-                dr.rectangle([0, 44, 2 * w, 64], fill=(120, 30, 0, 170))
-                dr.text((6, 47), f"FELL at {tf:.1f} s: {row['fall_detail']}; the official episode "
-                                 f"ends here; still simulating", font=self.font, fill=(255, 200, 160))
-            if t >= t_end_b - 1e-6 and f > 0 and (row["outcome_ignoring_falls"] != "horizon" or f == nf - 1):
-                oc = row["outcome_ignoring_falls"]
-                msg, col = {"success": ("SUCCESS", (110, 255, 120)), "tipped": ("OBJECT TIPPED OVER", (255, 90, 90)),
-                            "lost": ("OBJECT LOST", (255, 90, 90)), "horizon": ("TIME UP", (255, 200, 80)),
-                            "fell": ("FELL", (255, 90, 90))}[oc]
-                if oc == "success" and not math.isnan(tf):
-                    msg += " (after the counted fall, so officially a failure)"
-                dr.rectangle([0, h - 32, 2 * w, h], fill=(0, 0, 0, 170))
-                dr.text((8, h - 29), msg, font=self.big, fill=col)
+            self._labels(im, label, row, rec, j, f, t, tf, tft, t_end_b, nf, W, h, s, paint=paint, closeup_x=w)
             if self.overlay is not None:
                 self.overlay(j, f, im)
             wr.send(im.tobytes())
         wr.close()
         return f"videos/{row['outcome']}/{path.name}"
+
+    def _labels(self, im, label, row, rec, j, f, t, tf, tft, t_end_b, nf, W, h, s, paint, closeup_x=None) -> None:
+        """Caption bars: task, live errors, fall notes and the outcome; s scales sizes (HD)."""
+        from PIL import ImageDraw
+
+        S = lambda v: int(round(v * s))  # noqa: E731
+        dr = ImageDraw.Draw(im, "RGBA")
+        dist, yerr, hold, tilt = rec.info[f][j].tolist()
+        dr.rectangle([0, 0, W, S(44)], fill=(0, 0, 0, 160))
+        dr.text((S(6), S(3)), label, font=self.font, fill=(255, 255, 255))
+        dr.text((S(6), S(23)), f"t {t:5.1f} s   pos err {dist:5.2f} m   yaw err {yerr:5.1f} deg   "
+                               f"hold {hold:3.1f} s   robot tilt {tilt:3.0f} deg", font=self.font, fill=(220, 220, 220))
+        if closeup_x is not None:
+            dr.text((closeup_x + S(6), S(23)), "robot close-up" + ("  (red = what the old contact rule flagged)"
+                                                                 if paint else ""), font=self.font, fill=(220, 220, 220))
+        if not math.isnan(tft) and t >= tft and (math.isnan(tf) or t < tf):
+            dr.rectangle([0, S(44), W, S(64)], fill=(60, 60, 0, 150))
+            dr.text((S(6), S(47)), f"old training rule would have ended the episode at {tft:.1f} s "
+                                   f"({row['train_rule_detail']}); not a fall by pose", font=self.font,
+                    fill=(255, 240, 150))
+        if not math.isnan(tf) and t >= tf:
+            dr.rectangle([0, S(44), W, S(64)], fill=(120, 30, 0, 170))
+            dr.text((S(6), S(47)), f"FELL at {tf:.1f} s: {row['fall_detail']}; the official episode "
+                                   f"ends here; still simulating", font=self.font, fill=(255, 200, 160))
+        if t >= t_end_b - 1e-6 and f > 0 and (row["outcome_ignoring_falls"] != "horizon" or f == nf - 1):
+            oc = row["outcome_ignoring_falls"]
+            msg, col = {"success": ("SUCCESS", (110, 255, 120)), "tipped": ("OBJECT TIPPED OVER", (255, 90, 90)),
+                        "lost": ("OBJECT LOST", (255, 90, 90)), "horizon": ("TIME UP", (255, 200, 80)),
+                        "fell": ("FELL", (255, 90, 90))}[oc]
+            if oc == "success" and not math.isnan(tf):
+                msg += " (after the counted fall, so officially a failure)"
+            dr.rectangle([0, h - S(32), W, h], fill=(0, 0, 0, 170))
+            dr.text((S(8), h - S(29)), msg, font=self.big, fill=col)
 
     def close(self) -> None:
         self.r.close()

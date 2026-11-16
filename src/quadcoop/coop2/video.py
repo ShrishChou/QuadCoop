@@ -21,14 +21,16 @@ class Camera:
     def __init__(self, env, width: int | None = None, height: int | None = None):
         import mujoco
 
+        from quadcoop import render_hd
         from quadcoop.stage2.mdp import fix_render_frames
 
-        self.W, self.H = width or self.W, height or self.H
+        self.W, self.H = render_hd.size(width or self.W, height or self.H)
         self.env = env
         fix_render_frames(env)
         m = env.sim.mj_model
         m.vis.global_.offwidth = max(int(m.vis.global_.offwidth), self.W)
         m.vis.global_.offheight = max(int(m.vis.global_.offheight), self.H)
+        render_hd.tune(m)
         self.m, self.d = m, mujoco.MjData(m)
         self.r = mujoco.Renderer(m, height=self.H, width=self.W)
         self.cam = mujoco.MjvCamera()
@@ -63,7 +65,9 @@ class Camera:
         dist = max(4.0, min(14.0, 1.1 * float(np.max(np.linalg.norm(pts[:, None] - pts[None], axis=-1))) + 3.0))
         self.look = (c, dist) if self.look is None else (0.9 * self.look[0] + 0.1 * c, 0.95 * self.look[1] + 0.05 * dist)
         self.cam.lookat[:] = [self.look[0][0], self.look[0][1], 0.3]
-        self.cam.distance, self.cam.azimuth, self.cam.elevation = self.look[1], 90.0, -40.0
+        from quadcoop import render_hd
+
+        self.cam.azimuth, self.cam.elevation, self.cam.distance = render_hd.view(90.0, -40.0, self.look[1])
         self.r.update_scene(self.d, camera=self.cam)
         if marks:
             self._draw(marks)
@@ -115,10 +119,12 @@ class PairVideo:
             return
         import imageio_ffmpeg
 
+        from quadcoop import render_hd
+
         self.folder.mkdir(parents=True, exist_ok=True)
         self.path = self.folder / f"iter_{it}.mp4"
         self.wr = imageio_ffmpeg.write_frames(str(self.path), (self.cam.W, self.cam.H), fps=1.0 / self.env.step_dt,
-                                              quality=6, ffmpeg_log_level="error")
+                                              ffmpeg_log_level="error", **render_hd.writer_kwargs())
         self.wr.send(None)
         self.active, self.n_frames, self.started_at = True, 0, it
         self.cam.look = None
@@ -147,16 +153,20 @@ def render_episode(cam: Camera, j: int, qpos: np.ndarray, mocap_pos: np.ndarray 
     marks(f) -> optional drawings for frame f (see Camera.frame)."""
     import imageio_ffmpeg
 
+    from quadcoop import render_hd
+
     path.parent.mkdir(parents=True, exist_ok=True)
     cam.sync(j)
     cam.look = None
-    wr = imageio_ffmpeg.write_frames(str(path), (cam.W, cam.H), fps=fps, quality=6, ffmpeg_log_level="error")
+    wr = imageio_ffmpeg.write_frames(str(path), (cam.W, cam.H), fps=fps, ffmpeg_log_level="error",
+                                     **render_hd.writer_kwargs())
     wr.send(None)
     font = None
+    fs = render_hd.font_px(13, cam.H)
     try:
         from PIL import ImageFont
 
-        font = ImageFont.load_default(size=13)  # Pillow >= 10.1; older: the small bitmap font
+        font = ImageFont.load_default(size=fs)  # Pillow >= 10.1; older: the small bitmap font
     except Exception:  # noqa: BLE001
         font = None
     for f in range(len(qpos)):
@@ -169,10 +179,10 @@ def render_episode(cam: Camera, j: int, qpos: np.ndarray, mocap_pos: np.ndarray 
                 im = Image.frombytes("RGB", (cam.W, cam.H), raw)
                 dr = ImageDraw.Draw(im)
                 lines = caption(f).split("\n")
-                lh = 16 if font is not None else 14
+                lh = (fs + 3) if font is not None else 14
                 dr.rectangle([0, 0, cam.W, 6 + lh * len(lines)], fill=(0, 0, 0))
                 for li, txt in enumerate(lines):
-                    dr.text((6, 4 + lh * li), txt, fill=(255, 255, 255), font=font)
+                    dr.text((6 * lh // 16, 4 + lh * li), txt, fill=(255, 255, 255), font=font)
                 raw = im.tobytes()
             except Exception:  # noqa: BLE001
                 caption = None
