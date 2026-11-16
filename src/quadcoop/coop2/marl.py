@@ -89,6 +89,9 @@ class MarlCfg:
     arm: str = ""  # Spot-arm pairs (recorded): "stowed" (3 per robot), "learned" (9: + six joint targets), "hand" (7)
     pilot_level: tuple = ()  # env option (recorded): one level row replacing the level table
     pilot_episode_s: float = 0.0  # env option (recorded)
+    extra_levels: tuple = ()  # env option (recorded): level rows after pilot_level (heavy-transport schedule)
+    level_mix: tuple = ()  # env option (recorded): ((start iteration, weights over the levels), ...)
+    solo_agent: int = -1  # env option (recorded): solo control, only this robot acts (the other parked, actions 0)
     dyaw_choices: bool = False  # env option (recorded): goal heading change in {-1, 0, +1} x the level's value
     hand_obs: bool = False  # env option (recorded): Spot-arm actors read the hand point and extension
     turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
@@ -1316,6 +1319,9 @@ class MarlTrainer:
                     v = self.values(obs)
                     val[t] = v
                     env_act = residual_env_action(self.env, self.actors, acts) if cfg.residual else action
+                    if cfg.solo_agent >= 0:  # solo control: the parked robot stands still
+                        env_act = env_act.clone()
+                        env_act[:, self.act_sl[AGENTS[1 - cfg.solo_agent]]] = 0.0
                     o, _, term, trunc, extras = self.env.step(env_act)
                     r_i = self.agent_rewards()
                     if video is not None:

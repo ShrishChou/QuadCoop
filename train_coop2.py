@@ -172,6 +172,13 @@ def main() -> int:
                     help="one level row replacing the level table, 11 comma-separated values: d_lo, d_hi, robot "
                          "spread deg, behind offset deg, object start yaw deg, goal yaw change deg, pos tol m, yaw tol "
                          "deg, hold s, max mass, min mass (use with --fixed-difficulty --fixed-level 0)")
+    ap.add_argument("--extra-levels", default="",
+                    help="further level rows after --pilot-level, ';'-separated (same 11 columns); used by --level-mix")
+    ap.add_argument("--level-mix", default="",
+                    help="fixed level-mix schedule over the levels, e.g. 0:0.5,0.5,0;600:0.25,0.45,0.3 (start iteration: "
+                         "weights); each phase reassigns every env a level and redraws object masses in its window")
+    ap.add_argument("--solo-agent", type=int, default=-1,
+                    help="solo control: train only robot k (0/1); the other is parked 40 m away with zero actions")
     ap.add_argument("--pilot-episode-s", type=float, default=0.0, help="episode length with --pilot-level")
     ap.add_argument("--dyaw-choices", action="store_true",
                     help="goal heading change is -1, 0 or +1 x the level's value, equally often (left / straight / right)")
@@ -411,6 +418,11 @@ def main() -> int:
     if a.pair == "spot_arm" and not (a.scratch or a.resume or a.init_from or a.init_actors):
         raise SystemExit("--pair spot_arm has no Stage 2 policies to start from: pass --scratch (or --resume / --init-from)")
     pilot_level = tuple(float(x) for x in a.pilot_level.split(",")) if a.pilot_level else ()
+    extra_levels = tuple(tuple(float(x) for x in r.split(",")) for r in a.extra_levels.split(";")) if a.extra_levels else ()
+    level_mix = tuple((int(ph.split(":")[0]), tuple(float(x) for x in ph.split(":")[1].split(",")))
+                      for ph in a.level_mix.split(";")) if a.level_mix else ()
+    if level_mix and (not a.fixed_difficulty or len(level_mix[0][1]) != 1 + len(extra_levels) or level_mix[0][0] != 0):
+        raise SystemExit("--level-mix: needs --fixed-difficulty, a first phase at 0, one weight per level")
     set_env(models)
     import torch
     import yaml
@@ -487,7 +499,8 @@ def main() -> int:
                                  fixed_difficulty=a.fixed_difficulty, track=a.track, track_w=a.track_w,
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps)
+                                 hand_obs=a.hand_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
+                                 extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
     env_cfg.seed = a.seed
     drop_rewards = tuple(x.strip() for x in a.drop_rewards.split(",") if x.strip())
@@ -526,7 +539,8 @@ def main() -> int:
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   arm=a.arm if a.pair == "spot_arm" else "", pilot_level=pilot_level,
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs,
-                  turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, bc_data=a.bc_data, bc_coef=a.bc_coef,
+                  turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
+                  solo_agent=a.solo_agent, bc_data=a.bc_data, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,
@@ -557,10 +571,13 @@ def main() -> int:
     if a.fixed_difficulty:  # re-apply the declared settings after any warm start / resume, and check the
         g_ = env.command_manager.get_term("goal")  # episodes already running were drawn with them
         g_.level = a.fixed_level
+        if level_mix:  # after the startup mass event and any resume (the step counter sets the phase): draw now
+            g_.mix_phase = -1
+            g_._apply_level_mix()
         if getattr(g_, "tol_table", None) is not None:
             g_.tol_level = len(g_.cfg.tol_levels) - 1
             assert bool((g_.env_tol_level == g_.tol_level).all()), "fixed difficulty: episodes at another tolerance"
-        assert bool((g_.env_level == a.fixed_level).all()), "fixed difficulty: episodes at another level"
+        assert level_mix or bool((g_.env_level == a.fixed_level).all()), "fixed difficulty: episodes at another level"
         print(f"[marl2] fixed difficulty: level {g_.level}, tolerance level {getattr(g_, 'tol_level', 0)} (finest), "
               f"mass window {train_mass or 'the level'}, shapes {train_shapes or 'Stage 2 split'}")
     if a.transfer_check:

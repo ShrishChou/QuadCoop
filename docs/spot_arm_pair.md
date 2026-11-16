@@ -324,3 +324,37 @@ If T3 improves settling, the next step is IPPO vs MAPPO with the same demonstrat
 **Next, if the pilot learns:** the ordinary approach distance and 40 kg; then the four policies on the ten-object,
 20–80 kg benchmark (`eval_coop2.py` already takes these checkpoints); three seeds for B and D. If PPO mostly
 body-pushes and barely explores the arms, the next run is MAPPO initialized from planner demonstrations.
+
+## Heavy transport (wave 4, `slurm/submit_spot_arm_heavy.sh`)
+
+Why: on the 1 m / 20 kg pilot task one Spot can move the object, and the pairs learned a role split rather than a
+joint push. `sa_mappo_learned60_s0`: in 21 of 120 episodes one robot barely touches the object and the episode still
+succeeds (robot 1 idles on right turns, robot 2 on left). On the standard evaluator (long object, 192 episodes,
+swapped starts) the Spot-arm pairs spend 6-7% of the time with both robots pushing (armless Spot pair: 40-41%) and
+score 4-23% at 40 kg (armless Spot pair 81-86%, ANYmal + Spot 92-94%). The push-share numbers are fractions of
+episode time each robot is classified as pushing; they overlap, so the two can sum above one.
+
+"Partner parked" (solo_k) measures reliance on a present partner, not physical need: the ANYmal of the ANYmal + Spot
+policy scores 1-3% alone, while the single-robot ANYmal policy succeeds about 80% of the time on the same tasks. The
+solo control below is the fair comparison.
+
+Runs (MAPPO, seed 0, from scratch, r7, 4096 envs, 4000 iterations, identical task draws and schedule):
+
+| run | robots | arms |
+|---|---|---|
+| `sa_heavy_learned_s0` | two Spot-arms | joint-target arms |
+| `sa_heavy_stowed_s0` | two Spot-arms | stowed |
+| `sa_heavy_solo_s0` | spotarm1 alone (`--solo-agent 0`: partner parked 40 m away, zero actions, its falls do not end episodes) | joint-target arm |
+
+Levels (`--pilot-level` + `--extra-levels`): L0 1 m 18-22 kg; L1 1.5-2.5 m 38-42 kg; L2 2-3 m 40-60 kg. Randomized
+rear-side starts (each robot within +-25 deg of behind, at least 60 deg apart, 0.3-0.9 m gap, +-20 deg yaw); goal
+heading change 0 / +-60 deg; success 0.10 m / 6 deg held 1 s; 40 s episodes at every level. These are not the
+turn-in-place starts (one robot behind, one in front).
+
+Schedule (`--level-mix`, fixed, not adaptive, so every run sees the same exposure): weights L0/L1/L2 0.5/0.5/0 from
+iteration 0, 0.3/0.4/0.3 from 800, 0.2/0.3/0.5 from 1600. Object masses are drawn once per env at startup, so at
+each phase change every env is reassigned a level and its object mass is redrawn inside that level's window (one
+`set_const`); the log prints the realized mass range and distance per level (`[level mix]`).
+
+Evaluation: `pair_eval.py --turn 60 --horizon 40` at 20 kg / 1 m, 40 kg / 2 m and 60 kg / 3 m (`sa-heavy-<run>-*`),
+swapped starts, arm ablation and solo_1 / solo_2. For the solo run, solo_1 is the trained condition.

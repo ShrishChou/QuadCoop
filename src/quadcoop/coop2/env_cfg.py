@@ -220,7 +220,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
                        dyaw_choices: bool = False, hand_obs: bool = False, turn_signs: bool = False,
-                       arm_hold_steps: int = 0) -> ManagerBasedRlEnvCfg:
+                       arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
+                       solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
     reward_set:
       "r3" first runs.
@@ -386,8 +387,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     if pilot_level:  # one level of the caller's choosing (Spot-arm turn pilot: docs/spot_arm_pair.md)
         assert len(pilot_level) == len(cfg.commands["goal"].levels[0]), pilot_level
         cfg.commands["goal"].levels = (tuple(float(x) for x in pilot_level),)
+        for row in extra_levels:  # heavy-transport schedule: further rows after the pilot row (level_mix picks)
+            assert len(row) == len(pilot_level), row
+            cfg.commands["goal"].levels += (tuple(float(x) for x in row),)
         if pilot_episode_s > 0:
             cfg.episode_length_s = float(pilot_episode_s)
+    assert not extra_levels or pilot_level, "extra_levels extend --pilot-level"
+    cfg.commands["goal"].level_mix = tuple((int(s), tuple(float(x) for x in w)) for s, w in level_mix)
+    cfg.commands["goal"].solo_agent = int(solo_agent)
     if short_tasks:  # request-tracking pilot: one level of short segments (docs/request_tracking.md)
         cfg.commands["goal"].levels = (SHORT_LEVEL,)
         cfg.episode_length_s = SHORT_EPISODE_S
@@ -567,7 +574,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
 
     # -- terminations ----------------------------------------------------------------------------------
     cfg.terminations = {"time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True)}
-    for a in AGENTS:
+    for k, a in enumerate(AGENTS):
+        if solo_agent >= 0 and k != solo_agent:  # solo control: the parked robot's falls do not end episodes
+            continue
         cfg.terminations[f"{a}_fell"] = TerminationTermCfg(
             func=falls.fallen, params={"asset_name": a, "nominal_height": SPECS[a].nominal_height})
     cfg.terminations["box_tipped"] = TerminationTermCfg(func=hb.box_tipped)

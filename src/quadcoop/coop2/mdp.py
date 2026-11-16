@@ -1753,6 +1753,51 @@ class CoopPush2Command(Push2Command):
             sc.episode_end(env_ids, self.metrics["success"][env_ids])
         return super().reset(env_ids)
 
+    def _apply_level_mix(self) -> None:
+        """cfg.level_mix: on entering a new phase (training iteration from the env step counter, which a resume
+        restores), reassign every env's level by the phase's weights and redraw its trainable objects' masses
+        inside that level's mass window (uniform in mass, as at startup), then recompute the model constants."""
+        c, dev = self.cfg, self.device
+        it = int(self._env.common_step_counter) // c.steps_per_iter
+        ph = max(i for i, (s, _) in enumerate(c.level_mix) if it >= s or i == 0)
+        if ph == getattr(self, "mix_phase", -1):
+            return
+        import math
+
+        from mjlab.envs.mdp.dr import pseudo_inertia
+        from mjlab.managers.event_manager import RecomputeLevel
+        from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+        from quadcoop.stage1b.shapes import NOMINAL_MASS
+        from quadcoop.stage1c.env_cfg import UNIFORM_MASS
+
+        w = torch.tensor(c.level_mix[ph][1], dtype=torch.float32, device=dev)
+        assert len(w) == len(self.table), (c.level_mix[ph], len(self.table))
+        n = self.num_envs
+        self.mix_level = torch.multinomial(w / w.sum(), n, replacement=True)
+        names = [nm for nm, ok in zip(OBJ_NAMES2, self.train_mask.tolist(), strict=True) if ok]
+        for k in range(len(self.table)):
+            ids = (self.mix_level == k).nonzero().flatten()
+            if len(ids) == 0:
+                continue
+            lo, hi = float(self.table[k, MASS_LO]), float(self.table[k, MASS_HI])
+            alpha = (0.5 * math.log(lo / NOMINAL_MASS), 0.5 * math.log(hi / NOMINAL_MASS))
+            for nm in names:
+                ac = SceneEntityCfg(nm)
+                ac.resolve(self._env.scene)
+                pseudo_inertia(self._env, ids, alpha_range=alpha, asset_cfg=ac, distribution=UNIFORM_MASS)
+        self._env.sim.recompute_constants(RecomputeLevel.set_const)
+        self.mix_phase = ph
+        body = self.objs[OBJ_NAMES2.index(names[0])].indexing.body_ids[0]
+        ms = self._env.sim.model.body_mass[:, body]
+        rows = []
+        for k in range(len(self.table)):
+            sel = self.mix_level == k
+            if bool(sel.any()):
+                rows.append(f"level {k}: {int(sel.sum())} envs, {names[0]} {float(ms[sel].min()):.1f}-"
+                            f"{float(ms[sel].max()):.1f} kg, d {float(self.table[k, 0]):.1f}-{float(self.table[k, 1]):.1f} m")
+        print(f"[level mix] iteration {it}: phase {ph} weights {list(c.level_mix[ph][1])}; " + "; ".join(rows), flush=True)
+
     def _resample_command(self, env_ids: torch.Tensor) -> None:
         c, dev = self.cfg, self.device
         m = len(env_ids)
@@ -1765,9 +1810,13 @@ class CoopPush2Command(Push2Command):
             self.env_tol_level[env_ids] = self.tol_level
             self.tol_pos[env_ids] = self.tol_table[self.tol_level, 0]
             self.tol_yaw[env_ids] = torch.deg2rad(self.tol_table[self.tol_level, 1])
-        lvl = torch.full((m,), self.level, dtype=torch.long, device=dev)
-        replay = torch.rand(m, device=dev) < c.replay_frac
-        lvl = torch.where(replay, torch.randint(0, self.level + 1, (m,), device=dev), lvl)
+        if c.level_mix:
+            self._apply_level_mix()
+            lvl = self.mix_level[env_ids]
+        else:
+            lvl = torch.full((m,), self.level, dtype=torch.long, device=dev)
+            replay = torch.rand(m, device=dev) < c.replay_frac
+            lvl = torch.where(replay, torch.randint(0, self.level + 1, (m,), device=dev), lvl)
         self.env_level[env_ids] = lvl
         t = self.table[lvl]
 
@@ -1879,6 +1928,8 @@ class CoopPush2Command(Push2Command):
             gaps = sc.get("gaps", gaps)
             yaw_noise = sc.get("yaw_noise", yaw_noise)
             park = sc.get("park", park)  # eval "solo": the other robot stands far away
+        elif c.solo_agent >= 0:  # solo control (training): the other robot parked every episode
+            park[1 - c.solo_agent] = torch.ones(m, dtype=torch.bool, device=dev)
         self.goal_turn[env_ids] = fold(wrap(goal_yaw - obj_heading), self.sym[shape])
         if self.draw_log is not None:  # task bank generation: everything the placement below depends on
             self.draw_log.update(
@@ -2118,6 +2169,15 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     min_separation_deg: float = 60.0
     robot_yaw_noise_deg: float = 20.0
     park_distance: float = 40.0
+    # solo control (training): robot solo_agent (0 / 1) alone, the other parked park_distance m away every episode
+    # (actions zeroed by the trainer, its falls ignored); -1 = both robots
+    solo_agent: int = -1
+    # fixed level-mix schedule (same for every run that uses it, not adaptive): ((start iteration, (w_0, w_1, ..)),
+    # ..) over the level table. At each phase change every env is reassigned a level by the weights and its
+    # trainable objects' masses are redrawn inside that level's window (one set_const); an env's episodes then use
+    # its level until the next phase. () = off.
+    level_mix: tuple = ()
+    steps_per_iter: int = 24  # rollout steps per training iteration (level_mix phases are in iterations)
     partner_map: bool = False  # second map channel: the partner's footprint
     track_approach: bool = False  # keep each robot's approach potential (r5's approach reward)
     # training-only options (evaluations place robots and objects themselves):

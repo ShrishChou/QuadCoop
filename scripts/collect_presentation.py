@@ -107,8 +107,12 @@ Findings:
 Successes and failures on the same four tasks as 03.
 
 ## 05_spot_arm: two Spots with arms (RAI walker)
-- `transport_*`: 1 m, 20 kg long object, goal turned 60 deg. Arms active 99.2%, arms locked 99.2%, either robot
-  alone 0%: the task needs both robots but not the arms (arm contact under 1%).
+- `transport_*`: 1 m, 20 kg long object, goal turned 60 deg. Arms active 99.2%, arms locked 99.2%: the arms are
+  not needed (arm contact under 1%). The pair learned a role split rather than a joint push: in 18% of episodes one
+  robot pushes alone and still succeeds (robot 1 on right turns, robot 2 on left), and on the standard evaluator
+  only 6-7% of the time is spent co-pushing (armless Spot pair: 40%). "Partner parked" scores 0%, but that tests
+  reliance on the partner being present, not physical need: the ANYmal + Spot policy's ANYmal also scores 1-3% when
+  left alone, while the single-robot ANYmal policy pushes the same objects about 80% of the time.
 - `turn_in_place_*`: 20 kg long object, centre held at the goal, turned 40 deg clockwise (cw) / counter-clockwise
   (ccw); one robot starts behind it and one in front.
   - scripted_hands: a scripted two-hand maneuver, 78% (trunk-only script 25%, one robot 0%);
