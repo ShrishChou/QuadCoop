@@ -92,9 +92,11 @@ friction 0.5, plus the two fixed baselines.
   so they need steering.
 - **At 40 kg and above nothing works.** No constant command moves the box 0.2 m in 10 s. The walker was trained to
   track velocity, not to push, and gives way.
-- **Traction also caps Spot.** With RAI's foot friction of 0.7, a robot of roughly 40 kg can push at most about
-  275 N. A 60 kg box at friction 0.5 needs about 295 N. Spot with an arm cannot move the heavy objects alone
-  whatever the controller. That is the case for the mixed team: the heavier ANYmal translates, Spot steers.
+- **Traction estimate (an estimate, not a measured limit).** With foot friction 0.7 and a robot of about 39 kg,
+  friction alone allows roughly 270 N of horizontal force; a 60 kg box at friction 0.5 needs about 295 N to slide.
+  So the heavy cases are near what friction allows for a robot pushing alone. The measured stall describes this
+  walker, posture and contact; posture, contact location (the arm lowers or raises the line of force) and joint
+  torque limits change it, and none of those was varied systematically here.
 - About 30% of random commands made it fall, so the pusher's command range has to be limited.
 - Constant commands only, one seed, plain MuJoCo with RAI's contact settings.
 
