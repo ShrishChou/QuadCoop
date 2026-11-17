@@ -117,3 +117,63 @@ QuadCoop's (0.005 s × 4).
   rate limit.
 
 Next: the 20 kg steering pusher (step 3), arm active against arm stowed.
+
+## Pushing walker (2026-11-17): RAI's walker fine-tuned with ANYmal v1's push curriculum
+
+Why: the frozen walker gives way under load (step 2 above): with the default posture and these contacts, no constant
+command moved 40 kg. That is a property of this walker, posture and contact, not a measured limit of the robot.
+
+Code: `src/quadcoop/spot_arm_walker.py` (task `QuadCoop-Walker-SpotArm`), `ROBOT=spot_arm sbatch
+slurm/train_walker.sbatch`; resolved configuration of the run in `configs/walker_spot_arm/push_ft_s1/`. Check script
+`scripts/spot_arm/walker_ft_check.py` (any policy in this env: falls by reason, height, tracking; `--compare` checks
+the env's actor input against `RaiWalker`'s term by term). Use a trained walker in the pair env with
+`QUADCOOP_SPOT_ARM_WALKER=<model_N.pt>`.
+
+- **Start:** RAI's network (84 -> 512 -> 256 -> 128 -> 12), weights loaded from `spot_locomotion.onnx`; raw inputs
+  (no normalizer). Checked: the iteration-0 checkpoint equals RAI's weights exactly; the actor stays frozen for the
+  first 100 iterations while the new critic learns; all values finite.
+- **Inputs and outputs:** RAI's 84 inputs in RAI's order, its 12 leg outputs x 0.2 + RAI's offsets (Isaac -> MuJoCo
+  order). `--compare`: identical to `RaiWalker` (max difference 0.0000 for every part).
+- **Recipe:** walker v1's (push episodes with objects on the line of travel, 25% free walk, push-progress reward,
+  mass curriculum gated on falls and tracking), objects 5 -> 40 kg, foot friction 0.6-0.9 (pair env: 0.7),
+  3000 iterations, lr 1e-4 (adaptive, KL 0.005), std 0.25 -> learned.
+- **Run `push_ft_s0` is invalid.** The joint-reset event covered only the legs, so the arm started every episode at
+  the model's zero pose and was then driven to stowed, throwing the robot over (frozen RAI walker: every episode
+  ended by body-ground contact at 0.34 s). The fine-tune learned to survive this and stood unusually tall (0.58-0.62 m).
+  Fixed (reset on all joints): the frozen RAI walker then runs 10 s without a fall, at 0.49-0.52 m, within
+  0.08-0.11 m/s of the command, with the arm moving and with the training noise. `push_ft_s1` is the run.
+
+### What it trains on (coverage audit)
+
+| load or motion | in `push_ft_s1` | note |
+|---|---|---|
+| arm configurations changing while walking | yes | new goal every 2-6 s: stowed 40%, RAI's "out" 20%, random 40% (shoulder yaw +-0.4, pitch -2.6..-0.3, elbow 0.5..2.9, wrist -1.5..0.8), at most 1.5 rad/s |
+| sustained body load from objects | yes | objects on the line of travel, 5 -> 40 kg, contact anywhere on the robot (mostly the front) |
+| sustained force at the hand | no | the arm touches objects only by chance; hand contact gives different moments from trunk contact |
+| short disturbances | yes | velocity kicks every 4-8 s (horizontal) |
+| walk -> push -> release | partly | objects appear on the line and are replaced once passed or lost; direction changes every 5-10 s; no explicit stop-while-pushing or back-off-and-release |
+| torso posture commands | no | always roll 0, pitch 0, height 0.52 (RAI trained height 0.25-0.65 m, roll and pitch +-0.35): the fine-tune may lose the posture interface |
+
+Smallest additions, to run as a separate continuation from `push_ft_s1` (labelled `push_ft_s1_handload`) so the two
+are compared:
+1. torso commands sampled per segment inside a bounded range (height 0.40-0.55 m, pitch +-0.2 rad, roll 0), so the
+   posture interface survives and can be used by the pusher;
+2. a sustained external force at the gripper body when the arm is out: ramp-hold-ramp, 0-100 N, mostly against the
+   hand's forward direction, with the walker commanded forward or holding;
+3. release segments: while pushing, command 0 or a slow back-off for 1-2 s, then resume.
+
+### ReLIC (github.com/rai-opensource/relic) against what we import
+
+- **Same network.** ReLIC's pretrained `policy.pt` is identical, weight for weight, to Judo's `spot_locomotion.onnx`
+  (largest difference 0.0): our imported walker is ReLIC's.
+- **How it was trained** (Isaac Lab, rsl_rl, four phases with changing reward weights): velocity commands +-1 m/s,
+  +-1 rad/s; arm targets sampled over the full joint range along 1-3 s trajectories with 0.5-2 s holds; torso roll and
+  pitch +-0.35 rad, height 0.25-0.65 m; one leg can be commanded instead of walking; friction 0.3-1.0; base mass
+  +-2.5 kg, arm mass +-0.5 kg; reset roll and pitch +-0.5 rad, joints +-0.2 rad; external force on the body +-5 N and
+  torque +-2 N m every 7-10 s; velocity kicks. Observation noise: linear velocity 0.1, angular 0.2, joints 0.05,
+  joint velocity 0.5 (ours: 0.1, 0.1, 0.01, 0.5).
+- **What it lacks for pushing:** no objects, no sustained loads (the 5 N external force is a disturbance), no hand
+  contact. That is consistent with the walker giving way under load.
+- **To reuse:** its torso ranges (for the posture test and the continuation above), its arm trajectory sampling
+  (wider than ours), its friction and mass randomization, and its staged reward weights (base height and orientation
+  tracking weights grow over the phases; worth adopting if the fine-tune drifts in posture).

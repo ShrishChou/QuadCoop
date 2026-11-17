@@ -31,7 +31,8 @@ ROBOT=${ROBOT:-anymal_c}
 case "$ROBOT" in
   anymal_c) TASK=QuadCoop-Walker-AnymalC ;;
   spot)     TASK=QuadCoop-Walker-Spot ;;
-  *) echo "ROBOT must be anymal_c or spot"; exit 1 ;;
+  spot_arm) TASK=QuadCoop-Walker-SpotArm ;;  # RAI walker fine-tuned to push (spot_arm_walker.py)
+  *) echo "ROBOT must be anymal_c, spot or spot_arm"; exit 1 ;;
 esac
 
 ARGS=(--env.scene.num-envs "${NUM_ENVS:-4096}"

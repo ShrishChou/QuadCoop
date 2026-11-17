@@ -160,6 +160,14 @@ class RaiWalker:
         for i in (0, 2, 4, 6):
             net[i].weight.data.copy_(w[f"actor.{i}.weight"])
             net[i].bias.data.copy_(w[f"actor.{i}.bias"])
+        ck = os.environ.get("QUADCOOP_SPOT_ARM_WALKER", "")  # the push-trained walker (spot_arm_walker.py)
+        if ck:
+            sd = torch.load(ck, map_location="cpu", weights_only=False)["actor_state_dict"]
+            assert not any(k.startswith("obs_normalizer") for k in sd), "expected an actor without normalization"
+            for i in (0, 2, 4, 6):
+                net[i].weight.data.copy_(sd[f"mlp.{i}.weight"])
+                net[i].bias.data.copy_(sd[f"mlp.{i}.bias"])
+            print(f"[spot_arm] walker weights from {ck}", flush=True)
         self.net = net.to(device).eval()
         C = _constants()
         self.i2m = torch.tensor(C["ISAAC_TO_MUJOCO_INDICES_12"], device=device)

@@ -7,6 +7,8 @@
                                         logs/rsl_rl/walker_anymal_c_compliant/
     QuadCoop-Walker-AnymalC-Compliant-v21  walker v2.1 (walker_env_cfg.py): v2 plus felt force field,
                                         unstuck mass curriculum, pure turns, slower force filter
+    QuadCoop-Walker-SpotArm             Spot with arm: RAI's walker fine-tuned with v1's push curriculum
+                                        (spot_arm_walker.py); logs under logs/rsl_rl/walker_spot_arm/
     QuadCoop-Walker-AnymalC-Compliant-v22  walker v2.2: v2.1 without the field, k = 500, directional
                                         back-off, planar / yaw fine tracking on smoothed velocity
 """
@@ -57,4 +59,15 @@ register_mjlab_task(
     play_env_cfg=make_walker_env_cfg(ANYMAL_C, play=True, v22=True),
     rl_cfg=walker_ppo_cfg(f"{ANYMAL_C.name}_compliant"),
     runner_cls=VelocityOnPolicyRunner,
+)
+
+# Spot with its arm: RAI's walker, fine-tuned to push (spot_arm_walker.py)
+from quadcoop.spot_arm_walker import make_runner_cls, make_spot_arm_walker_env_cfg, spot_arm_walker_ppo_cfg  # noqa: E402
+
+register_mjlab_task(
+    task_id="QuadCoop-Walker-SpotArm",
+    env_cfg=make_spot_arm_walker_env_cfg(),
+    play_env_cfg=make_spot_arm_walker_env_cfg(play=True),
+    rl_cfg=spot_arm_walker_ppo_cfg(),
+    runner_cls=make_runner_cls(),
 )
