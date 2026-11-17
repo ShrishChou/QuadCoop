@@ -86,6 +86,16 @@ class RaiLegAction(ActionTerm):
         self.arm_timer = torch.zeros(n, device=dev)
         self.torso_default = torch.tensor([0.0, 0.0, sa.STAND_HEIGHT_CMD], device=dev)
         self.torso = self.torso_default.repeat(n, 1)  # commanded roll, pitch, height (posture variant: sampled)
+        # hand-load variant (push_ft_s3_handload): an external force on the hand or the trunk front, ramped
+        if cfg.hand_load:
+            self.load_bodies = [self.robot.find_bodies(b)[0][0] for b in (sa.GRIPPER_BODY, "body")]
+        self.load_mag = torch.zeros(n, device=dev)        # current magnitude (N)
+        self.load_goal = torch.zeros(n, device=dev)       # magnitude it ramps to
+        self.load_off = torch.zeros(n, device=dev)        # direction offset from "against the command" (rad)
+        self.load_up = torch.zeros(n, device=dev)         # vertical share of the direction
+        self.load_on_hand = torch.ones(n, dtype=torch.bool, device=dev)
+        self.load_timer = torch.zeros(n, device=dev)
+        self.load_scale = 1.0                             # curriculum: share of load_max reachable now
 
     @property
     def action_dim(self) -> int:
@@ -113,6 +123,35 @@ class RaiLegAction(ActionTerm):
         lo, hi = self.cfg.hold_s
         self.arm_timer[ids] = lo + torch.rand(m, device=self.device) * (hi - lo)
 
+    def _new_loads(self, ids: torch.Tensor) -> None:
+        m = ids.numel()
+        if m == 0:
+            return
+        r = lambda: torch.rand(m, device=self.device)  # noqa: E731
+        on = r() < self.cfg.p_load  # else a release segment: the force ramps to 0
+        lo = self.cfg.load_min_frac
+        self.load_goal[ids] = torch.where(on, (lo + (1 - lo) * r()) * self.cfg.load_max * self.load_scale,
+                                          torch.zeros(m, device=self.device))
+        # direction: against the commanded travel +- spread; some segments any direction (disturbances)
+        anyway = r() < self.cfg.p_load_any
+        self.load_off[ids] = torch.where(anyway, (2 * r() - 1) * torch.pi, (2 * r() - 1) * self.cfg.load_spread)
+        self.load_up[ids] = (2 * r() - 1) * self.cfg.load_up
+        self.load_on_hand[ids] = r() < self.cfg.p_load_hand
+        lo_s, hi_s = self.cfg.load_hold_s
+        self.load_timer[ids] = lo_s + r() * (hi_s - lo_s)
+
+    def load_force_w(self) -> torch.Tensor:
+        """(n, 3) world-frame force of the current load: opposite the commanded planar velocity (body forward when
+        the command is near zero), turned by the segment's offset, with its vertical share."""
+        twist = self._env.command_manager.get_term(self.cfg.twist_name).command
+        v = twist[:, :2]
+        ang = torch.where(torch.linalg.norm(v, dim=-1) > 0.1, torch.atan2(v[:, 1], v[:, 0]), torch.zeros_like(v[:, 0]))
+        ang = ang + torch.pi + self.load_off
+        q = self.robot.data.root_link_quat_w
+        yaw = torch.atan2(2 * (q[:, 0] * q[:, 3] + q[:, 1] * q[:, 2]), 1 - 2 * (q[:, 2] ** 2 + q[:, 3] ** 2))
+        d = torch.stack([torch.cos(ang + yaw), torch.sin(ang + yaw), self.load_up], -1)
+        return d / torch.linalg.norm(d, dim=-1, keepdim=True) * self.load_mag.unsqueeze(-1)
+
     def command25(self) -> torch.Tensor:
         twist = self._env.command_manager.get_term(self.cfg.twist_name)
         return sa.RaiWalker.command(twist.command[:, :3], self.arm_target, self.torso)
@@ -127,6 +166,20 @@ class RaiLegAction(ActionTerm):
         self.arm_target += torch.clamp(self.arm_goal - self.arm_target, -step, step)
         legs = actions[:, self.i2m] * 0.2 + self.loff[self.i2m]
         self._joint.process_actions(torch.cat([legs, self.arm_target], -1))
+        if self.cfg.hand_load:
+            ramp_iters = self.cfg.load_curriculum_iters
+            if ramp_iters > 0:  # 24 env steps per PPO iteration
+                self.load_scale = min(1.0, 0.3 + 0.7 * self._env.common_step_counter / (24 * ramp_iters))
+            self.load_timer -= dt
+            self._new_loads(torch.nonzero(self.load_timer <= 0.0).squeeze(-1))
+            rate = self.cfg.load_max / self.cfg.load_ramp_s * dt
+            self.load_mag += torch.clamp(self.load_goal - self.load_mag, -rate, rate)
+            f = self.load_force_w()
+            n = self.num_envs
+            forces = torch.zeros(n, 2, 3, device=self.device)
+            forces[:, 0] = torch.where(self.load_on_hand.unsqueeze(-1), f, torch.zeros_like(f))
+            forces[:, 1] = torch.where(self.load_on_hand.unsqueeze(-1), torch.zeros_like(f), f)
+            self.robot.write_external_wrench_to_sim(forces, torch.zeros_like(forces), body_ids=self.load_bodies)
 
     def apply_actions(self) -> None:
         self._joint.apply_actions()
@@ -139,6 +192,9 @@ class RaiLegAction(ActionTerm):
         self.arm_goal[ids] = self.stow
         self.arm_target[ids] = self.stow
         self.torso[ids] = self.torso_default
+        self.load_mag[ids] = 0.0
+        self.load_goal[ids] = 0.0
+        self.load_timer[ids] = 1.0 + torch.rand(ids.numel(), device=self.device) * 2.0  # first load after 1-3 s
         # first arm goal after a short stowed start (the robot is dropped at reset)
         self.arm_timer[ids] = 0.5 + torch.rand(ids.numel(), device=self.device) * 1.5
 
@@ -156,6 +212,21 @@ class RaiLegActionCfg(ActionTermCfg):
     p_torso_default: float = 0.4
     torso_height: tuple[float, float] = (0.40, 0.55)
     torso_pitch: float = 0.2
+    # hand-load variant (push_ft_s3_handload): segments of 1.5-5 s; in each, with p_load a force of
+    # load_min_frac..1 x load_max (x the curriculum scale), else a release (ramps to 0); ramps take load_ramp_s from
+    # 0 to load_max. Direction: against the commanded travel +- load_spread (p_load_any: any direction), vertical
+    # share +- load_up; on the hand (p_load_hand) or the trunk.
+    hand_load: bool = False
+    load_max: float = 100.0
+    load_min_frac: float = 0.2
+    p_load: float = 0.65
+    p_load_any: float = 0.15
+    p_load_hand: float = 0.7
+    load_spread: float = 0.5
+    load_up: float = 0.3
+    load_ramp_s: float = 0.6
+    load_hold_s: tuple[float, float] = (1.5, 5.0)
+    load_curriculum_iters: int = 500
 
     def build(self, env: ManagerBasedRlEnv) -> RaiLegAction:
         return RaiLegAction(self, env)
@@ -220,7 +291,15 @@ def torso_track(env, height_std: float = 0.05, tilt_std: float = 0.1) -> torch.T
     return torch.exp(-(h_err.square() + g_err.square()))
 
 
-def make_spot_arm_walker_env_cfg(play: bool = False, posture: bool = False):
+def load_force_obs(env) -> torch.Tensor:
+    """Critic only: the applied load in the body frame (N / 100) and whether it is on the hand."""
+    t = _term(env)
+    from mjlab.utils.lab_api.math import quat_apply_inverse
+    f = quat_apply_inverse(env.scene["robot"].data.root_link_quat_w, t.load_force_w()) / 100.0
+    return torch.cat([f, t.load_on_hand.float().unsqueeze(-1)], -1)
+
+
+def make_spot_arm_walker_env_cfg(play: bool = False, posture: bool = False, hand_load: bool = False):
     from quadcoop.walker_env_cfg import make_walker_env_cfg
 
     _setdefault_env("QUADCOOP_WARMUP_ITERS", "100")
@@ -249,6 +328,12 @@ def make_spot_arm_walker_env_cfg(play: bool = False, posture: bool = False):
         cfg.actions["joint_pos"].torso_sample = True
         cfg.rewards.pop("base_height", None)
         cfg.rewards["torso_track"] = RewardTermCfg(func=torso_track, weight=2.0)
+    if hand_load:  # push_ft_s3_handload: sustained forces at the hand / trunk, release segments (docs/spot_arm.md)
+        a = cfg.actions["joint_pos"]
+        a.hand_load = True
+        a.load_max = float(os.environ.get("QUADCOOP_HAND_LOAD_MAX", "100"))
+        a.load_curriculum_iters = int(os.environ.get("QUADCOOP_HAND_LOAD_RAMP", "500"))
+        cfg.observations["critic"].terms["load_force"] = ObservationTermCfg(func=load_force_obs)
     return cfg
 
 
@@ -283,6 +368,11 @@ def make_runner_cls():
             missing = actor.load_state_dict(rai_actor_weights(), strict=False)
             assert not [k for k in missing.missing_keys if k.startswith("mlp.")], missing
             print("[spot_arm_walker] actor initialised from RAI's spot_locomotion.onnx", flush=True)
+            init = os.environ.get("QUADCOOP_WALKER_INIT", "")
+            if init:  # a continuation: actor (and its std) from an earlier fine-tune, a fresh critic warmed up again
+                sd = torch.load(init, map_location=device, weights_only=False)["actor_state_dict"]
+                actor.load_state_dict(sd)
+                print(f"[spot_arm_walker] actor initialised from {init}", flush=True)
             self._warm = int(os.environ.get("QUADCOOP_CRITIC_WARMUP", "100"))
             self._n_upd = 0
             base_lr = self.alg.learning_rate

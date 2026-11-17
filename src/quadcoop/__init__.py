@@ -72,6 +72,15 @@ register_mjlab_task(
     runner_cls=make_runner_cls(),
 )
 
+# hand-load variant (push_ft_s3_handload): the posture variant + sustained 0-100 N forces at the hand / trunk
+register_mjlab_task(
+    task_id="QuadCoop-Walker-SpotArm-HandLoad",
+    env_cfg=make_spot_arm_walker_env_cfg(posture=True, hand_load=True),
+    play_env_cfg=make_spot_arm_walker_env_cfg(play=True, posture=True, hand_load=True),
+    rl_cfg=spot_arm_walker_ppo_cfg(),
+    runner_cls=make_runner_cls(),
+)
+
 # posture variant (push_ft_s2): torso commands sampled and followed
 register_mjlab_task(
     task_id="QuadCoop-Walker-SpotArm-Posture",

@@ -164,6 +164,29 @@ are compared:
    hand's forward direction, with the walker commanded forward or holding;
 3. release segments: while pushing, command 0 or a slow back-off for 1-2 s, then resume.
 
+### Runs after `push_ft_s1`
+
+- **`push_ft_s2_posture`** (task `QuadCoop-Walker-SpotArm-Posture`, from RAI's weights, 3000 iterations): addition 1.
+  `push_ft_s1` drifted to 0.615 m (torso error 11.7 cm against RAI's 2.6 cm) because nothing rewarded following the
+  torso command. Here 40% of segments keep the default torso, 60% sample height 0.40-0.55 m and pitch +-0.2 rad;
+  the fixed 0.5 m height reward is replaced by `torso_track` (weight 2). Final: no falls, mass curriculum at its 40 kg
+  cap, torso_track 1.71 / 2.0, planar velocity error 0.137 m/s (`push_ft_s1` 0.19, RAI about 0.10).
+- **`push_ft_s3_handload`** (task `QuadCoop-Walker-SpotArm-HandLoad`, `ROBOT=spot_arm_handload`): additions 2 and 3,
+  continued from `push_ft_s2_posture` (`QUADCOOP_WALKER_INIT=<model.pt>`: its actor, a fresh critic, 100 frozen
+  iterations). Load segments of 1.5-5 s: 65% a force of 20-100% of 100 N (reachable share 30% -> 100% over the first
+  500 iterations), else a release (force ramps to 0). Ramps take 0.6 s from 0 to 100 N. Direction: against the
+  commanded travel +-0.5 rad (15% of segments any direction), vertical share +-0.3; on the gripper (70%) or the
+  trunk. The critic sees the load (body frame) and where it acts; the actor does not (it has to feel it).
+  Objects 5 -> 60 kg, restarted at 40 kg. Stopping comes from the 15% standing commands, back-off from backward
+  commands; both now happen under load because the force runs on its own timer.
+- **Load test** (`scripts/spot_arm/walker_load_test.py`; the walker comparison and the posture test). No objects: the
+  load is an external force, so every policy, arm pose and torso gets the identical push. Ramp: forward 0.3 m/s
+  against a force rising 20 N/s to 250 N, arm stowed (force on the trunk) or braced (RAI's "out" pose, force on the
+  hand), torso default (0.52 m) or lowered (0.45 m, pitch 0.1); held force (at stall or fall), displacement, yaw
+  drift, foot slip, leg torque saturation, falls. Sweep: forward / sideways / backward / turn / stop at 0 and 60 N.
+  Choosing the torso range from it: the lowest height and pitch that raise the held force without more slip,
+  saturation or falls; not minimum height alone.
+
 ### ReLIC (github.com/rai-opensource/relic) against what we import
 
 - **Same network.** ReLIC's pretrained `policy.pt` is identical, weight for weight, to Judo's `spot_locomotion.onnx`
