@@ -69,6 +69,11 @@ FORMATIONS = {  # bearing offsets (deg) of (anymal1, anymal2), the frame they ar
     "goal_behind": ((180.0, 0.0), "goal", ("behind", "goal_side")),
 }
 
+FORMATIONS3 = {  # teams of three (--pair anymal3): the same frames, the middle robot straight behind / at the back
+    "standard": ((-50.0, 0.0, 50.0), "world", ("behind_left", "behind", "behind_right")),
+    "flank": ((-90.0, 180.0, 90.0), "goal", ("right", "behind", "left")),
+}
+
 SCENARIOS = (  # name, distance (m), direction (deg, + = left, 0 = straight ahead of the robots), turn (deg)
     ("A_straight", 3.0, 0.0, 0.0),
     ("B_left", 3.0, 60.0, 30.0),
@@ -92,6 +97,8 @@ def models_for(a) -> tuple[dict, str]:
         variant = ck.get("variant", "b")
         pair = cfg.get("pair", "mixed")
         what = f"checkpoint {a.checkpoint} (iteration {ck['iter']}, {ck['algo']}, pair {pair})"
+        if a.pair == "anymal3" and pair == "anymal":  # a pair's actors as a trio (anymal3 <- anymal1): the transfer
+            pair, what = "anymal3", what + ", run as a team of three (anymal3 uses anymal1's actor)"
         if a.solo:
             if a.solo not in robot_of(pair):
                 raise SystemExit(f"--solo {a.solo}: this checkpoint's robots are {list(robot_of(pair))}")
@@ -128,7 +135,7 @@ def main() -> int:
     ap.add_argument("--arm-lock", default="",
                     help="Spot-arm checkpoints with learned arms: comma list of robots whose arm is held stowed "
                          "(their arm outputs ignored), or 'all': the arm ablation")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm"), default="mixed",
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm", "anymal3"), default="mixed",
                     help="frozen pair / solo: which two robots (a checkpoint carries its own)")
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
     ap.add_argument("--partner-map", action="store_true",
@@ -209,6 +216,10 @@ def main() -> int:
     stats_dir = ROOT / "evals" / a.name / "eval" / "pair"
     out.mkdir(parents=True, exist_ok=True)
     formations = [x.strip() for x in a.formations.split(",")]
+    if len(AGENTS) == 3:  # teams of three: their own start formations, no swap
+        FORMATIONS.clear()
+        FORMATIONS.update(FORMATIONS3)
+        assert not a.swap, "--swap exchanges two robots' start places"
     bad = [x for x in formations if x not in FORMATIONS]
     if bad:
         ap.error(f"unknown formations {bad}; choose from {list(FORMATIONS)}")
@@ -251,7 +262,7 @@ def main() -> int:
         bi = {c: j for j, c in enumerate(base_cases)}
         jit0 = [[rng.uniform(-10, 10) for _ in AGENTS] for _ in base_cases]
         gap0 = [[rng.uniform(0.3, 0.6) for _ in AGENTS] for _ in base_cases]
-        sw = [(1, 0) if c[4] else (0, 1) for c in cases]
+        sw = [(1, 0) if c[4] else tuple(range(len(AGENTS))) for c in cases]
         jit = torch.tensor([[jit0[bi[c[:3]]][q] for q in sw[j]] for j, c in enumerate(cases)], device=dev)
         gap = torch.tensor([[gap0[bi[c[:3]]][q] for q in sw[j]] for j, c in enumerate(cases)], device=dev)
         offs = torch.tensor([[FORMATIONS[c[3]][0][q] for q in sw[j]] for j, c in enumerate(cases)], device=dev)
@@ -263,7 +274,7 @@ def main() -> int:
         z = torch.zeros(n, device=dev)
         sc = {"shape": obj_idx, "obj_xy_rel": torch.zeros(n, 2, device=dev), "obj_heading": z.clone(),
               "goal_xy_rel": dist.unsqueeze(-1) * torch.stack([torch.cos(gdir), torch.sin(gdir)], -1),
-              "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
+              "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, k] for k in range(len(AGENTS))], "yaw_noise": [z] * len(AGENTS),
               "park": park}
         g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids])
                                       for k, v in sc.items()}
@@ -387,21 +398,28 @@ def main() -> int:
                     pu = {ag: pushing(ag) & live for ag in AGENTS}
                     for ag in AGENTS:
                         push_steps[ag] += pu[ag].float()
-                    both = pu[AGENTS[0]] & pu[AGENTS[1]]
+                    n_pu = sum(pu[ag].long() for ag in AGENTS)
+                    both = n_pu >= 2  # (teams > 2: at least two robots pushing)
                     copush_steps += both.float()
                     for k, ag in enumerate(AGENTS):
                         t_push[ag] = torch.where(pu[ag] & torch.isnan(t_push[ag]), torch.full_like(t_prog, t), t_push[ag])
-                    newf = (first < 0) & (pu[AGENTS[0]] | pu[AGENTS[1]])
-                    first = torch.where(newf, torch.where(pu[AGENTS[0]], 0, 1), first)  # a tie goes to anymal1
-                    pf = torch.where(first == 0, pu[AGENTS[0]], pu[AGENTS[1]])
-                    po = torch.where(first == 0, pu[AGENTS[1]], pu[AGENTS[0]])
+                    pus = torch.stack([pu[ag] for ag in AGENTS], -1)
+                    newf = (first < 0) & pus.any(-1)
+                    first = torch.where(newf, pus.float().argmax(-1), first)  # a tie goes to the lowest index
+                    fi = first.clamp(min=0)
+                    pf = pus.gather(-1, fi.unsqueeze(-1)).squeeze(-1)
+                    po = (n_pu - pf.long()) > 0  # another robot pushes
                     tk = (first >= 0) & po & ~pf & ok
                     take_s += tk.float() * dt
                     take_prog += torch.where(tk, d_prev - d, torch.zeros_like(d))
-                    spread_sum += torch.where(both, torch.linalg.norm(front_point(AGENTS[0]) - front_point(AGENTS[1]), dim=-1),
-                                              torch.zeros(n, device=dev))
-                    rd = torch.linalg.norm(base.scene[AGENTS[0]].data.root_link_pos_w[:, :2]
-                                           - base.scene[AGENTS[1]].data.root_link_pos_w[:, :2], dim=-1)
+                    fps = {ag: front_point(ag) for ag in AGENTS}
+                    pairs_ = [(x, y) for i_, x in enumerate(AGENTS) for y in AGENTS[i_ + 1:]]
+                    spr = torch.stack([torch.where(pu[x] & pu[y], torch.linalg.norm(fps[x] - fps[y], dim=-1),
+                                                   torch.zeros(n, device=dev)) for x, y in pairs_], -1).max(-1).values
+                    spread_sum += torch.where(both, spr, torch.zeros(n, device=dev))
+                    rd = torch.stack([torch.linalg.norm(base.scene[x].data.root_link_pos_w[:, :2]
+                                                        - base.scene[y].data.root_link_pos_w[:, :2], dim=-1)
+                                      for x, y in pairs_], -1).min(-1).values
                     min_rd = torch.where(live, torch.minimum(min_rd, rd), min_rd)
                 live_steps += live.float()
                 d_prev = torch.where(ok, d, d_prev)
@@ -546,7 +564,7 @@ def main() -> int:
                 "copush_frac": (sum(r["copush_frac"] for r in sel) / k) if a.solo is None else None,
                 # share of the time either robot pushes during which both push (lazy partner -> ~0)
                 "copush_share": ((sum(r["copush_frac"] for r in sel)
-                                  / max(1e-9, sum(max(r[f"push_frac_{AGENTS[0]}"], r[f"push_frac_{AGENTS[1]}"]) for r in sel)))
+                                  / max(1e-9, sum(max(r[f"push_frac_{ag}"] for ag in AGENTS) for r in sel)))
                                  if a.solo is None else None),
                 "copush_spread": ((lambda v: sum(v) / len(v) if v else None)(
                     [r["copush_spread"] for r in sel if r["copush_spread"] != ""]) if a.solo is None else None)}
@@ -574,14 +592,16 @@ def main() -> int:
     md = [f"# Pair evaluation: {a.name}", "", f"policy: {what}", "",
           f"success = 10 cm / 6 deg held 1 s within {a.horizon:g} s; precise = 10 cm / 3 deg with the object at rest "
           f"(the training rule); {a.reps} placements per object x scenario x mass; nominal object sizes", "",
-          "## by mass", "", f"| mass | success | precise | {AGENTS[0]} fell | {AGENTS[1]} fell | time to success (s) | robots touching "
-          f"| {AGENTS[0]} pushing | {AGENTS[1]} pushing | both pushing | co-push share | contact spread (m) |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "## by mass", "", "| mass | success | precise | " + " | ".join(f"{ag} fell" for ag in AGENTS)
+          + " | time to success (s) | robots touching | " + " | ".join(f"{ag} pushing" for ag in AGENTS)
+          + f" | {'both' if len(AGENTS) == 2 else 'two or more'} pushing | co-push share | contact spread (m) |",
+          "|---|---|---|" + "---|" * (2 * len(AGENTS) + 5)]
     for m in masses:
         s = summary["by_mass"][f"{m:g}"]
-        md.append(f"| {m:g} kg | {f2(s['success'])} | {f2(s['precise'])} | {f2(s[f'fell_{AGENTS[0]}'])} | {f2(s[f'fell_{AGENTS[1]}'])} | "
+        md.append(f"| {m:g} kg | {f2(s['success'])} | {f2(s['precise'])} | "
+                  + " | ".join(f2(s[f'fell_{ag}']) for ag in AGENTS) + " | "
                   f"{'' if s['t_success'] is None else f'{s['t_success']:.1f}'} | {f2(s['touch_frac'])} | "
-                  f"{f2(s[f'push_frac_{AGENTS[0]}'])} | {f2(s[f'push_frac_{AGENTS[1]}'])} | {f2(s['copush_frac'])} | "
+                  + " | ".join(f2(s[f'push_frac_{ag}']) for ag in AGENTS) + f" | {f2(s['copush_frac'])} | "
                   f"{f2(s['copush_share'])} | {f2(s['copush_spread'])} |")
     md += ["", "## success by object and mass", "", "| object | " + " | ".join(f"{m:g} kg" for m in masses) + " |",
            "|---|" + "---|" * len(masses)]

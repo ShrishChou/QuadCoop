@@ -29,6 +29,7 @@ def main() -> None:
     ap.add_argument("--no-arm", action="store_true", help="arm held stowed")
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--compare", action="store_true")
+    ap.add_argument("--posture", action="store_true", help="the posture variant's env: torso commands sampled")
     ap.add_argument("--envs", type=int, default=64)
     ap.add_argument("--drop-events", default="", help="comma list of event terms to remove")
     ap.add_argument("--keep-only-reset", action="store_true", help="remove every event but reset_base/reset_robot_joints")
@@ -40,7 +41,7 @@ def main() -> None:
 
     from quadcoop.spot_arm_walker import make_spot_arm_walker_env_cfg, rai_actor_weights
 
-    cfg = make_spot_arm_walker_env_cfg(play=not a.train_env)
+    cfg = make_spot_arm_walker_env_cfg(play=not a.train_env, posture=a.posture)
     cfg.scene.num_envs = a.envs
     cfg.observations["actor"].enable_corruption = a.corrupt
     if not a.train_env:
@@ -90,7 +91,7 @@ def main() -> None:
     n = a.envs
     ep_t = torch.zeros(n, device=dev)
     ends = {}
-    h, err = [], []
+    h, err, terr = [], [], []
     first_ill = None
     for t in range(a.steps):
         with torch.no_grad():
@@ -105,6 +106,8 @@ def main() -> None:
         h.append(float(robot.data.root_link_pos_w[:, 2].mean()))
         cmd = env.command_manager.get_term("twist").command[:, :2]
         err.append(float(torch.linalg.norm(robot.data.root_link_lin_vel_b[:, :2] - cmd, dim=-1).mean()))
+        tt = env.action_manager.get_term("joint_pos").torso
+        terr.append(float((robot.data.root_link_pos_w[:, 2] - tt[:, 2]).abs().mean()))
         done = term | trunc
         if done.any():
             for name in tm.active_terms:
@@ -128,6 +131,7 @@ def main() -> None:
     if not ends:
         print("  no episode ended")
     print(f"  base height mean: first 1 s {sum(h[:50]) / 50:.3f} m, last 2 s {sum(h[-100:]) / 100:.3f} m")
+    print(f"  |height - commanded torso height| mean: {sum(terr[50:]) / max(1, len(terr) - 50):.3f} m (after 1 s)")
     print(f"  planar velocity error mean: {sum(err[50:]) / max(1, len(err) - 50):.3f} m/s (after 1 s)")
     if first_ill:
         s = env.scene.sensors["nonfoot_ground_touch"]

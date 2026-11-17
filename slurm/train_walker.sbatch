@@ -32,6 +32,7 @@ case "$ROBOT" in
   anymal_c) TASK=QuadCoop-Walker-AnymalC ;;
   spot)     TASK=QuadCoop-Walker-Spot ;;
   spot_arm) TASK=QuadCoop-Walker-SpotArm ;;  # RAI walker fine-tuned to push (spot_arm_walker.py)
+  spot_arm_posture) TASK=QuadCoop-Walker-SpotArm-Posture; ROBOT=spot_arm ;;  # + torso commands followed
   *) echo "ROBOT must be anymal_c, spot or spot_arm"; exit 1 ;;
 esac
 

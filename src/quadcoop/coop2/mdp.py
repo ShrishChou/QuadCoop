@@ -72,7 +72,7 @@ from quadcoop.stage2.shapes import (
     GOAL_NAMES2, OBJ_NAMES2, SHAPES2, TRAIN_MASK, bbox_and_radius, kinds_tensor, nominal_parts,
 )
 
-from quadcoop.coop2.pairs import AGENTS, PARTNER, ROBOT_TYPE  # noqa: E402
+from quadcoop.coop2.pairs import AGENTS, NEAREST, OTHERS, PAIRS_OF, PARTNER, ROBOT_TYPE  # noqa: E402
 from quadcoop.contacts import PLANNER_PARTS  # noqa: E402
 
 _FOOTPRINT_OF_TYPE = {"anymal_c": (0.55, 0.30), "spot": (0.55, 0.28), "spot_arm": (0.55, 0.28)}  # m: half-length, half-width
@@ -1548,13 +1548,23 @@ class CoopPush2Command(Push2Command):
         rel = wrap(self.heading() - yaw_of(r.data.root_link_quat_w))[env_ids]
         return xy, torch.zeros_like(rel) if self.heading_zero_map else rel
 
-    def partner_in_frame(self, robot: str, env_ids: torch.Tensor):
-        r, p = self.robots[robot], self.robots[PARTNER[robot]]
+    def _mate_in_frame(self, robot: str, other: str, env_ids: torch.Tensor):
+        r, p = self.robots[robot], self.robots[other]
         d = torch.zeros(len(env_ids), 3, device=self.device)
         d[:, :2] = (p.data.root_link_pos_w - r.data.root_link_pos_w)[env_ids, :2]
         xy = quat_apply_inverse(yaw_quat(r.data.root_link_quat_w[env_ids]), d)[:, :2]
         yaw = wrap(yaw_of(p.data.root_link_quat_w) - yaw_of(r.data.root_link_quat_w))[env_ids]
         return xy, yaw
+
+    def partner_in_frame(self, robot: str, env_ids: torch.Tensor):
+        """The partner (teams of two) or the nearest teammate (larger teams) in this robot's frame."""
+        if PARTNER[robot] != NEAREST:
+            return self._mate_in_frame(robot, PARTNER[robot], env_ids)
+        return nearest_of([self._mate_in_frame(robot, o, env_ids) for o in OTHERS[robot]])
+
+    def mates_in_frame(self, robot: str, env_ids: torch.Tensor) -> list:
+        """Every teammate in this robot's frame, OTHERS order."""
+        return [self._mate_in_frame(robot, o, env_ids) for o in OTHERS[robot]]
 
     def refresh_profiles(self, env_ids: torch.Tensor | None = None, rel: dict | None = None,
                          partner: dict | None = None, *_unused) -> None:
@@ -1573,9 +1583,17 @@ class CoopPush2Command(Push2Command):
             xy, yaw = rel[a] if rel is not None else self.object_in_frame(a, env_ids)
             self.tops[a][env_ids, :1] = pf.top_robot_frame(parts, kinds, rest, xy, yaw)
             if self.cfg.partner_map:
-                pxy, pyaw = partner[a] if partner is not None else self.partner_in_frame(a, env_ids)
-                half = self.fp_half[PARTNER[a]].expand(len(env_ids), 2)
-                self.tops[a][env_ids, 1:2] = pf.top_robot_frame_box(pxy, pyaw, half)
+                if PARTNER[a] != NEAREST:
+                    pxy, pyaw = partner[a] if partner is not None else self.partner_in_frame(a, env_ids)
+                    half = self.fp_half[PARTNER[a]].expand(len(env_ids), 2)
+                    self.tops[a][env_ids, 1:2] = pf.top_robot_frame_box(pxy, pyaw, half)
+                else:  # every teammate's footprint in the one channel
+                    mates = partner[a] if partner is not None else self.mates_in_frame(a, env_ids)
+                    ch = None
+                    for o, (pxy, pyaw) in zip(OTHERS[a], mates):
+                        box = pf.top_robot_frame_box(pxy, pyaw, self.fp_half[o].expand(len(env_ids), 2))
+                        ch = box if ch is None else torch.maximum(ch, box)
+                    self.tops[a][env_ids, 1:2] = ch
 
     def surface_distance(self, robot: str = AGENTS[0]) -> torch.Tensor:
         """Signed distance from the robot's front (bumper) to the object's body-height slice."""
@@ -1916,6 +1934,16 @@ class CoopPush2Command(Push2Command):
             b0 = 2 * math.pi * torch.rand(m, device=dev)
             b1 = b0 + U(torch.full((m,), sep, device=dev), torch.full((m,), 2 * math.pi - sep, device=dev))
         bearings = [b0, b1]
+        if len(AGENTS) > 2:  # teams > 2: evenly around the object (start_mode around) or around "behind",
+            n_ = len(AGENTS)  # each within +-(spacing - sep) / 2 of its slot, so neighbours stay >= sep apart
+            if c.start_mode == "around":
+                base, step = 2 * math.pi * torch.rand(m, device=dev), 2 * math.pi / n_
+            else:
+                step = max(sep, 2 * math.radians(float(t[:, SPREAD].max())) / max(n_ - 1, 1))
+                base = behind - step * (n_ - 1) / 2
+            jit = max(0.0, (step - sep) / 2)
+            bearings = [base + k * step + sym_u(torch.full((m,), math.degrees(jit), device=dev)) for k in range(n_)]
+            bearings = [bearings[k] for k in torch.randperm(n_).tolist()]  # which robot gets which slot: random
         gaps = [U(c.gap[0], c.gap[1]) for _ in AGENTS]
         yaw_noise = [sym_u(torch.full((m,), c.robot_yaw_noise_deg, device=dev)) for _ in AGENTS]
         park = [torch.zeros(m, dtype=torch.bool, device=dev) for _ in AGENTS]
@@ -1929,7 +1957,9 @@ class CoopPush2Command(Push2Command):
             yaw_noise = sc.get("yaw_noise", yaw_noise)
             park = sc.get("park", park)  # eval "solo": the other robot stands far away
         elif c.solo_agent >= 0:  # solo control (training): the other robot parked every episode
-            park[1 - c.solo_agent] = torch.ones(m, dtype=torch.bool, device=dev)
+            for k in range(len(AGENTS)):
+                if k != c.solo_agent:
+                    park[k] = torch.ones(m, dtype=torch.bool, device=dev)
         self.goal_turn[env_ids] = fold(wrap(goal_yaw - obj_heading), self.sym[shape])
         if self.draw_log is not None:  # task bank generation: everything the placement below depends on
             self.draw_log.update(
@@ -2090,7 +2120,8 @@ class CoopPush2Command(Push2Command):
                 else:
                     pos = torch.where(sb.unsqueeze(-1), pos, cpose[k][0])
                     yaw = torch.where(sb, yaw, cpose[k][1])
-            far = origin + torch.tensor([0.0, c.park_distance * (1.0 if k == 0 else -1.0)], device=dev)
+            far = origin + torch.tensor([0.0, c.park_distance * (1.0 if k == 0 else -1.0)] if k < 2 else
+                                        [-c.park_distance, 6.0 * (k - 2)], device=dev)
             pos = torch.where(park[k].unsqueeze(-1), far, pos)
             q_adr = robot.indexing.free_joint_q_adr
             z = robot.data.data.qpos[env_ids][:, q_adr[2]]
@@ -2150,12 +2181,15 @@ class CoopPush2Command(Push2Command):
         self.prev_yaw_err[env_ids] = fold(wrap(goal_yaw - obj_heading), self.sym[shape]).abs()
         self.d0[env_ids] = self.prev_dist[env_ids].clamp(min=0.5)
         partner = {}
-        for a in AGENTS:
-            (pos, yaw), (ppos, pyaw) = poses[a], poses[PARTNER[a]]
+
+        def in_frame(a, o):
+            (pos, yaw), (ppos, pyaw) = poses[a], poses[o]
             cs, sn = torch.cos(yaw), torch.sin(yaw)
             dxy = ppos - pos
-            partner[a] = (torch.stack([cs * dxy[:, 0] + sn * dxy[:, 1], -sn * dxy[:, 0] + cs * dxy[:, 1]], -1),
-                          wrap(pyaw - yaw))
+            return (torch.stack([cs * dxy[:, 0] + sn * dxy[:, 1], -sn * dxy[:, 0] + cs * dxy[:, 1]], -1),
+                    wrap(pyaw - yaw))
+        for a in AGENTS:  # teams > 2: every teammate (refresh_profiles draws them all)
+            partner[a] = in_frame(a, PARTNER[a]) if PARTNER[a] != NEAREST else [in_frame(a, o) for o in OTHERS[a]]
         self.refresh_profiles(env_ids, rel, partner)
         self.prev_precise[env_ids] = 0.0
 
@@ -2754,9 +2788,33 @@ def walker_command_of(env, twist_name: str) -> torch.Tensor:
     return env.command_manager.get_command(twist_name)
 
 
+PAIR_INDEX = tuple((AGENTS.index(x), AGENTS.index(y)) for x, y in PAIRS_OF)
+
+
+def nearest_of(mates: list):
+    """[(xy (m, 2), yaw (m,)), ..] -> the (xy, yaw) with the smallest |xy| per env."""
+    xy = torch.stack([m_[0] for m_ in mates], 1)
+    yaw = torch.stack([m_[1] for m_ in mates], 1)
+    k = torch.linalg.norm(xy, dim=-1).argmin(-1)
+    ar = torch.arange(xy.shape[0], device=xy.device)
+    return xy[ar, k], yaw[ar, k]
+
+
+def _closest_pair(env) -> torch.Tensor:
+    """Distance between the two closest robot bases (m, per env)."""
+    pos = {x: env.scene[x].data.root_link_pos_w[:, :2] for x in AGENTS}
+    return torch.stack([torch.linalg.norm(pos[x] - pos[y], dim=-1) for x, y in PAIRS_OF], -1).min(-1).values
+
+
 def partner_obs(env, robot: str, other: str, other_action: str) -> torch.Tensor:
     """New (9): partner position (2), its heading rel. this robot (sin, cos), its velocity (2),
-    all in this robot's frame, and the command it last sent its walker (3, clipped to [-1, 1])."""
+    all in this robot's frame, and the command it last sent its walker (3, clipped to [-1, 1]).
+    Teams > 2 (other == NEAREST): the nearest teammate's, chosen per env."""
+    if other == NEAREST:
+        feats = [partner_obs(env, robot, o, f"walker_{o}") for o in OTHERS[robot]]
+        d = torch.stack([torch.linalg.norm(f[:, :2], dim=-1) for f in feats], -1)
+        k = d.argmin(-1)
+        return torch.stack(feats, 1)[torch.arange(env.num_envs, device=env.device), k]
     r, p = env.scene[robot], env.scene[other]
     pos = _to_frame(env, robot, p.data.root_link_pos_w - r.data.root_link_pos_w)
     rel = wrap(yaw_of(p.data.root_link_quat_w) - yaw_of(r.data.root_link_quat_w))
@@ -2859,8 +2917,7 @@ def own_fall(env, robot: str, nominal_height: float) -> torch.Tensor:
 
 def robots_close(env, safe: float = 1.0) -> torch.Tensor:
     """New (team): 0 beyond `safe` metres between the two bases, rising linearly to 1 at 0 m."""
-    a, b = (env.scene[x].data.root_link_pos_w[:, :2] for x in AGENTS)
-    return torch.clamp((safe - torch.linalg.norm(a - b, dim=-1)) / safe, min=0.0, max=1.0)
+    return torch.clamp((safe - _closest_pair(env)) / safe, min=0.0, max=1.0)
 
 
 def robots_close_exp(env, threshold: float = 0.6, rate: float = 8.0, cap: float = 50.0) -> torch.Tensor:
@@ -2868,8 +2925,7 @@ def robots_close_exp(env, threshold: float = 0.6, rate: float = 8.0, cap: float 
     grows exponentially, exp(rate * (threshold - d)) - 1, capped at `cap`: about 1.2 at 0.5 m,
     4 at 0.4 m, 10 at 0.3 m, 24 at 0.2 m (per second, before the weight). Close teamwork is
     free; crowding is not."""
-    a, b = (env.scene[x].data.root_link_pos_w[:, :2] for x in AGENTS)
-    d = torch.linalg.norm(a - b, dim=-1)
+    d = _closest_pair(env)
     pen = torch.exp(rate * torch.clamp(threshold - d, min=0.0)) - 1.0
     return pen.clamp(max=cap)
 
@@ -3040,8 +3096,12 @@ def robots_gap_exp(env, threshold: float = 0.15, rate: float = 20.0, cap: float 
 
 
 def robots_touching(env, sensor_name: str = "robots_touch") -> torch.Tensor:
-    """New (team): 1 while any part of one robot touches the other."""
-    return env.scene[sensor_name].data.found.view(env.num_envs, -1).any(-1).float()
+    """New (team): 1 while any part of one robot touches another (teams > 2: sensors robots_touch_<i>_<j>)."""
+    names = [sensor_name] if len(AGENTS) == 2 else [f"{sensor_name}_{i}_{j}" for i, j in PAIR_INDEX]
+    out = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    for n_ in names:
+        out |= env.scene[n_].data.found.view(env.num_envs, -1).any(-1)
+    return out.float()
 
 
 # ---------------------------------------------------------------------------------

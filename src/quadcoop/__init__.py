@@ -71,3 +71,12 @@ register_mjlab_task(
     rl_cfg=spot_arm_walker_ppo_cfg(),
     runner_cls=make_runner_cls(),
 )
+
+# posture variant (push_ft_s2): torso commands sampled and followed
+register_mjlab_task(
+    task_id="QuadCoop-Walker-SpotArm-Posture",
+    env_cfg=make_spot_arm_walker_env_cfg(posture=True),
+    play_env_cfg=make_spot_arm_walker_env_cfg(play=True, posture=True),
+    rl_cfg=spot_arm_walker_ppo_cfg(),
+    runner_cls=make_runner_cls(),
+)

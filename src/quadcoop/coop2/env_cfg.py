@@ -63,7 +63,7 @@ from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from quadcoop import falls
 from quadcoop.coop2 import mdp
 from quadcoop.coop2.mdp import AGENTS, PARTNER
-from quadcoop.coop2.pairs import ROBOT_TYPE
+from quadcoop.coop2.pairs import PAIRS_OF, ROBOT_TYPE
 from quadcoop.robots.anymal_c import ROBOT as ANYMAL_C
 from quadcoop.robots.spot import ROBOT as SPOT
 from quadcoop.robots.spot_arm import ROBOT as SPOT_ARM
@@ -89,7 +89,7 @@ SHORT_LEVEL = (1.0, 2.0, 0, 0, 15, 30, 0.10, 3, 1.0, 60, 40)
 SHORT_EPISODE_S = 25.0
 BONUS = 50.0  # Stage 2's success bonus (for an immediate success)
 KEEP_EVENTS = ("foot_friction", "base_com", "encoder_bias", "reset_base", "reset_robot_joints")
-START_OFFSET = {AGENTS[0]: (0.0, -2.0), AGENTS[1]: (0.0, 2.0)}  # before the first reset places them
+START_OFFSET = {a: ((0.0, -2.0), (0.0, 2.0), (-2.0, 0.0), (2.0, 0.0))[k] for k, a in enumerate(AGENTS)}  # before the first reset (off the origin)
 
 
 def _rename_entity(params: dict, name: str) -> dict:
@@ -307,12 +307,13 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         rc.init_state.pos = (x, y, rc.init_state.pos[2])
         robots[a] = rc
     cfg.scene.entities = {**robots, **get_object_cfgs(), **get_goal_cfgs()}
-    cfg.scene.sensors = (ContactSensorCfg(
-        name="robots_touch",
-        primary=ContactMatch(mode="subtree", pattern=SPECS[AGENTS[0]].base_body, entity=AGENTS[0]),
-        secondary=ContactMatch(mode="subtree", pattern=SPECS[AGENTS[1]].base_body, entity=AGENTS[1]),
+    cfg.scene.sensors = tuple(ContactSensorCfg(  # one per robot pair (two robots: the one "robots_touch")
+        name="robots_touch" if len(AGENTS) == 2 else f"robots_touch_{AGENTS.index(x)}_{AGENTS.index(y)}",
+        primary=ContactMatch(mode="subtree", pattern=SPECS[x].base_body, entity=x),
+        secondary=ContactMatch(mode="subtree", pattern=SPECS[y].base_body, entity=y),
         fields=("found",), reduce="none", num_slots=1,
-    ),)
+    ) for x, y in PAIRS_OF)
+    assert len(AGENTS) == 2 or not contacts, "the contact planner (contacts) is written for two robots"
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
     assert not exec_v2 or push_cmd, "exec_v2 builds on push_cmd (Stage 4e)"
@@ -337,7 +338,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                 secondary=ContactMatch(mode=mode, pattern=pat, entity=a),
                 fields=("found", "force"), reduce="netforce", num_slots=1,
             ) for part, mode, pat in (("arm", "subtree", SPOT_ARM_BASE), ("trunk", "body", SPECS[a].base_body)))
-    cfg.sim.njmax = 1500
+    cfg.sim.njmax = 1500 if len(AGENTS) == 2 else 4500  # three robots: 3994 constraints at the initial pose
     cfg.episode_length_s = EPISODE_S
     cfg.metrics = {}
 

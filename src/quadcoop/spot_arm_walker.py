@@ -84,6 +84,8 @@ class RaiLegAction(ActionTerm):
         self.arm_goal = self.stow.repeat(n, 1)
         self.arm_target = self.stow.repeat(n, 1)
         self.arm_timer = torch.zeros(n, device=dev)
+        self.torso_default = torch.tensor([0.0, 0.0, sa.STAND_HEIGHT_CMD], device=dev)
+        self.torso = self.torso_default.repeat(n, 1)  # commanded roll, pitch, height (posture variant: sampled)
 
     @property
     def action_dim(self) -> int:
@@ -102,12 +104,18 @@ class RaiLegAction(ActionTerm):
         goal = torch.where((u < self.cfg.p_stowed).unsqueeze(-1), self.stow.expand(m, 7),
                            torch.where((u < self.cfg.p_stowed + self.cfg.p_out).unsqueeze(-1), self.out.expand(m, 7), rnd))
         self.arm_goal[ids] = goal
+        if self.cfg.torso_sample:  # posture variant: a new torso command with each arm goal (default 40%)
+            keep = torch.rand(m, device=self.device) < self.cfg.p_torso_default
+            h = self.cfg.torso_height[0] + torch.rand(m, device=self.device) * (self.cfg.torso_height[1] - self.cfg.torso_height[0])
+            pt = (2 * torch.rand(m, device=self.device) - 1) * self.cfg.torso_pitch
+            t = torch.stack([torch.zeros_like(h), pt, h], -1)
+            self.torso[ids] = torch.where(keep.unsqueeze(-1), self.torso_default.expand(m, 3), t)
         lo, hi = self.cfg.hold_s
         self.arm_timer[ids] = lo + torch.rand(m, device=self.device) * (hi - lo)
 
     def command25(self) -> torch.Tensor:
         twist = self._env.command_manager.get_term(self.cfg.twist_name)
-        return sa.RaiWalker.command(twist.command[:, :3], self.arm_target)
+        return sa.RaiWalker.command(twist.command[:, :3], self.arm_target, self.torso)
 
     def process_actions(self, actions: torch.Tensor) -> None:
         self._raw[:] = actions
@@ -130,6 +138,7 @@ class RaiLegAction(ActionTerm):
         self._raw[ids] = 0.0
         self.arm_goal[ids] = self.stow
         self.arm_target[ids] = self.stow
+        self.torso[ids] = self.torso_default
         # first arm goal after a short stowed start (the robot is dropped at reset)
         self.arm_timer[ids] = 0.5 + torch.rand(ids.numel(), device=self.device) * 1.5
 
@@ -142,6 +151,11 @@ class RaiLegActionCfg(ActionTermCfg):
     p_out: float = 0.2
     hold_s: tuple[float, float] = (2.0, 6.0)
     arm_rate: float = 1.5
+    # posture variant (push_ft_s2): torso commands sampled with each arm goal, and followed (torso_track reward)
+    torso_sample: bool = False
+    p_torso_default: float = 0.4
+    torso_height: tuple[float, float] = (0.40, 0.55)
+    torso_pitch: float = 0.2
 
     def build(self, env: ManagerBasedRlEnv) -> RaiLegAction:
         return RaiLegAction(self, env)
@@ -195,7 +209,18 @@ def _rai_terms(noise: bool) -> dict:
     }
 
 
-def make_spot_arm_walker_env_cfg(play: bool = False):
+def torso_track(env, height_std: float = 0.05, tilt_std: float = 0.1) -> torch.Tensor:
+    """1 with the base at the commanded height and roll / pitch, as ReLIC's tracking terms (projected gravity
+    against the commanded attitude's: (sin pitch, -sin roll cos pitch, ..) for roll 0 is (sin pitch, 0))."""
+    t = _term(env)
+    d = env.scene["robot"].data
+    h_err = (d.root_link_pos_w[:, 2] - t.torso[:, 2]) / height_std
+    goal = torch.stack([torch.sin(t.torso[:, 1]), torch.zeros_like(t.torso[:, 1])], -1)
+    g_err = torch.linalg.norm(d.projected_gravity_b[:, :2] - goal, dim=-1) / tilt_std
+    return torch.exp(-(h_err.square() + g_err.square()))
+
+
+def make_spot_arm_walker_env_cfg(play: bool = False, posture: bool = False):
     from quadcoop.walker_env_cfg import make_walker_env_cfg
 
     _setdefault_env("QUADCOOP_WARMUP_ITERS", "100")
@@ -219,6 +244,11 @@ def make_spot_arm_walker_env_cfg(play: bool = False):
     cfg.rewards["pose"].params["asset_cfg"] = legs
     # feet: around RAI's 0.7 (the pair env's value), not v1's 0.6-1.2, so the push it learns is the one it gets
     cfg.events["foot_friction"].params["ranges"] = (0.6, 0.9)
+    if posture:  # push_ft_s2: torso commands sampled and followed; the fixed 0.5 m height reward goes
+        from mjlab.managers.reward_manager import RewardTermCfg
+        cfg.actions["joint_pos"].torso_sample = True
+        cfg.rewards.pop("base_height", None)
+        cfg.rewards["torso_track"] = RewardTermCfg(func=torso_track, weight=2.0)
     return cfg
 
 

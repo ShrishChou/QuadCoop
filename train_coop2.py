@@ -182,7 +182,7 @@ def main() -> int:
     ap.add_argument("--pilot-episode-s", type=float, default=0.0, help="episode length with --pilot-level")
     ap.add_argument("--dyaw-choices", action="store_true",
                     help="goal heading change is -1, 0 or +1 x the level's value, equally often (left / straight / right)")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm"), default="mixed",
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm", "anymal3"), default="mixed",
                     help="which two robots: ANYmal C + Spot (mixed), two ANYmal C, two Spot "
                          "(quadcoop/coop2/pairs.py); both start from that type's Stage 2 policy")
     ap.add_argument("--seed", type=int, default=0)

@@ -210,6 +210,25 @@ def actor_groups(a: str, variant: str) -> list[str]:
     return [f"actor_{a}"] + ([f"top_{a}", "front"] if variant == "b" else [])
 
 
+def source_slot(a: str, saved) -> str:
+    """The checkpoint slot robot `a` takes its actor from: its own, or (a team larger than the checkpoint's, e.g. a
+    pair's actors into a trio) slot index mod the checkpoint's team size: anymal3 <- anymal1."""
+    saved = list(saved)
+    return a if a in saved else saved[AGENTS.index(a) % len(saved)]
+
+
+def actor_state(saved: dict, a: str) -> dict:
+    """Robot a's actor weights from a checkpoint's actors: its own, or source_slot's with the observation-group names
+    in the keys (cnns.top_<slot>.*) renamed to a's."""
+    src = source_slot(a, saved)
+    sd = saved[src]
+    if src == a:
+        return sd
+    import re
+    pat = re.compile(rf"(?<=_){re.escape(src)}(?=\.)")
+    return {pat.sub(a, k): v for k, v in sd.items()}
+
+
 def critic_groups(algo: str, variant: str, a: str | None = None) -> list[str]:
     if algo == "ippo":
         return [f"state_{a}", "privileged"] + ([f"top_{a}", "front"] if variant == "b" else [])
@@ -817,15 +836,19 @@ class MarlTrainer:
         rc = ck.get("cfg", {})
         assert ck.get("variant", "b") == self.cfg.variant, f"checkpoint variant {ck.get('variant')}, trainer {self.cfg.variant}"
         assert not rc.get("residual") and not self.cfg.residual, "actor transfer: plain actors only"
+        src = {a: source_slot(a, ck["actors"]) for a in AGENTS}
+        if any(src[a] != a for a in AGENTS):
+            print(f"[marl2] actors from a smaller team: {src}", flush=True)
         for a in AGENTS:
-            self.actors[a].load_state_dict(ck["actors"][a], strict=True)
-        self.lr = dict(ck["lr"])
+            self.actors[a].load_state_dict(actor_state(ck["actors"], a), strict=True)
+        self.lr = {a: ck["lr"][src[a]] for a in AGENTS}
         for a in AGENTS:
             for pg in self.actor_opt[a].param_groups:
                 pg["lr"] = self.lr[a]
-        for a, c in (ck.get("std_cap") or {}).items():
-            if c is not None:
-                self.std_cap[a] = torch.tensor(c, device=self.device)
+        caps = ck.get("std_cap") or {}
+        for a in AGENTS:
+            if caps.get(src[a]) is not None:
+                self.std_cap[a] = torch.tensor(caps[src[a]], device=self.device)
         self.it = int(ck["iter"])
         self.resume_it = self.it
         self.warm_from = {"init_actors": str(path), "source_algo": ck["algo"], **ck.get("warm_from", {})}
@@ -1573,7 +1596,7 @@ class PairPolicy:
                                          True).to(device) for a in AGENTS}
         if checkpoint:
             for a in AGENTS:
-                self.actors[a].load_state_dict(ck["actors"][a])
+                self.actors[a].load_state_dict(actor_state(ck["actors"], a))
             self.iteration = int(ck["iter"])
         else:
             cnn = lambda a: {"profile_top": f"top_{a}", "profile_front": "front"} if variant == "b" else {}  # noqa: E731
