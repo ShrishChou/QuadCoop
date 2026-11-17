@@ -24,7 +24,7 @@ for algo in mappo ippo; do
   t=$(ALGO=$algo SEED=0 RUN_NAME=$run ITERS=6000 LOGGER=wandb EXTRA="--pair anymal3 --init-actors $pair \
 --critic-warmup-resume 300 --partner-map --reward r7 --kl-ref 0.05 --max-actor-lr 1e-4 --fixed-difficulty --fixed-level 4 \
 --train-mass 20,120 --train-shapes $SH --start-around" \
-      sbatch --parsable -p mit_preemptable --requeue -t 12:00:00 --exclude=node4207 --dependency=afterok:$w slurm/train_coop2.sbatch)
+      NUM_ENVS=2048 sbatch --parsable -p mit_preemptable --requeue -t 12:00:00 --exclude=node4207 --dependency=afterok:$w slurm/train_coop2.sbatch)
   e3=$(ev trio-$algo-it6000-dev7100 logs/marl2/$run/model_6000.pt 20,40,60,80,100,120 "" $t)
   echo "$algo: transfer eval $e1, pair heavy eval $e2, training $t ($run, iterations 4000 -> 6000), trained eval $e3"
 done
