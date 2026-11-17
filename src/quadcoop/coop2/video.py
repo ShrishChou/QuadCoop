@@ -61,6 +61,7 @@ class Camera:
             self.d.mocap_pos[:] = mocap_pos
             self.d.mocap_quat[:] = mocap_quat
         mujoco.mj_forward(self.m, self.d)
+        pts = pts[np.linalg.norm(pts - np.median(pts, 0), axis=-1) < 15.0]  # drop a robot parked far away (solo runs)
         c = pts.mean(0)
         dist = max(4.0, min(14.0, 1.1 * float(np.max(np.linalg.norm(pts[:, None] - pts[None], axis=-1))) + 3.0))
         self.look = (c, dist) if self.look is None else (0.9 * self.look[0] + 0.1 * c, 0.95 * self.look[1] + 0.05 * dist)

@@ -96,7 +96,7 @@ def models_for(a) -> tuple[dict, str]:
             if a.solo not in robot_of(pair):
                 raise SystemExit(f"--solo {a.solo}: this checkpoint's robots are {list(robot_of(pair))}")
             what = f"{a.solo} alone, trained actor from {what}"
-        if not sel or pair == "spot_arm":  # (Spot-arm: RAI's walker, nothing registered)
+        if not sel or pair in _pairs().ARM_PAIRS:  # (Spot-arm: RAI's walker, nothing registered)
             return resolve_models(variant, pair), what
         reg = load()
         out = {"selection": sel, "walker_ckpt": {}, "walker_env": {}, "policy": {}, "pair": pair}
@@ -128,7 +128,7 @@ def main() -> int:
     ap.add_argument("--arm-lock", default="",
                     help="Spot-arm checkpoints with learned arms: comma list of robots whose arm is held stowed "
                          "(their arm outputs ignored), or 'all': the arm ablation")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm"), default="mixed",
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm"), default="mixed",
                     help="frozen pair / solo: which two robots (a checkpoint carries its own)")
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
     ap.add_argument("--partner-map", action="store_true",
@@ -158,7 +158,7 @@ def main() -> int:
     if a.frozen_pair and a.solo:
         ap.error("--frozen-pair and --solo exclude each other")
 
-    from train_coop2 import set_env
+    from train_coop2 import _pairs, set_env
 
     models, what = models_for(a)
     set_env(models)
@@ -187,8 +187,8 @@ def main() -> int:
     if a.checkpoint:
         _rc = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {})
         arm_mode, hand_obs = _rc.get("arm") or "stowed", bool(_rc.get("hand_obs"))
-    if models.get("pair") == "spot_arm" and not a.checkpoint:
-        raise SystemExit("the spot_arm pair has no Stage 2 policies: give --checkpoint")
+    if models.get("pair") in _pairs().ARM_PAIRS and not a.checkpoint:
+        raise SystemExit("Spot-arm pairs have no Stage 2 policies: give --checkpoint")
     if a.checkpoint:
         ck_ = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
         variant = ck_.get("variant", "b")
