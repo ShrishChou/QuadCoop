@@ -1,0 +1,189 @@
+{
+ "policy": "checkpoint logs/marl2/mappo_aa_kl_ten_s0/model_4000.pt (iteration 4000, mappo, pair anymal), run as a team of three (anymal3 uses anymal1's actor)",
+ "name": "trio-smoke",
+ "agents": [
+  "anymal1",
+  "anymal2",
+  "anymal3"
+ ],
+ "masses": [
+  40.0
+ ],
+ "reps": 1,
+ "horizon_s": 80.0,
+ "overall": {
+  "n": 8,
+  "success": 0.625,
+  "precise": 0.625,
+  "fell_anymal1": 0.0,
+  "fell_anymal2": 0.375,
+  "fell_anymal3": 0.0,
+  "t_success": 22.308,
+  "touch_frac": 0.808,
+  "push_frac_anymal1": 0.21412499999999998,
+  "push_frac_anymal2": 0.188125,
+  "push_frac_anymal3": 0.548,
+  "copush_frac": 0.17275000000000001,
+  "copush_share": 0.2665895061728395,
+  "copush_spread": 0.56125
+ },
+ "by_mass": {
+  "40": {
+   "n": 8,
+   "success": 0.625,
+   "precise": 0.625,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.375,
+   "fell_anymal3": 0.0,
+   "t_success": 22.308,
+   "touch_frac": 0.808,
+   "push_frac_anymal1": 0.21412499999999998,
+   "push_frac_anymal2": 0.188125,
+   "push_frac_anymal3": 0.548,
+   "copush_frac": 0.17275000000000001,
+   "copush_share": 0.2665895061728395,
+   "copush_spread": 0.56125
+  }
+ },
+ "by_group_mass": {
+  "seen / 40 kg": {
+   "n": 8,
+   "success": 0.625,
+   "precise": 0.625,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.375,
+   "fell_anymal3": 0.0,
+   "t_success": 22.308,
+   "touch_frac": 0.808,
+   "push_frac_anymal1": 0.21412499999999998,
+   "push_frac_anymal2": 0.188125,
+   "push_frac_anymal3": 0.548,
+   "copush_frac": 0.17275000000000001,
+   "copush_share": 0.2665895061728395,
+   "copush_spread": 0.56125
+  },
+  "unseen / 40 kg": null
+ },
+ "by_object_mass": {
+  "cube / 40 kg": {
+   "n": 4,
+   "success": 0.75,
+   "precise": 0.75,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.25,
+   "fell_anymal3": 0.0,
+   "t_success": 25.53333333333333,
+   "touch_frac": 0.87075,
+   "push_frac_anymal1": 0.16899999999999998,
+   "push_frac_anymal2": 0.1995,
+   "push_frac_anymal3": 0.538,
+   "copush_frac": 0.11575,
+   "copush_share": 0.1779400461183705,
+   "copush_spread": 0.47000000000000003
+  },
+  "long / 40 kg": {
+   "n": 4,
+   "success": 0.5,
+   "precise": 0.5,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.5,
+   "fell_anymal3": 0.0,
+   "t_success": 17.47,
+   "touch_frac": 0.74525,
+   "push_frac_anymal1": 0.25925,
+   "push_frac_anymal2": 0.17675,
+   "push_frac_anymal3": 0.558,
+   "copush_frac": 0.22975,
+   "copush_share": 0.3559256390395043,
+   "copush_spread": 0.6525000000000001
+  }
+ },
+ "by_scenario_mass": {
+  "A_straight / 40 kg": {
+   "n": 2,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "fell_anymal3": 0.0,
+   "t_success": 24.23,
+   "touch_frac": 0.8340000000000001,
+   "push_frac_anymal1": 0.041999999999999996,
+   "push_frac_anymal2": 0.1635,
+   "push_frac_anymal3": 0.7995,
+   "copush_frac": 0.1265,
+   "copush_share": 0.158223889931207,
+   "copush_spread": 0.5700000000000001
+  },
+  "B_left / 40 kg": {
+   "n": 2,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "fell_anymal3": 0.0,
+   "t_success": 11.809999999999999,
+   "touch_frac": 0.746,
+   "push_frac_anymal1": 0.296,
+   "push_frac_anymal2": 0.2905,
+   "push_frac_anymal3": 0.29900000000000004,
+   "copush_frac": 0.2095,
+   "copush_share": 0.5005973715651135,
+   "copush_spread": 0.595
+  },
+  "C_backright / 40 kg": {
+   "n": 2,
+   "success": 0.5,
+   "precise": 0.5,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.5,
+   "fell_anymal3": 0.0,
+   "t_success": 39.46,
+   "touch_frac": 0.8089999999999999,
+   "push_frac_anymal1": 0.517,
+   "push_frac_anymal2": 0.034999999999999996,
+   "push_frac_anymal3": 0.2365,
+   "copush_frac": 0.118,
+   "copush_share": 0.22823984526112184,
+   "copush_spread": 0.555
+  },
+  "D_far_turn / 40 kg": {
+   "n": 2,
+   "success": 0.0,
+   "precise": 0.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 1.0,
+   "fell_anymal3": 0.0,
+   "t_success": null,
+   "touch_frac": 0.843,
+   "push_frac_anymal1": 0.0015,
+   "push_frac_anymal2": 0.2635,
+   "push_frac_anymal3": 0.857,
+   "copush_frac": 0.23700000000000002,
+   "copush_share": 0.2765460910151692,
+   "copush_spread": 0.525
+  }
+ },
+ "formations": [
+  "standard"
+ ],
+ "swap": false,
+ "by_formation_mass": {
+  "standard / 40 kg": {
+   "n": 8,
+   "success": 0.625,
+   "precise": 0.625,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.375,
+   "fell_anymal3": 0.0,
+   "t_success": 22.308,
+   "touch_frac": 0.808,
+   "push_frac_anymal1": 0.21412499999999998,
+   "push_frac_anymal2": 0.188125,
+   "push_frac_anymal3": 0.548,
+   "copush_frac": 0.17275000000000001,
+   "copush_share": 0.2665895061728395,
+   "copush_spread": 0.56125
+  }
+ }
+}
