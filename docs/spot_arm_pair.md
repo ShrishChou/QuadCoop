@@ -384,3 +384,37 @@ recurs (MAPPO learned s2: 43 of 120). Standard evaluator (long object, 20 / 40 k
 
 Turn in place seed 1 (16 per direction): stowed 94%, PPO hands 100% (seed 0: 84%), demonstrations + PPO 91%; hand
 contact 0-5% in every case, so seed 1 confirms seed 0: the learned policies turn with the trunk, not the hands.
+
+## Arm mechanism, torso, release (2026-11-17; `slurm/submit_spot_integration.sh`, no training)
+
+Pusher: `sa_heavy_learned_s0` (iteration 4000), unchanged. Task: the heavy-transport evaluation's (long object,
+40 kg, 2 m, goal heading 0 / +-60 deg, 40 s, 20 placements per turn, each with starts exchanged: 120 episodes per cell).
+
+**Torso interface** (`SpotArmActionCfg.torso`, env option `torso=True`). Two outputs after the arm outputs: pitch
+(a x 0.2 rad) and height (0.52 m at 0, 0.40 at -1, 0.55 at +1: the posture walker's training range); roll 0;
+rate-limited to 0.5 rad/s and 0.15 m/s; action 0 = RAI's default posture exactly. Inputs (4, last in the actor and
+state groups): the applied pitch and height - 0.52, and the tracking error (base height - commanded height,
+projected-gravity x - sin(commanded pitch)). Older checkpoints load through `marl.expand_state` (new inputs zero
+weight, new outputs zero rows): `scripts/spot_arm/torso_compat_check.py` checks the expanded actor's outputs against
+the original's every step and that the applied torso stays (0, 0, 0.52); `pair_eval.py --torso-interface` compares
+whole episodes. Each robot's command history, torso state and walker state are its own action term's.
+
+1. **Compatibility first** (sweep): the fixed pusher with each walker (RAI, `push_ft_s2_posture`,
+   `push_ft_s3_handload`; later `push_ft_s3_ctrl`) and scripted torso commands (`--torso P,H`: default; height
+   0.47 / 0.43; pitch 0.1 at 0.52 / 0.47): success, object position and heading error, falls, walking, and 5 s of
+   continued control after success. A stronger walker may answer the same high-level commands differently; matched
+   pusher fine-tunes only after this.
+2. **Arm mechanism** (original walker only, so the system whose arm advantage is explained stays the same): normal
+   learned arms; both stowed (`none`); each robot's arm alone (`only_1`, `only_2`); both arms held at RAI's "out" pose
+   (`hold_out`) and at each arm's own mean pose while touching the object (`hold_mean`, pose from the first run's
+   `arm_pose.json`): does configuration alone explain the benefit?; learned motion with arm-object collisions off
+   (`--arm-object-collide off`: only collision bits change, arm mass, inertia and actuation as before; arms still
+   collide with the ground and robots): is direct arm contact needed? Each with starts exchanged; per-robot columns.
+3. **Completion and release** (original walker): after success, 5 s of continued policy, zero base velocity with the
+   arm held where it is, or the arm retracted (stowed, rate-limited) with a 0.2 m/s back-off for 2 s. Retention
+   (still within 0.10 m / 6 deg at the end), object displacement and heading change during release, falls. At 40 kg
+   2 m and at 20 kg 1 m. Scripted first; training only for a failure that remains.
+4. **Next training** after `push_ft_s3_ctrl` (the continuation without applied forces; same parent, budget and
+   masses): similar strength without the walking loss -> prefer the simpler continuation; applied forces add strength
+   but cost mobility -> more free-walk rehearsal or a gentler load curriculum; force training also helps real
+   contact and release -> a focused cooperative task (one pushes, one stabilizes / corrects heading, one object).

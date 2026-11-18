@@ -219,7 +219,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        train_mass: tuple = (), fixed_difficulty: bool = False, track: bool = False,
                        track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
-                       dyaw_choices: bool = False, hand_obs: bool = False, turn_signs: bool = False,
+                       dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
@@ -350,7 +350,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     for a in AGENTS:
         if ARM[a]:
             cfg.actions[f"walker_{a}"] = sat.SpotArmActionCfg(entity_name=a, twist_name=f"twist_{a}", arm=arm,
-                                                              arm_hold_steps=arm_hold_steps)
+                                                              arm_hold_steps=arm_hold_steps, torso=torso)
             continue
         joint_cfgs[a].entity_name = a
         cfg.actions[f"walker_{a}"] = s1.WalkerCommandActionCfg(
@@ -416,6 +416,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.02, n_max=0.02)), (f"state_{a}", None)):
                 obs[grp].terms["hand_state"] = T(func=sat.hand_state, params={"robot": a, "action_name": f"walker_{a}"},
                                                  noise=nz)
+        if torso and ARM[a]:  # the torso command and its tracking error (last; spot_arm_term.torso_state)
+            for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.01, n_max=0.01)), (f"state_{a}", None)):
+                obs[grp].terms["torso_state"] = T(func=sat.torso_state, params={"robot": a, "action_name": f"walker_{a}"},
+                                                  noise=nz)
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
                                                   concatenate_terms=True, enable_corruption=False)

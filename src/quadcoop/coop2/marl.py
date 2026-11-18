@@ -463,6 +463,63 @@ def warm_start_model(model, single: dict, cols: list[tuple[slice, slice]], n1d_n
     return out
 
 
+def expand_state(model, old: dict, groups: list[str], obs, what: str, new_std: float = 0.2) -> None:
+    """Copy `old` into `model`. 1D input groups may have grown at their end (new columns zero weight, normalizer
+    mean 0 / std 1); the output may have grown at its end (new rows of the last layer and new biases zero, new
+    action noise new_std): the expanded network gives the old outputs exactly and 0 on the new ones (the torso
+    interface: 0 = the default posture)."""
+    new = model.state_dict()
+    one_d = [g_ for g_ in groups if obs[g_].dim() == 2]
+    n_new = {g_: int(obs[g_].shape[-1]) for g_ in one_d}
+    n1d_new = sum(n_new.values())
+    n1d_old = int(old["obs_normalizer._mean"].shape[-1])
+    grow = n1d_new - n1d_old
+    growing = [g_ for g_ in one_d if g_.startswith(("actor_", "state_"))]
+    if grow % max(len(growing), 1):
+        raise RuntimeError(f"{what}: {grow} new inputs do not split evenly over {growing}")
+    per = grow // max(len(growing), 1)
+    cols, o_off, n_off = [], 0, 0
+    for g_ in one_d:
+        n_old = n_new[g_] - (per if g_ in growing else 0)
+        cols.append((slice(o_off, o_off + n_old), slice(n_off, n_off + n_old)))
+        o_off += n_old
+        n_off += n_new[g_]
+    W_old, W_new = old["mlp.0.weight"], new["mlp.0.weight"]
+    W = torch.zeros_like(W_new)
+    for o, nw in cols:
+        W[:, nw] = W_old[:, o]
+    W[:, n1d_new:] = W_old[:, n1d_old:]
+    out = dict(old)
+    out["mlp.0.weight"] = W
+    for key in ("obs_normalizer._mean", "obs_normalizer._var", "obs_normalizer._std"):
+        vv = torch.zeros_like(new[key]) if key.endswith("_mean") else torch.ones_like(new[key])
+        for o, nw in cols:
+            vv[..., nw] = old[key][..., o]
+        out[key] = vv
+    last = max(int(k.split(".")[1]) for k in new if k.startswith("mlp.") and k.endswith(".weight"))
+    wk, bk = f"mlp.{last}.weight", f"mlp.{last}.bias"
+    n_out_old, n_out_new = int(old[wk].shape[0]), int(new[wk].shape[0])
+    if n_out_new != n_out_old:
+        assert n_out_new > n_out_old, f"{what}: outputs shrank ({n_out_old} -> {n_out_new})"
+        W2, b2 = torch.zeros_like(new[wk]), torch.zeros_like(new[bk])
+        W2[:n_out_old] = out[wk] if wk != "mlp.0.weight" else W
+        b2[:n_out_old] = old[bk]
+        out[wk], out[bk] = W2, b2
+        if "distribution.std_param" in new:
+            sp = torch.full_like(new["distribution.std_param"], new_std)
+            sp[:n_out_old] = old["distribution.std_param"]
+            out["distribution.std_param"] = sp
+    for key in new:
+        if key not in out:
+            raise RuntimeError(f"{what}: {key} not in the checkpoint")
+        if out[key].shape != new[key].shape:
+            raise RuntimeError(f"{what}: {key} {tuple(out[key].shape)} vs {tuple(new[key].shape)}")
+    model.load_state_dict({k: out[k] for k in new}, strict=True)
+    print(f"[marl2] {what}: {grow} new inputs at zero weight ({per} per group in {growing})"
+          + (f", {n_out_new - n_out_old} new outputs at zero" if n_out_new != n_out_old else ""))
+
+
+
 class MarlTrainer:
     def __init__(self, env, cfg: MarlCfg, log_dir: Path, device: str, logger: str = "tensorboard",
                  wandb_project: str = "quadcoop"):
@@ -1227,42 +1284,7 @@ class MarlTrainer:
         return report
 
     def _expand(self, model, old: dict, groups: list[str], what: str) -> None:
-        """Copy `old` into `model`; 1D input groups may have grown at their end (new columns zero)."""
-        new = model.state_dict()
-        one_d = [g_ for g_ in groups if self.obs[g_].dim() == 2]
-        n_new = {g_: int(self.obs[g_].shape[-1]) for g_ in one_d}
-        n1d_new = sum(n_new.values())
-        n1d_old = int(old["obs_normalizer._mean"].shape[-1])
-        grow = n1d_new - n1d_old
-        growing = [g_ for g_ in one_d if g_.startswith(("actor_", "state_"))]
-        if grow % max(len(growing), 1):
-            raise RuntimeError(f"{what}: {grow} new inputs do not split evenly over {growing}")
-        per = grow // max(len(growing), 1)
-        cols, o_off, n_off = [], 0, 0
-        for g_ in one_d:
-            n_old = n_new[g_] - (per if g_ in growing else 0)
-            cols.append((slice(o_off, o_off + n_old), slice(n_off, n_off + n_old)))
-            o_off += n_old
-            n_off += n_new[g_]
-        W_old, W_new = old["mlp.0.weight"], new["mlp.0.weight"]
-        W = torch.zeros_like(W_new)
-        for o, nw in cols:
-            W[:, nw] = W_old[:, o]
-        W[:, n1d_new:] = W_old[:, n1d_old:]
-        out = dict(old)
-        out["mlp.0.weight"] = W
-        for key in ("obs_normalizer._mean", "obs_normalizer._var", "obs_normalizer._std"):
-            vv = torch.zeros_like(new[key]) if key.endswith("_mean") else torch.ones_like(new[key])
-            for o, nw in cols:
-                vv[..., nw] = old[key][..., o]
-            out[key] = vv
-        for key in new:
-            if key not in out:
-                raise RuntimeError(f"{what}: {key} not in the checkpoint")
-            if out[key].shape != new[key].shape:
-                raise RuntimeError(f"{what}: {key} {tuple(out[key].shape)} vs {tuple(new[key].shape)}")
-        model.load_state_dict({k: out[k] for k in new}, strict=True)
-        print(f"[marl2] {what}: {grow} new inputs at zero weight ({per} per group in {growing})")
+        expand_state(model, old, groups, self.obs, what)
 
     @staticmethod
     def newest(log_dir: Path) -> Path | None:
@@ -1697,7 +1719,9 @@ class PairPolicy:
     or from the two Stage 2 checkpoints (the untrained "frozen pair": iteration 0)."""
 
     def __init__(self, env_obs: TensorDict, device: str, variant: str = "b", checkpoint: str | None = None,
-                 singles: dict[str, str] | None = None):
+                 singles: dict[str, str] | None = None, act_dims: dict[str, int] | None = None):
+        """act_dims: the env's action sizes per robot, when they differ from the checkpoint's (an interface that
+        grew, e.g. Spot-arm torso outputs): the checkpoint is expanded (expand_state: new inputs and outputs zero)."""
         ck = torch.load(checkpoint, map_location=device, weights_only=False) if checkpoint else None
         rc = (ck or {}).get("cfg", {})
         if rc.get("residual"):
@@ -1707,12 +1731,20 @@ class PairPolicy:
                                             tuple(rc["resid_hidden"]), rc.get("resid_compose", "raw")).to(device)
                            for a in AGENTS}
         else:
-            dims = (ck or {}).get("act_dims") or {}  # checkpoints from before the Spot-arm pair: 3 per robot
+            dims = dict((ck or {}).get("act_dims") or {})  # checkpoints from before the Spot-arm pair: 3 per robot
+            dims.update(act_dims or {})
             self.actors = {a: make_model(env_obs, actor_groups(a, variant), int(dims.get(a, 3)), (256, 128, 64), variant,
                                          True).to(device) for a in AGENTS}
+        self.expanded = []
         if checkpoint:
             for a in AGENTS:
-                self.actors[a].load_state_dict(actor_state(ck["actors"], a))
+                sd = actor_state(ck["actors"], a)
+                cur = self.actors[a].state_dict()
+                if all(k in sd and sd[k].shape == v.shape for k, v in cur.items()):
+                    self.actors[a].load_state_dict(sd)
+                else:  # the env's interface grew since this checkpoint
+                    expand_state(self.actors[a], sd, actor_groups(a, variant), env_obs, f"{a} actor <- {checkpoint}")
+                    self.expanded.append(a)
             self.iteration = int(ck["iter"])
         else:
             cnn = lambda a: {"profile_top": f"top_{a}", "profile_front": "front"} if variant == "b" else {}  # noqa: E731

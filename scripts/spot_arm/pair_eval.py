@@ -15,6 +15,22 @@ acts, the other is parked 40 m away and stands still; its falls are ignored).
 Per episode: success, time, final position and signed heading error, falls, each robot's arm and trunk contact
 share and mean arm contact force, the goal heading change as placed (realized), the hand's mean extension. Videos: rep 0, unswapped, of each turn, in every arm mode (captions: wanted and
 actual object heading). Writes evals/<name>/episodes.csv and summary.md; videos to logs/evals/<name>/.
+
+Arm mechanism and integration (docs/spot_arm_pair.md, "Arm mechanism, torso, release"):
+  --modes M1,M2,..       only these arm modes. Extra modes: hold_out (both arms held at RAI's "out" pose),
+                         hold_mean (each arm held at the mean arm target its policy used while touching the object in
+                         mode "both" of an earlier run of this script: --hold-pose-from <name>; every run of mode
+                         "both" writes evals/<name>/arm_pose.json).
+  --arm-object-collide off  arm and object geoms do not collide (contype / conaffinity only: the arm keeps its mass,
+                         inertia and actuators, and still collides with the ground and the robots).
+  --torso P,H            every Spot-arm's torso command held at pitch P rad, height H m (rate-limited from default).
+  --torso-interface      build the env with the 2 torso outputs and inputs; an older checkpoint is expanded (new
+                         inputs and outputs zero: unchanged actions at the default posture).
+  --release policy|zero|retract --release-s 5   after a success the episode continues for release-s: continued
+                         policy; zero base velocity with the arm held where it is; or arm retracted (stowed, rate-
+                         limited) with 0.2 m/s back-off for 2 s, then zero. Records object displacement and heading
+                         change during the release, retention (still within tolerance at its end), falls.
+The walker is QUADCOOP_SPOT_ARM_WALKER (default RAI's), recorded in the summary.
 """
 from __future__ import annotations
 
@@ -101,6 +117,66 @@ def tables(rows: list[dict], label: str = "") -> list[str]:
     return md
 
 
+def release_table(rows: list[dict]) -> list[str]:
+    if not rows or rows[0].get("release", "none") == "none":
+        return []
+    md = ["", f"Release ({rows[0]['release']}), episodes that succeeded: retained = still within tolerance at the "
+          "end of the release; displacement = object travel during it.", "",
+          "| arm mode | successes | retained | object displacement, median m | heading change, median abs deg | falls in release |",
+          "|---|---|---|---|---|---|"]
+    for m in dict.fromkeys(r["arm_mode"] for r in rows):
+        sel = [r for r in rows if r["arm_mode"] == m and r["success"] == "1"]
+        if not sel:
+            md.append(f"| {m} | 0 | - | - | - | - |")
+            continue
+        med = lambda v: sorted(v)[len(v) // 2]  # noqa: E731
+        md.append(f"| {m} | {len(sel)} | {sum(int(r['retained']) for r in sel) / len(sel):.1%} | "
+                  f"{med([float(r['release_disp_m']) for r in sel]):.3f} | {med([abs(float(r['release_yaw_deg'])) for r in sel]):.1f} | "
+                  f"{sum(int(r['fell_release']) for r in sel) / len(sel):.1%} |")
+    return md
+
+
+def arm_object_collisions_off(cfg, arm_robots: list[str], objects: list[str]) -> None:
+    """No contact between Spot-arm arm geoms (subtree of arm_link_sh0) and the objects; everything else as before.
+    Objects: contype 2, conaffinity 3; arm geoms: contype 4, conaffinity 1; all others keep 1 / 1. Then
+    arm-object: (4 & 3) | (2 & 1) = 0; arm-ground / arm-robot: (1 & 1) = 1; object-ground / object-robot: (1 & 3) = 1;
+    object-object: (2 & 3) = 2. Only collision bits change (mass, inertia, actuation as before)."""
+    import mujoco
+
+    def wrap_obj(fn):
+        def f():
+            spec = fn()
+            for gm in spec.geoms:
+                if gm.contype or gm.conaffinity:
+                    gm.contype, gm.conaffinity = 2, 3
+            return spec
+        return f
+
+    def wrap_arm(fn):
+        def f():
+            spec = fn()
+            root = spec.body("arm_link_sh0")
+            assert root is not None, "arm_link_sh0 not in the Spot-arm spec"
+            stack, n_ = [root], 0
+            while stack:
+                b = stack.pop()
+                for gm in b.geoms:
+                    if gm.contype or gm.conaffinity:
+                        gm.contype, gm.conaffinity = 4, 1
+                        n_ += 1
+                stack.extend(b.bodies)
+            print(f"[arm-object collisions off] {n_} arm geoms re-masked", flush=True)
+            return spec
+        return f
+
+    for name, ecfg in cfg.scene.entities.items():
+        if name in objects:
+            ecfg.spec_fn = wrap_obj(ecfg.spec_fn)
+        elif name in arm_robots:
+            ecfg.spec_fn = wrap_arm(ecfg.spec_fn)
+    del mujoco
+
+
 def report(names: list[str], out_path: str = "evals/spot_arm/pilot_report.md") -> int:
     md = ["# Spot-arm turn pilot: systems on the same held-out tasks", ""]
     runs = {n: load(n) for n in names}
@@ -148,6 +224,13 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=7100)
     ap.add_argument("--videos", type=int, default=1)
     ap.add_argument("--turn", type=float, default=30.0, help="left / right goal heading change, deg")
+    ap.add_argument("--modes", default="", help="comma list of arm modes to run (default: all for the checkpoint)")
+    ap.add_argument("--hold-pose-from", default="", help="evaluation name whose arm_pose.json gives hold_mean's pose")
+    ap.add_argument("--arm-object-collide", choices=("on", "off"), default="on")
+    ap.add_argument("--torso", default="", help="P,H: torso pitch (rad) and height (m) held for every Spot-arm")
+    ap.add_argument("--torso-interface", action="store_true")
+    ap.add_argument("--release", choices=("none", "policy", "zero", "retract"), default="none")
+    ap.add_argument("--release-s", type=float, default=5.0)
     a = ap.parse_args()
     TURNS[0], TURNS[2] = ("left", abs(a.turn)), ("right", -abs(a.turn))
     if a.report:
@@ -174,6 +257,7 @@ def main() -> int:
     from quadcoop import falls
     from quadcoop.coop2.env_cfg import SPECS, make_coop2_env_cfg
     from quadcoop.coop2.marl import PairPolicy, action_slices
+    from quadcoop.robots import spot_arm as sa_mod
     from quadcoop.coop2.mdp import AGENTS
     from quadcoop.coop2.video import Camera, key_points, render_episode
     from quadcoop.stage1.mdp import wrap
@@ -192,7 +276,15 @@ def main() -> int:
     free = (["both", "only_1", "only_2", "none"] if n_arms == 2 else ["both", "none"])
     modes = (free if arm in ("learned", "hand") else ["stowed"]) + ["solo_1", "solo_2"]
     lock = {"both": (0, 0), "only_1": (0, 1), "only_2": (1, 0), "none": (1, 1), "stowed": (0, 0),
-            "solo_1": (0, 0), "solo_2": (0, 0)}
+            "solo_1": (0, 0), "solo_2": (0, 0), "hold_out": (0, 0), "hold_mean": (0, 0)}
+    if a.modes:
+        modes = [x.strip() for x in a.modes.split(",") if x.strip()]
+        assert all(x in lock for x in modes), f"--modes: known {list(lock)}"
+    hold_mean = None
+    if "hold_mean" in modes:
+        import json as _json
+        assert a.hold_pose_from, "hold_mean needs --hold-pose-from <evaluation name>"
+        hold_mean = _json.loads((ROOT / "evals" / a.hold_pose_from / "arm_pose.json").read_text())
     base_cases = [(t, r) for t in range(len(TURNS)) for r in range(a.reps)]
     cases = [(t, r, w, m) for m in modes for w in (0, 1) for (t, r) in base_cases]
     n = len(cases)
@@ -200,7 +292,9 @@ def main() -> int:
     cfg = make_coop2_env_cfg(ck.get("variant", "b"), play=True, partner_map=bool(rc.get("partner_map")),
                              reward_set=rc.get("reward_set", "r7"), arm=arm,
                              pilot_level=tuple(rc.get("pilot_level") or ()), dyaw_choices=bool(rc.get("dyaw_choices")),
-                             hand_obs=bool(rc.get("hand_obs")))
+                             hand_obs=bool(rc.get("hand_obs")), torso=a.torso_interface)
+    if a.arm_object_collide == "off":
+        arm_object_collisions_off(cfg, [ag for ag in AGENTS if ARM[ag]], list(OBJ_NAMES2))
     if rc.get("pilot_level"):
         cfg.commands["goal"].start_level = 0
     cfg.scene.num_envs = n
@@ -244,13 +338,45 @@ def main() -> int:
     g.scenario = None
     td = lambda o: TensorDict({k: v for k, v in o.items() if not k.startswith("walker_")}, batch_size=[n])  # noqa: E731
     obs = td(obs)
-    policy = PairPolicy(obs, device, ck.get("variant", "b"), checkpoint=a.checkpoint)
     sl = action_slices(env)
+    policy = PairPolicy(obs, device, ck.get("variant", "b"), checkpoint=a.checkpoint,
+                        act_dims={ag: s_.stop - s_.start for ag, s_ in sl.items()})
     terms = {ag: env.action_manager.get_term(f"walker_{ag}") for ag in AGENTS}
     for k, ag in enumerate(AGENTS):
         if not ARM[ag]:  # ANYmal: no arm to lock
             continue
         terms[ag].arm_locked[:] = torch.tensor([bool(lock[c[3]][k]) for c in cases], device=dev)
+        out_m = torch.tensor([c[3] == "hold_out" for c in cases], device=dev)
+        mean_m = torch.tensor([c[3] == "hold_mean" for c in cases], device=dev)
+        terms[ag].arm_pose_on[:] = out_m | mean_m
+        terms[ag].arm_pose[out_m] = torch.tensor(sa_mod.ARM_OUT[:6], device=dev)
+        if hold_mean is not None:
+            terms[ag].arm_pose[mean_m] = torch.tensor(hold_mean[ag]["pose"], device=dev)
+        if a.torso:
+            p_, h_ = (float(x) for x in a.torso.split(","))
+            terms[ag].torso_override_on[:] = True
+            terms[ag].torso_override[:] = torch.tensor([0.0, p_, h_], device=dev)
+    walker_name = os.environ.get("QUADCOOP_SPOT_ARM_WALKER", "") or "RAI (spot_locomotion.onnx)"
+    print(f"walker: {walker_name}; torso {a.torso or 'default'}; torso interface {a.torso_interface} "
+          f"(expanded: {policy.expanded}); arm-object collisions {a.arm_object_collide}; release {a.release}", flush=True)
+    arm_ags = [ag for ag in AGENTS if ARM[ag]]
+    pose_sum = {ag: torch.zeros(6, device=dev) for ag in arm_ags}
+    pose_n = {ag: torch.zeros((), device=dev) for ag in arm_ags}
+    pose_all = {ag: torch.zeros(6, device=dev) for ag in arm_ags}
+    pose_all_n = {ag: torch.zeros((), device=dev) for ag in arm_ags}
+    is_both = torch.tensor([c[3] == "both" for c in cases], device=dev)
+    rel_t = torch.zeros(n, device=dev)
+    rel_xy0 = torch.zeros(n, 2, device=dev)
+    rel_e0 = torch.zeros(n, device=dev)
+    rel_disp = torch.full((n,), float("nan"), device=dev)
+    rel_yaw = torch.full((n,), float("nan"), device=dev)
+    retained = torch.zeros(n, dtype=torch.bool, device=dev)
+    fell_rel = torch.zeros(n, dtype=torch.bool, device=dev)
+
+    def base_norm(ag, v):  # base velocity (m/s, rad/s) -> the normalized action that commands it
+        t_ = terms[ag]
+        return (2.0 * (v - t_._lo) / (t_._hi - t_._lo) - 1.0).clamp(-1.0, 1.0)
+
     print(f"{a.checkpoint} (iteration {ck['iter']}, {ck['algo']}, arm {arm}; actions { {ag: s.stop - s.start for ag, s in sl.items()} }); "
           f"{len(base_cases)} tasks x swap x modes {modes} = {n} episodes, {a.object} {a.mass:g} kg", flush=True)
 
@@ -270,6 +396,15 @@ def main() -> int:
     with torch.no_grad():
         for i in range(int(a.horizon / dt)):
             act = policy(obs, env=env)
+            releasing = succ & ~done
+            if a.release in ("zero", "retract") and bool(releasing.any()):
+                for ag in AGENTS:
+                    back = a.release == "retract" and True
+                    v = torch.zeros(n, 3, device=dev)
+                    if back:
+                        v[:, 0] = torch.where(rel_t < 2.0, torch.full_like(rel_t, -0.2), torch.zeros_like(rel_t))
+                    s0 = sl[ag].start
+                    act[releasing, s0:s0 + 3] = base_norm(ag, v)[releasing]
             act[done] = 0.0  # finished episodes: stand still, arms stowed
             for k, ag in enumerate(AGENTS):  # solo: the parked robot (40 m away) stands still
                 act[park[k], sl[ag]] = 0.0
@@ -296,12 +431,42 @@ def main() -> int:
                 acc[f"force_{ag}"] += torch.linalg.norm(sd.force.view(n, -1, 3).sum(1), dim=-1) * on.float()
                 acc[f"trunk_{ag}"] += (env.scene[f"trunk_{ag}"].data.found.view(n, -1).any(-1) & live).float()
                 acc[f"ext_{ag}"] += terms[ag].blend * live.float()
+            for ag in arm_ags:  # the arm targets the policy uses (mode both): all live steps, and while touching
+                tgt = terms[ag].arm_target
+                lb = live & is_both & ~succ
+                on = lb & (env.scene[f"arm_{ag}"].data.found.view(n, -1).any(-1)
+                           | env.scene[f"trunk_{ag}"].data.found.view(n, -1).any(-1))
+                pose_all[ag] += (tgt * lb.unsqueeze(-1).float()).sum(0)
+                pose_all_n[ag] += lb.float().sum()
+                pose_sum[ag] += (tgt * on.unsqueeze(-1).float()).sum(0)
+                pose_n[ag] += on.float().sum()
             inside = (d < POS_TOL) & (e.abs() < math.radians(YAW_TOL_DEG))
             hold = torch.where(inside & live, hold + dt, torch.zeros_like(hold))
-            new = live & (hold >= HOLD_S)
+            new = live & ~succ & (hold >= HOLD_S)
             succ |= new
             t_succ = torch.where(new, torch.full_like(t_succ, t), t_succ)
-            done |= new | fell[AGENTS[0]] | fell[AGENTS[1]]
+            anyfell = fell[AGENTS[0]] | fell[AGENTS[1]]
+            if a.release == "none":
+                done |= new | anyfell
+            else:
+                if bool(new.any()):
+                    rel_xy0[new] = g.box_pos()[new, :2]
+                    rel_e0[new] = e[new]
+                    for ag in arm_ags:
+                        t_ = terms[ag]
+                        if a.release == "zero":  # the arm stays where it is
+                            t_.arm_pose[new] = t_.arm_target[new]
+                            t_.arm_pose_on[new] = True
+                        elif a.release == "retract":
+                            t_.arm_pose[new] = t_.stow
+                            t_.arm_pose_on[new] = True
+                rel_t = torch.where(succ & live & ~new, rel_t + dt, rel_t)
+                fell_rel |= succ & live & anyfell
+                fin = succ & live & ((rel_t >= a.release_s) | anyfell)
+                rel_disp = torch.where(fin, torch.linalg.norm(g.box_pos()[:, :2] - rel_xy0, dim=-1), rel_disp)
+                rel_yaw = torch.where(fin, torch.rad2deg(wrap(e - rel_e0)), rel_yaw)
+                retained |= fin & inside & ~anyfell
+                done |= fin | (anyfell & ~succ)
             if film and i % 2 == 0:
                 sd = env.sim.data
                 for j in film:
@@ -336,19 +501,35 @@ def main() -> int:
                      **{f"walked_m_{ag}": round(float(acc[f'walk_{ag}'][j]), 2) for ag in AGENTS},
                      **{f"extension_{ag}": round(float(acc[f'ext_{ag}'][j]) / ls, 4) for ag in AGENTS},
                      **{f"arm_force_{ag}": round(float(acc[f'force_{ag}'][j]) / max(float(acc[f'arm_{ag}'][j]), 1.0), 1)
-                        for ag in AGENTS}})
+                        for ag in AGENTS},
+                     "release": a.release,
+                     "release_disp_m": "" if not bool(succ[j]) or a.release == "none" else round(float(rel_disp[j]), 4),
+                     "release_yaw_deg": "" if not bool(succ[j]) or a.release == "none" else round(float(rel_yaw[j]), 2),
+                     "retained": "" if not bool(succ[j]) or a.release == "none" else int(bool(retained[j])),
+                     "fell_release": int(bool(fell_rel[j]))})
     out = ROOT / "evals" / a.name
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "episodes.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
+    if arm_ags and float(sum(pose_all_n.values())) > 0:
+        import json as _json
+        pose = {ag: {"pose": (pose_sum[ag] / pose_n[ag]).tolist() if float(pose_n[ag]) > 100 else
+                     (pose_all[ag] / pose_all_n[ag].clamp(min=1)).tolist(),
+                     "from": "object contact" if float(pose_n[ag]) > 100 else "all live steps",
+                     "contact_steps": int(pose_n[ag]), "mean_all": (pose_all[ag] / pose_all_n[ag].clamp(min=1)).tolist()}
+                for ag in arm_ags}
+        (out / "arm_pose.json").write_text(_json.dumps(pose, indent=1))
     srows = [{k: str(v) for k, v in r.items()} for r in rows]
     md = [f"# Spot-arm turn pilot: {a.name}", "",
           f"{a.checkpoint}, iteration {ck['iter']}, {ck['algo']}, arms {arm}. {a.object} {a.mass:g} kg, {a.dist:g} m, "
           f"{a.reps} placements per turn x swap, horizon {a.horizon:g} s, seed {a.seed}. Goal heading change as placed: "
           + ", ".join(f"{t} {min(float(r['turn_realized_deg']) for r in rows if r['turn'] == t):+.1f} to "
-                      f"{max(float(r['turn_realized_deg']) for r in rows if r['turn'] == t):+.1f} deg" for t, _ in TURNS) + ".", ""] + tables(srows)
+                      f"{max(float(r['turn_realized_deg']) for r in rows if r['turn'] == t):+.1f} deg" for t, _ in TURNS) + ".",
+          "", f"Walker: {walker_name}. Torso: {a.torso or 'default'} (interface {a.torso_interface}, expanded "
+          f"{policy.expanded}). Arm-object collisions: {a.arm_object_collide}. Release: {a.release}"
+          + (f" for {a.release_s:g} s" if a.release != "none" else "") + ".", ""] + tables(srows) + release_table(srows)
     (out / "summary.md").write_text("\n".join(md) + "\n")
     print("\n".join(md), flush=True)
     if film:

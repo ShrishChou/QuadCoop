@@ -60,8 +60,13 @@ gets about half the updates of S0's; S2 / S3's learner as many as S0's).
 **Check (`--schedule-check N`):** after every iteration, the changed actors must be exactly the active ones
 (weights, normalizer, noise, Adam step count, lr), and the shared actor must stay identical across robots.
 
-**Evaluations beyond the final one** (after training): S1 at every block end (4200 = (A1, B0), 4300 = (A1, B1), ...),
-smaller task set; cross pairings of S2's A with S3's B and with S1's B at selected checkpoints.
+**Block checkpoints.** Checkpoints are saved every 100 iterations (`save_interval`) and the blocks start at 4100,
+so every S1 block boundary has its checkpoint: 4100 = (A0, B0) with warmed critics, 4200 = (A1, B0), 4300 = (A1, B1),
+4400 = (A2, B1), ... 6100. All are kept (nothing prunes `logs/marl2/<run>/model_*.pt`); S0, S2, S3 have the same
+iterations for matched comparisons.
+
+**Evaluations beyond the final one** (after training): S1 at every block boundary (smaller task set, both
+assignments); cross pairings of S2's A with S3's B and with S1's B at selected checkpoints.
 
 ## S4, S5: the shared actor (`--shared-actor`)
 
@@ -83,7 +88,22 @@ smaller task set; cross pairings of S2's A with S3's B and with S1's B at select
   generations of 100 iterations; promotion decided by new + new on a development task set (weak objects weighted,
   overall success and falls as regression guards; rule fixed before the run), new + old in both assignments and
   old + old reported; on promotion weights, normalizer and noise copied into the snapshot, at a synchronized reset.
+  The promotion tasks are used again and again, so they are a development set: they come from their own seed
+  (not 7100), and the final S5 result is reported on an untouched test set (seed 7100 benchmark and a fresh seed),
+  never on the promotion tasks.
   KL reference stays the single-robot policy. No partner pool, no SGS in the first run.
+
+## Shared start: result (2880 episodes each: 480 tasks x standard / flank / goal-behind x starts exchanged)
+
+| pair | success | weakest object (arch) | cylinder | standard / exchanged | flank / exchanged | goal-behind / exchanged |
+|---|---|---|---|---|---|---|
+| parent A0 + B0 | 64.0% | 37% | 40% | 66.0 / 66.2% | 65.4 / 61.7% | 64.2 / 60.6% |
+| A0 + A0 | 62.8% | 25% | 38% | 62.9 / 65.0% | 62.1 / 61.5% | 63.5 / 61.9% |
+| B0 + B0 | 63.2% | 39% | 41% | 64.2 / 64.2% | 62.9 / 64.2% | 62.7 / 60.8% |
+
+B0 + B0 is the shared start: 0.8 points below the parent overall (rerun level; the conversion loss, reported
+apart from anything S4 / S5 do) and no loss on arch. A0 + A0 loses arch (37% -> 25%). No distillation needed. By mass
+(parent / B0+B0): 20 kg 87 / 88%, 40 kg 82 / 82%, 60 kg 58 / 58%, 80 kg 29 / 24%.
 
 ## Reading the results
 
@@ -109,3 +129,4 @@ seeds. Arch failures are inspected case by case (contacts, access, steering, con
 | S1 alt:100 | `asS1_alt100_s0` | 29490999 | `as-S1-alt100-it6100-dev7100` (29491000) |
 | S2 only A | `asS2_onlyA_s0` | 29491001 | `as-S2-onlyA-it6100-dev7100` (29491002) |
 | S3 only B | `asS3_onlyB_s0` | 29491003 | `as-S3-onlyB-it6100-dev7100` (29491004) |
+| S4 shared (from B0 + B0) | `asS4_shared_s0` | 29494696 | `as-S4-shared-it6100-dev7100` (29494697) |

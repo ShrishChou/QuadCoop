@@ -22,6 +22,14 @@ targets go to the model's own position actuators.
 
 ``arm_locked`` (per env, default off) holds a robot's arm stowed whatever the policy outputs: the evaluation's
 arm ablation of a learned-arm checkpoint. A zero action is "stand still, arm stowed" (a parked robot).
+
+Torso (docs/spot_arm_pair.md, "Torso interface"): ``torso=True`` appends 2 outputs, pitch and height, after the arm
+outputs. Action 0 is RAI's default posture (pitch 0, height 0.52 m) exactly; pitch = a x torso_pitch (+-0.2 rad);
+height = 0.52 + a x (0.52 - 0.40) for a < 0, + a x (0.55 - 0.52) for a > 0 (the range the posture walker was trained
+on, 0.40-0.55 m); roll stays 0. The applied torso command moves toward that goal at most torso_pitch_rate rad/s and
+torso_height_rate m/s. Evaluation overrides (per env, off by default): ``torso_override_on`` + ``torso_override``
+(roll, pitch, height) replaces the goal (scripted posture sweeps, any checkpoint); ``arm_pose_on`` + ``arm_pose``
+(6 joint targets) holds the arm at a fixed pose (arm-mechanism test). Both are rate-limited like the policy's own.
 """
 from __future__ import annotations
 
@@ -69,6 +77,15 @@ class SpotArmAction(ActionTerm):
         self._held = torch.zeros(n, N_HAND, device=dev)  # hand_rate: the latched arm action (arm_hold_steps)
         self._hold_k = 0
         self.walker_action = self.walker.prev  # (n, 12) the walker's last leg action
+        self.torso_default = torch.tensor([0.0, 0.0, sa.STAND_HEIGHT_CMD], device=dev)
+        self.torso = self.torso_default.repeat(n, 1)  # applied torso command (roll, pitch, height), rate-limited
+        self.torso_goal = self.torso_default.repeat(n, 1)
+        self.torso_override_on = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.torso_override = self.torso_default.repeat(n, 1)
+        self.arm_pose_on = torch.zeros(n, dtype=torch.bool, device=dev)
+        self.arm_pose = self.stow.repeat(n, 1)
+        if cfg.torso:
+            self._dim += 2
         print(f"[spot_arm] {cfg.entity_name}: RAI walker, arm {cfg.arm} ({self._dim} actions"
               + (f", arm targets rate-limited to {cfg.arm_rate:g} rad/s" if cfg.arm != "stowed" else "") + ")")
 
@@ -112,11 +129,24 @@ class SpotArmAction(ActionTerm):
             goal = self.stow + self.blend.unsqueeze(-1) * (sa.hand_ik(self.hand_cmd) - self.stow)
         else:
             goal = self.stow.expand(self.num_envs, N_ARM)
+        goal = torch.where(self.arm_pose_on.unsqueeze(-1), self.arm_pose, goal)
         self.arm_goal[:] = goal
         step = self.cfg.arm_rate * self._env.step_dt
         self.arm_target += torch.clamp(goal - self.arm_target, -step, step)
         arm7 = torch.cat([self.arm_target, torch.zeros(self.num_envs, 1, device=self.device)], -1)
-        tg = self.walker.targets(sa.RaiWalker.command(twist.vel_command_b, arm7))
+        tgoal = self.torso_default.expand(self.num_envs, 3)
+        if self.cfg.torso:
+            at = a[:, -2:]
+            lo_h, hi_h = self.cfg.torso_height
+            d0 = float(sa.STAND_HEIGHT_CMD)
+            h = d0 + torch.where(at[:, 1] < 0, at[:, 1] * (d0 - lo_h), at[:, 1] * (hi_h - d0))
+            tgoal = torch.stack([torch.zeros_like(h), at[:, 0] * self.cfg.torso_pitch, h], -1)
+        tgoal = torch.where(self.torso_override_on.unsqueeze(-1), self.torso_override, tgoal)
+        self.torso_goal[:] = tgoal
+        dt_ = self._env.step_dt
+        lim = torch.tensor([0.0, self.cfg.torso_pitch_rate * dt_, self.cfg.torso_height_rate * dt_], device=self.device)
+        self.torso += torch.maximum(torch.minimum(tgoal - self.torso, lim), -lim)
+        tg = self.walker.targets(sa.RaiWalker.command(twist.vel_command_b, arm7, self.torso))
         self._joint.process_actions(tg)
 
     def apply_actions(self) -> None:
@@ -132,6 +162,8 @@ class SpotArmAction(ActionTerm):
         self.hand_cmd[ids] = self.hand_c
         self.blend[ids] = 0.0
         self._held[ids] = 0.0
+        self.torso[ids] = self.torso_default
+        self.torso_goal[ids] = self.torso_default
         self.walker.reset(env_ids)
 
 
@@ -148,6 +180,11 @@ class SpotArmActionCfg(ActionTermCfg):
     smoothing: float = 0.3
     arm_rate: float = 1.5  # rad/s; the port check's ramp (stowed -> out in 1.5 s) peaked at 1.5 rad/s
     interface: str = "raw"
+    torso: bool = False  # 2 more outputs: torso pitch and height (module docstring)
+    torso_pitch: float = 0.2  # rad at action +-1
+    torso_height: tuple[float, float] = (0.40, 0.55)  # m at action -1 / +1 (0: 0.52)
+    torso_pitch_rate: float = 0.5  # rad/s
+    torso_height_rate: float = 0.15  # m/s
 
     def build(self, env: ManagerBasedRlEnv) -> SpotArmAction:
         return SpotArmAction(self, env)
@@ -220,6 +257,16 @@ def arm_state(env, robot: str, action_name: str) -> torch.Tensor:
     xy = torch.cat([rel[:, :2], torch.zeros_like(rel[:, :1])], -1)
     xy = quat_apply_inverse(yaw_quat(r.data.root_link_quat_w), xy)[:, :2]
     return torch.cat([q, qd, term.arm_target - term.stow, xy, rel[:, 2:3]], -1)
+
+
+def torso_state(env, robot: str, action_name: str) -> torch.Tensor:
+    """(4) the applied torso command, pitch and height - 0.52 m; its tracking error, base height - commanded height
+    and projected-gravity x - sin(commanded pitch) (ReLIC's attitude term)."""
+    term = env.action_manager.get_term(action_name)
+    d = env.scene[robot].data
+    t = term.torso
+    return torch.stack([t[:, 1], t[:, 2] - sa.STAND_HEIGHT_CMD, d.root_link_pos_w[:, 2] - t[:, 2],
+                        d.projected_gravity_b[:, 0] - torch.sin(t[:, 1])], -1)
 
 
 def touch(env, sensor: str) -> torch.Tensor:
