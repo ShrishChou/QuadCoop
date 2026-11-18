@@ -59,6 +59,8 @@ class SpotArmAction(ActionTerm):
         self.walker = sa.RaiWalker(self.robot, self.device)
         n, dev = self.num_envs, self.device
         self._dim = 3 + {"stowed": 0, "learned": N_ARM, "hand": N_HAND, "hand_rate": N_HAND}[cfg.arm]
+        if cfg.torso:  # 2 torso outputs after the arm outputs
+            self._dim += 2
         self._raw = torch.zeros(n, self._dim, device=dev)
         self._lo = torch.tensor([cfg.vx_range[0], cfg.vy_range[0], cfg.wz_range[0]], device=dev)
         self._hi = torch.tensor([cfg.vx_range[1], cfg.vy_range[1], cfg.wz_range[1]], device=dev)
@@ -84,8 +86,6 @@ class SpotArmAction(ActionTerm):
         self.torso_override = self.torso_default.repeat(n, 1)
         self.arm_pose_on = torch.zeros(n, dtype=torch.bool, device=dev)
         self.arm_pose = self.stow.repeat(n, 1)
-        if cfg.torso:
-            self._dim += 2
         print(f"[spot_arm] {cfg.entity_name}: RAI walker, arm {cfg.arm} ({self._dim} actions"
               + (f", arm targets rate-limited to {cfg.arm_rate:g} rad/s" if cfg.arm != "stowed" else "") + ")")
 

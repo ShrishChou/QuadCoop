@@ -3066,6 +3066,55 @@ def work_credit(env, robot: str, f_ref: float = 200.0, max_ratio: float = 2.0, m
     return torch.where(dist > done_dist, push * speed, torch.zeros_like(speed))
 
 
+def _desired_twist(env):
+    """The object motion the task wants now (world frame), as a unit twist in force units: (v_hat (n, 2),
+    w_hat (n,), turn_share (n,), lever (n,), wanted (n,) bool). v_des / w_des from the command's own rule
+    (_wanted: toward the goal position and heading, each saturating; slowing down near the goal, so braking an
+    overshoot or a settle is not "against" it). Turning is compared in force units through the lever
+    rho = the object's bounding radius: the unit twist is (v_des, rho w_des) / |(v_des, rho w_des)|."""
+    g = _g(env)
+    d, e = g.errors()
+    v, w = g._wanted(g.goal_xy - g.box_pos()[:, :2], e, g.symmetry())
+    rho = g.radius_env[torch.arange(g.num_envs, device=g.device), g.shape].clamp(min=0.05)
+    norm = torch.sqrt(v.square().sum(-1) + (rho * w).square())
+    wanted = (norm > 0.02) & (d > 0.1)
+    vh = v / norm.clamp(min=1e-6).unsqueeze(-1)
+    wh = rho * w / norm.clamp(min=1e-6)
+    return vh, wh, (wh.abs()).clamp(0.0, 1.0), rho, wanted
+
+
+def robot_wrench_power(env, robot: str, f_ref: float = 200.0) -> torch.Tensor:
+    """(n,) this robot's push projected on the wanted object motion, in units of f_ref: (F . v_hat + (tau / rho)
+    w_hat) / f_ref, F its contact force on the object (push_<robot> sensor), tau = (front point - object) x F.
+    Positive = helps the wanted motion (including the turning couple of a turn), negative = works against it."""
+    g = _g(env)
+    vh, wh, _, rho, wanted = _desired_twist(env)
+    f = object_force_from(env, robot)
+    r = g.front_point(robot) - g.box_pos()[:, :2]
+    tau = r[:, 0] * f[:, 1] - r[:, 1] * f[:, 0]
+    p = ((f * vh).sum(-1) + tau / rho * wh) / f_ref
+    return torch.where(wanted, p, torch.zeros_like(p))
+
+
+def opposing_power(env, robot: str, f_ref: float = 200.0, cap: float = 2.0) -> torch.Tensor:
+    """Per robot (opposing-force arm, docs/opposing_force.md): max(0, -robot_wrench_power), at most cap: only
+    pushing against the wanted object motion costs; pushing along it, yielding or steering costs nothing (no credit
+    for pushing, unlike r8's work_credit)."""
+    return (-robot_wrench_power(env, robot, f_ref)).clamp(0.0, cap)
+
+
+def force_cancellation(env, f_ref: float = 200.0, cap: float = 2.0) -> torch.Tensor:
+    """Team (opposing-force arm): force the robots spend against each other, (sum_i |F_i| - |sum_i F_i|) / f_ref,
+    x (1 - the turning share of the wanted motion): a turn's couple (opposite forces on opposite sides) is not
+    counted, squeezing the object while only translation is wanted is. 0 with fewer than two robots in contact."""
+    _, _, turn, _, wanted = _desired_twist(env)
+    fs = [object_force_from(env, a) for a in AGENTS]
+    tot = sum(torch.linalg.norm(f, dim=-1) for f in fs)
+    net = torch.linalg.norm(sum(fs), dim=-1)
+    c = ((tot - net) / f_ref).clamp(0.0, cap) * (1.0 - turn)
+    return torch.where(wanted, c, torch.zeros_like(c))
+
+
 def _segment_distance(p1, q1, p2, q2):
     """Closest distance between 2D segments p1-q1 and p2-q2 (batched, (n, 2) each)."""
     d1, d2, r = q1 - p1, q2 - p2, p1 - p2

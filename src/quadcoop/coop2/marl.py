@@ -166,6 +166,8 @@ class MarlCfg:
     actor_schedule: str = ""
     shared_actor: bool = False  # one actor for both robots (parameters tied, pooled PPO samples, one optimizer)
     swap_starts: bool = False  # env option (recorded): exchange the robots' start tuples with probability 0.5
+    oppose_cost: float = 0.0  # env option (recorded): per-robot cost of pushing against the wanted object motion
+    cancel_cost: float = 0.0  # env option (recorded): team cost of the robots' forces cancelling
     task_bank: str = ""  # "" (training-rule draws) | "uniform" | "sgs": resets draw from a fixed task bank
     task_bank_file: str = ""  # the bank (quadcoop/coop2/task_bank.py), shared by the arms it compares
     push_cmd: bool = False  # env option (recorded): Stage 4e push directions (4 more inputs per robot), 4e rewards

@@ -355,6 +355,12 @@ def main() -> int:
                     help="run N iterations and check after each that exactly the scheduled actors changed (weights, "
                          "normalizer, noise, optimizer state, lr) and, with --shared-actor, that the robots' actors "
                          "stay identical; writes schedule_check.json, exit 0 / 1")
+    ap.add_argument("--oppose-cost", type=float, default=0.0,
+                    help="opposing-force arm (docs/opposing_force.md): per robot, weight of the cost of pushing "
+                         "against the wanted object motion (mdp.opposing_power)")
+    ap.add_argument("--cancel-cost", type=float, default=0.0,
+                    help="opposing-force arm: team weight of the cost of the robots' forces cancelling "
+                         "(mdp.force_cancellation)")
     ap.add_argument("--swap-starts", action="store_true",
                     help="exchange the two robots' start tuples (bearing, gap, yaw noise) with probability 0.5 at "
                          "every reset, after any task-bank replay")
@@ -516,6 +522,7 @@ def main() -> int:
                                  resid_gate_dist=a.resid_gate_dist, train_shapes=train_shapes, train_mass=train_mass,
                                  fixed_difficulty=a.fixed_difficulty, track=a.track, track_w=a.track_w,
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
+                                 oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
                                  hand_obs=a.hand_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
@@ -570,7 +577,8 @@ def main() -> int:
                   resid_scale_axes=tuple(float(x) for x in a.resid_scale_axes.split(",")) if a.resid_scale_axes else (),
                   track=a.track, track_w=a.track_w, short_tasks=a.short_tasks,
                   drop_rewards=drop_rewards, init_actors=a.init_actors or "", task_bank=a.task_bank or "", task_bank_file=a.task_bank_file or "",
-                  actor_schedule=a.actor_schedule, shared_actor=a.shared_actor, swap_starts=a.swap_starts)
+                  actor_schedule=a.actor_schedule, shared_actor=a.shared_actor, swap_starts=a.swap_starts,
+                  oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost)
     trainer = MarlTrainer(env, cfg, log_dir, device, logger="tensorboard" if a.check else a.logger,
                           wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)

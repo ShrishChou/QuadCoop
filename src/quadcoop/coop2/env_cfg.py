@@ -219,7 +219,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        train_mass: tuple = (), fixed_difficulty: bool = False, track: bool = False,
                        track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
-                       dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False, turn_signs: bool = False,
+                       dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False,
+                       oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
     """partner_map: each robot's top map gets a second channel with the partner's footprint.
@@ -322,7 +323,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
-    if reward_set == "r8" or guide or push_sensors or resid or "compliant" in kinds.values() or any(ARM.values()):
+    if (reward_set == "r8" or guide or push_sensors or resid or "compliant" in kinds.values() or any(ARM.values())
+            or oppose_cost > 0 or cancel_cost > 0):
         # contact between each robot and the object (work_credit, bump cost; a compliant walker's force input)
         cfg.scene.sensors += tuple(ContactSensorCfg(
             name=f"push_{a}",
@@ -516,6 +518,11 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         rewards["time_cost"] = R(func=mdp.time_cost, weight=-0.2)
     if reward_set == "r8":
         rewards.pop("robots_close")  # only actual contact counts (robots_touch)
+    if cancel_cost > 0:  # opposing-force arm (docs/opposing_force.md): robots squeezing the object against each other
+        rewards["force_cancellation"] = R(func=mdp.force_cancellation, weight=-cancel_cost)
+    if oppose_cost > 0:  # opposing-force arm: each robot's push against the wanted object motion
+        for a_ in AGENTS:
+            rewards[f"oppose_{a_}"] = R(func=mdp.opposing_power, weight=-oppose_cost, params={"robot": a_})
     if reward_set in ("r7", "r8"):
         rewards["goal_error"] = R(func=mdp.goal_error, weight=-GOAL_ERROR_COST)
         rewards["fail_remaining"] = R(func=mdp.failed_remaining, weight=-GOAL_ERROR_COST,
