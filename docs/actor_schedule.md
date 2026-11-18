@@ -143,7 +143,7 @@ seeds. Arch failures are inspected case by case (contacts, access, steering, con
 | S4 shared (from B0 + B0, 63.2%) | 65.9% | 41% | 12.1% | +264 / -222 |
 
 S4 - S0 = +1.46 points; a paired bootstrap over tasks (the six formation / assignment variants of a task grouped)
-gives about [-0.07, +2.92] (task uncertainty only, not training-seed variability). S4 also differs from S0 in its
+gives [-0.07, +2.95] (5000 resamples of the 480 tasks; task uncertainty only, not training-seed variability). S4 also differs from S0 in its
 start (B0 + B0, not A0 + B0): S4 is +2.7 over its own start.
 
 **What it shows.** Under this warm start, reward, regularization (KL anchor 0.05, lr cap 1e-4), task bank and
