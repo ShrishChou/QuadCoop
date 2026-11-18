@@ -167,3 +167,21 @@ the saturation problem this repository documented before. A candidate limit on i
 | fresh tasks, seed 7500 (unused before) | parent, B0 + B0, S0 and S4 at 6100 (`*-fresh7500`) | 29543988-91 |
 | S4sep: B0 + B0, two separate actors, joint updates (isolates sharing from initialization) | `asS4sep_bbsep_s0` | 29543956; fresh-task eval 29543992 |
 | second continuation seed (fine-tuning variability around this parent, not an independent parent) | `asS4_shared_s1`, `asS0_joint_s1` | 29543958, 29543960; fresh-task evals 29543993-4 |
+
+## Follow-up results (2026-11-18)
+
+**Checkpoint trajectory** (seed 7100, success %; arch %): S0 64.0 (start) -> 63.3 / 64.0 / 64.4 / 64.2 / 64.4 at
+4300 / 4700 / 5100 / 5500 / 6100 (arch 34 / 33 / 35 / 34 / 32); S1 64.0 -> 64.0 / 63.0 / 63.9 / 63.5 / 63.3; S4 63.2
+(B0 + B0) -> 62.3 / 64.8 / 64.5 / 64.6 / 65.9 (arch 32 / 37 / 39 / 41 / 41). S0 and S1 flat within rerun noise, no
+alternating gains and losses in S1 (no sign of actors undoing each other's adaptations at this resolution). S4 rises
+slowly, with arch rising most; S4 - S0 per checkpoint: -1.0, +0.8, +0.1, +0.4, +1.5 (all intervals include 0).
+
+**Fresh tasks** (seed 7500, 2880 episodes): parent 63.5% (arch 34%), B0 + B0 63.5% (36%), S0 61.9% (31%), S4 64.9%
+(40%). Paired bootstrap: S4 - S0 +2.95 [+1.28, +4.58]; S4 - B0 + B0 +1.35 [-0.31, +3.06]; S0 - parent -1.56
+[-3.26, +0.24]; B0 + B0 - parent +0.03. S4 beats S0 on fresh tasks, but partly because S0 drifts slightly below its
+start; S4's gain over its own start is not established. S4sep (same start, separate actors) decides whether the
+start or the sharing matters.
+
+**Second seed:** the first attempt failed at start: the task bank fixes per-slot physics drawn from the env seed, so
+seed 1 needs its own bank (`logs/next_wave/bank_ten_s1_k16.pt`, made and replay-checked by job 29556026); S4 / S0
+seed 1 then train (29556027, 29556029; evaluations 29556028 / 29556030 on seed 7100, 29556031-2 on seed 7500).

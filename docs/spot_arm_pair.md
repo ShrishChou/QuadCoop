@@ -451,3 +451,22 @@ continued policy, 8 / 83 zero command, 7 / 89 retract), and the zero-command run
 recorded, rates over complete episodes, and both "inside at the end" and "inside throughout" the window. The first
 run's percentages (continued policy 27-49% retained; zero / retract 88-93%) are qualitative only. Rerun with RAI and
 s3 as `sa-release-v2-{rai,s3}-*` (jobs 29543940, 29543941).
+
+**Arm mechanism, s3 walker** (`sa-mech-s3-*`): learned arms 95.0%; stowed 90.8% (-4.2 [-10.8, +2.5]); only robot 1's
+arm 92.5%, only robot 2's 95.8%; held out 0.8%; mean pose 93.3%; collisions off 96.7%. With the load-trained walker
+the arm advantage (RAI: +33 points over stowed) is mostly gone: arm configuration compensates for a weaker
+locomotion controller.
+
+**Release, corrected** (`sa-release-v2-*`; every success completed its 5 s window; rates: inside at end / inside
+throughout / median displacement / falls in release):
+
+| walker, task | continued policy | zero base command, arm held | retract + back-off |
+|---|---|---|---|
+| RAI 40 kg 2 m | 42% / 32% / 0.090 m / 3.6% | 100% / 100% / 0.003 m / 0% | 100% / 100% / 0.002 m / 0% |
+| RAI 20 kg 1 m | 30% / 3% / 0.136 m / 0% | 97% / 97% / 0.009 m / 0% | 97% / 97% / 0.008 m / 0% |
+| s3 40 kg 2 m | 53% / 28% / 0.092 m / 1.8% | 77% / 77% / 0.015 m / 0.9% | 95% / 95% / 0.003 m / 0% |
+| s3 20 kg 1 m | 26% / 3% / 0.145 m / 0% | 57% / 54% / 0.042 m / 0.9% | 81% / 81% / 0.011 m / 0% |
+
+Continued control rarely keeps the object in place throughout. With RAI either scripted release holds it; s3 does
+not stand still on a zero command (its stop-command velocity error 0.115 m/s vs RAI 0.008 in the ramp test) and
+nudges the object, worst at 20 kg: retract + back-off is needed with s3, and still loses 5-19%.
