@@ -182,6 +182,7 @@ class CoopPush2Command(Push2Command):
         self.d0 = torch.ones(n, device=dev)
         self.need_episode = torch.zeros(n, dtype=torch.bool, device=dev)  # need_frac pick (for logging)
         self.turn_episode = torch.zeros(n, dtype=torch.bool, device=dev)  # turn_frac pick
+        self.start_swapped = torch.zeros(n, dtype=torch.bool, device=dev)  # swap_starts: this episode's exchange
         # evaluation switches (as in Stage 2)
         self.heading_zero = False
         self.heading_zero_map = False
@@ -1960,6 +1961,11 @@ class CoopPush2Command(Push2Command):
             for k in range(len(AGENTS)):
                 if k != c.solo_agent:
                     park[k] = torch.ones(m, dtype=torch.bool, device=dev)
+        if c.swap_starts and len(AGENTS) == 2 and self.draw_log is None:
+            sw = torch.rand(m, device=dev) < 0.5
+            self.start_swapped[env_ids] = sw
+            for lst in (bearings, gaps, yaw_noise, park):
+                lst[0], lst[1] = torch.where(sw, lst[1], lst[0]), torch.where(sw, lst[0], lst[1])
         self.goal_turn[env_ids] = fold(wrap(goal_yaw - obj_heading), self.sym[shape])
         if self.draw_log is not None:  # task bank generation: everything the placement below depends on
             self.draw_log.update(
@@ -2202,6 +2208,9 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     gap: tuple[float, float] = (0.3, 0.9)  # clear space body -> object at the start
     min_separation_deg: float = 60.0
     robot_yaw_noise_deg: float = 20.0
+    # balance (docs/actor_schedule.md): with probability 0.5 per reset the two robots' start tuples (bearing, gap,
+    # yaw noise) are exchanged, after any task-bank replay, so each actor starts from either place of every task
+    swap_starts: bool = False
     park_distance: float = 40.0
     # solo control (training): robot solo_agent (0 / 1) alone, the other parked park_distance m away every episode
     # (actions zeroed by the trainer, its falls ignored); -1 = both robots

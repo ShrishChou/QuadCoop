@@ -344,6 +344,20 @@ def main() -> int:
     ap.add_argument("--init-actors", default=None,
                     help="both actors (weights, normalizers, action noise) from this trainer checkpoint of either "
                          "algorithm; critics and optimizers fresh (pair with --critic-warmup-resume)")
+    # -- actor schedules and shared actor (docs/actor_schedule.md) ------------------------------------------------
+    ap.add_argument("--actor-schedule", default="",
+                    help="joint (both actors learn: the matched control) | alt:<N> (one actor at a time, N-iteration "
+                         "blocks, first robot first) | only:<agent> (the other stays exactly as initialised)")
+    ap.add_argument("--shared-actor", action="store_true",
+                    help="one actor for both robots (needs a checkpoint with identical actors, "
+                         "scripts/make_shared_ckpt.py): parameters tied, both robots' samples pooled, one optimizer")
+    ap.add_argument("--schedule-check", type=int, default=0, metavar="N",
+                    help="run N iterations and check after each that exactly the scheduled actors changed (weights, "
+                         "normalizer, noise, optimizer state, lr) and, with --shared-actor, that the robots' actors "
+                         "stay identical; writes schedule_check.json, exit 0 / 1")
+    ap.add_argument("--swap-starts", action="store_true",
+                    help="exchange the two robots' start tuples (bearing, gap, yaw noise) with probability 0.5 at "
+                         "every reset, after any task-bank replay")
     ap.add_argument("--transfer-check", default=None, metavar="OBS_FILE",
                     help="with --init-actors: compare the actors with the source on the observations saved in "
                          "OBS_FILE (collected under the source policy if missing), before any update; exit 0 / 1")
@@ -373,6 +387,10 @@ def main() -> int:
         raise SystemExit("--kl-ref anchors to the Stage 2 policies: it does not apply with --scratch")
     if a.init_actors and (a.init_from or a.scratch or a.residual):
         raise SystemExit("--init-actors replaces --init-from / --scratch / --residual")
+    if a.actor_schedule and not (a.actor_schedule == "joint" or a.actor_schedule.startswith(("alt:", "only:"))):
+        raise SystemExit(f"--actor-schedule {a.actor_schedule}: joint, alt:<N> or only:<agent>")
+    if a.shared_actor and (a.residual or a.actor_schedule.startswith("only:")):
+        raise SystemExit("--shared-actor: plain actors, and both robots use the one actor (no only:<agent>)")
     if a.transfer_check and not a.init_actors:
         raise SystemExit("--transfer-check checks an --init-actors transfer")
     if (a.task_bank or a.bank_make or a.bank_check or a.bank_remix) and not a.task_bank_file:
@@ -502,6 +520,8 @@ def main() -> int:
                                  hand_obs=a.hand_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
+    if a.swap_starts:
+        env_cfg.commands["goal"].swap_starts = True
     env_cfg.seed = a.seed
     drop_rewards = tuple(x.strip() for x in a.drop_rewards.split(",") if x.strip())
     for pre in drop_rewards:
@@ -549,7 +569,8 @@ def main() -> int:
                   train_mass=train_mass, fixed_difficulty=a.fixed_difficulty,
                   resid_scale_axes=tuple(float(x) for x in a.resid_scale_axes.split(",")) if a.resid_scale_axes else (),
                   track=a.track, track_w=a.track_w, short_tasks=a.short_tasks,
-                  drop_rewards=drop_rewards, init_actors=a.init_actors or "", task_bank=a.task_bank or "", task_bank_file=a.task_bank_file or "")
+                  drop_rewards=drop_rewards, init_actors=a.init_actors or "", task_bank=a.task_bank or "", task_bank_file=a.task_bank_file or "",
+                  actor_schedule=a.actor_schedule, shared_actor=a.shared_actor, swap_starts=a.swap_starts)
     trainer = MarlTrainer(env, cfg, log_dir, device, logger="tensorboard" if a.check else a.logger,
                           wandb_project=a.wandb_project)
     last = MarlTrainer.newest(log_dir)
@@ -639,7 +660,12 @@ def main() -> int:
             bad = {k: v for k, v in rep_.items() if isinstance(v, float) and v > 1e-4}
             print(f"[bank] replay check (columns 0 and {tb.K - 1}, every slot, twice): worst {rep_['worst']:.2e} "
                   f"-> {'PASS' if rep_['pass'] else 'FAIL'}" + (f"; over tolerance: {bad}" if bad else ""))
-            (Path(a.task_bank_file).with_suffix(".check.json")).write_text(json.dumps(rep_, indent=1))
+            if a.swap_starts:  # the replay with exchanged starts: its own record (the bank's own check stays)
+                sh_ = [x for k_, v_ in rep_.items() if k_.endswith("swap_share") for x in v_]
+                print(f"[bank] swap_starts: share of slots exchanged per replay {[round(x, 3) for x in sh_]}")
+                rep_["pass"] = bool(rep_["pass"] and all(0.45 <= x <= 0.55 for x in sh_))
+            (Path(a.task_bank_file).with_suffix(".swap.check.json" if a.swap_starts else ".check.json")).write_text(
+                json.dumps(rep_, indent=1))
             raise SystemExit(0 if rep_["pass"] else 1)
         trainer.attach_bank(tb)
         print(f"[bank] training resets draw from {a.task_bank_file} ({tb.n} slots x {tb.K} tasks, "
@@ -651,6 +677,9 @@ def main() -> int:
         raise SystemExit(0 if rep["pass"] else 1)
     if a.check:
         cfg.max_iterations = trainer.it + 2  # a check always runs 2 iterations, wherever it starts
+    if a.schedule_check:
+        cfg.max_iterations = trainer.it + a.schedule_check
+        trainer.iter_hook = schedule_hook(log_dir / "schedule_check.json", cfg)
     if a.kl_ref > 0:
         trainer.build_refs(models["policy"])
     (log_dir / "inputs.yaml").write_text(yaml.safe_dump({"run": run, "algo": a.algo, "variant": a.variant,
@@ -664,9 +693,66 @@ def main() -> int:
     if trainer.it >= cfg.max_iterations:
         print(f"{log_dir} is already at iteration {trainer.it} (target {cfg.max_iterations})")
         return 0
+    if trainer.iter_hook is not None and hasattr(trainer.iter_hook, "prime"):
+        trainer.iter_hook.prime(trainer)
     trainer.learn()
     env.close()
     return 0
+
+
+def schedule_hook(out_file, cfg):
+    """--schedule-check: after every iteration, which actors changed against the previous iteration."""
+    import re
+
+    import torch
+
+    from quadcoop.coop2.pairs import AGENTS
+
+    def snap(tr):
+        st = {}
+        for ag in AGENTS:
+            sd = {re.sub(rf"(?<=_){ag}(?=\.)", "X", k): v.detach().clone() for k, v in tr.actors[ag].state_dict().items()}
+            opt = tr.actor_opt[ag if not cfg.shared_actor else AGENTS[0]].state_dict()["state"]
+            steps = sum(float(v["step"]) for v in opt.values()) if opt else 0.0
+            st[ag] = (sd, steps, float(tr.lr[ag]))
+        return st
+
+    rows, prev, ok = [], {}, [True]
+
+    def hook(tr, active, warm):
+        cur = snap(tr)
+        if "s" in prev:
+            row = {"iter": tr.it, "warm": warm, "active": [] if warm else list(active), "changed": {}, "ok": True}
+            for ag in AGENTS:
+                sd0, st0, lr0 = prev["s"][ag]
+                sd1, st1, lr1 = cur[ag]
+                w = [k for k in sd1 if not torch.equal(sd1[k], sd0[k])]
+                row["changed"][ag] = {"tensors": len(w), "opt_steps": st1 - st0, "lr_changed": lr1 != lr0,
+                                      "normalizer": any("normalizer" in k for k in w), "noise": any("std" in k for k in w)}
+                should = (not warm) and ag in active
+                changed = bool(w) or st1 != st0
+                frozen_ok = should or (not w and st1 == st0 and lr1 == lr0)
+                if (should and not changed) or not frozen_ok:
+                    row["ok"] = False
+            if cfg.shared_actor:
+                a0 = AGENTS[0]
+                same = all(torch.equal(cur[a0][0][k], cur[ag][0][k]) for ag in AGENTS[1:] for k in cur[a0][0])
+                row["shared_identical"] = same
+                row["ok"] &= same
+            ok[0] &= row["ok"]
+            rows.append(row)
+            print(f"[schedule-check] iteration {tr.it}: warm {warm} active {row['active']} changed "
+                  f"{ {k: v['tensors'] for k, v in row['changed'].items()} } -> {'ok' if row['ok'] else 'FAIL'}", flush=True)
+        prev["s"] = cur
+        if tr.it >= cfg.max_iterations:
+            import json
+            Path(out_file).write_text(json.dumps({"pass": ok[0], "schedule": cfg.actor_schedule,
+                                                  "shared": cfg.shared_actor, "rows": rows}, indent=1))
+            print(f"[schedule-check] {'PASS' if ok[0] else 'FAIL'} -> {out_file}", flush=True)
+            if not ok[0]:
+                raise SystemExit(1)
+    hook.prime = lambda tr: prev.__setitem__("s", snap(tr))  # the state before the first iteration
+    return hook
 
 
 def transfer_check(trainer, env, a, device) -> int:

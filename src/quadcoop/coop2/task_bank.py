@@ -225,15 +225,24 @@ def replay_check(env, tb: TaskBank, columns=(0, -1), tol: float = 1e-4) -> dict:
     for col in columns:
         k = col % tb.K
         tb.forced = k
-        got = []
+        got, swapped = [], []
+        swap_on = bool(getattr(g.cfg, "swap_starts", False)) and len(g.robots) == 2
         for _ in range(2):
             env.reset()
             assert torch.equal(g.shape[ids], tb.t["shape"][:, k]), f"column {k}: another shape"
             got.append(snapshot(env, ids, tb.t["shape"][:, k]))
+            swapped.append(g.start_swapped[ids].clone() if swap_on else torch.zeros_like(ids, dtype=torch.bool))
         tb.forced = None
+        if swap_on:  # swap_starts: each robot must sit where the bank put the other one exactly when swapped
+            rep[f"col{k}/swap_share"] = [float(sw.float().mean()) for sw in swapped]
+        r0, r1 = list(g.robots)[:2] if len(g.robots) >= 2 else (None, None)
+        other = {f"xy_{r0}": f"xy_{r1}", f"xy_{r1}": f"xy_{r0}", f"yaw_{r0}": f"yaw_{r1}", f"yaw_{r1}": f"yaw_{r0}"}
         for key, want in tb.snap.items():
-            ref = want[:, k]
             for j, s in enumerate(got):
+                ref = want[:, k]
+                if swap_on and key in other:
+                    sw = swapped[j].view(-1, *([1] * (ref.dim() - 1)))
+                    ref = torch.where(sw, tb.snap[other[key]][:, k], ref)
                 d = s[key] - ref
                 if "yaw" in key:
                     d = torch.atan2(torch.sin(d), torch.cos(d))

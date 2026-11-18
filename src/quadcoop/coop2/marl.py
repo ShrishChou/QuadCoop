@@ -160,6 +160,12 @@ class MarlCfg:
     init_from: str = ""  # Stage 4 checkpoint the networks were expanded from (Stage 4d / 4e)
     drop_rewards: tuple = ()  # env option (recorded): reward terms removed by name prefix
     init_actors: str = ""  # trainer checkpoint the actors (only) came from, any algorithm; critics fresh
+    # which actors learn (docs/actor_schedule.md): "" (legacy: all, re-warm after a resume) | "joint" (all, the
+    # matched control) | "alt:<N>" (one actor at a time, N-iteration blocks, AGENTS[0] first) | "only:<agent>";
+    # blocks count from the first actor-training iteration after init_actors' critic-only phase
+    actor_schedule: str = ""
+    shared_actor: bool = False  # one actor for both robots (parameters tied, pooled PPO samples, one optimizer)
+    swap_starts: bool = False  # env option (recorded): exchange the robots' start tuples with probability 0.5
     task_bank: str = ""  # "" (training-rule draws) | "uniform" | "sgs": resets draw from a fixed task bank
     task_bank_file: str = ""  # the bank (quadcoop/coop2/task_bank.py), shared by the arms it compares
     push_cmd: bool = False  # env option (recorded): Stage 4e push directions (4 more inputs per robot), 4e rewards
@@ -502,6 +508,9 @@ class MarlTrainer:
         self.it = 0
         self.warm_from = {}
         self.resume_it = None  # iteration a resumed run started from (critic_warmup_resume)
+        self.sched_origin = None  # first actor-training iteration (actor_schedule's block 0)
+        self.actor_updates = {a: 0 for a in AGENTS}  # iterations in which each actor was updated
+        self.iter_hook = None  # called after every iteration as hook(trainer, active_actors, critic_warmup)
         # reward split: team terms + each robot's own (names ending in _<robot>)
         rm = env.reward_manager
         names = list(rm.active_terms)
@@ -678,6 +687,7 @@ class MarlTrainer:
             "actor_opt": {a: o.state_dict() for a, o in self.actor_opt.items()},
             "critic_opt": {k: o.state_dict() for k, o in self.critic_opt.items()},
             "lr": dict(self.lr), "warm_from": self.warm_from,
+            "sched_origin": self.sched_origin, "resume_origin": self.resume_it, "actor_updates": dict(self.actor_updates),
             "std_cap": {a: (None if c is None else c.tolist()) for a, c in self.std_cap.items()},
             "bank": None if self.bank is None else self.bank.state(),
             "env_state": {"common_step_counter": int(self.env.common_step_counter), "level": int(g.level),
@@ -771,6 +781,10 @@ class MarlTrainer:
                 pg["lr"] = self.lr[a]
         self.it = int(ck["iter"])
         self.resume_it = self.it
+        if self.cfg.actor_schedule and ck.get("sched_origin") is not None:  # a requeue continues the schedule: no
+            self.sched_origin = int(ck["sched_origin"])                     # second critic-only phase
+            self.resume_it = ck.get("resume_origin", self.it)
+            self.actor_updates = {a: int(v) for a, v in (ck.get("actor_updates") or {}).items()} or self.actor_updates
         self.warm_from = ck.get("warm_from", {})
         self._bank_state = ck.get("bank")
         es = ck.get("env_state", {})
@@ -786,6 +800,8 @@ class MarlTrainer:
             g.tol_ema = float(es.get("tol_ema", g.tol_ema))
             g.lvl_ema = float(es.get("lvl_ema", 0.0))
             g.tol_last_change = g.last_change_iter
+        if self.cfg.shared_actor:
+            self.tie_actors()
         print(f"[marl2] resumed {path} at iteration {self.it}, curriculum level {g.level}"
               f"{f', tolerance level {g.tol_level}' if getattr(g, 'tol_table', None) is not None else ''}")
 
@@ -851,7 +867,10 @@ class MarlTrainer:
                 self.std_cap[a] = torch.tensor(caps[src[a]], device=self.device)
         self.it = int(ck["iter"])
         self.resume_it = self.it
+        self.sched_origin = self.it + self.cfg.critic_warmup_resume
         self.warm_from = {"init_actors": str(path), "source_algo": ck["algo"], **ck.get("warm_from", {})}
+        if self.cfg.shared_actor:
+            self.tie_actors(require_equal=True)
         es = ck.get("env_state", {})
         self.env.common_step_counter = es.get("common_step_counter", 0)
         g = self.env.command_manager.get_term("goal")
@@ -870,6 +889,53 @@ class MarlTrainer:
               f"{self.cfg.critic_warmup_resume} iterations")
 
     @torch.no_grad()
+    def active_actors(self) -> tuple[str, ...]:
+        """Actors updated this iteration (actor_schedule)."""
+        sch = self.cfg.actor_schedule
+        if not sch or sch == "joint":
+            return tuple(AGENTS)
+        if sch.startswith("only:"):
+            a = sch.split(":", 1)[1]
+            assert a in AGENTS, f"actor_schedule {sch}: agents are {AGENTS}"
+            return (a,)
+        if sch.startswith("alt:"):
+            block = int(sch.split(":", 1)[1])
+            origin = self.sched_origin if self.sched_origin is not None else self.cfg.critic_warmup
+            k = max(0, self.it - origin) // block
+            return (AGENTS[k % len(AGENTS)],)
+        raise ValueError(f"actor_schedule {sch!r}")
+
+    def tie_actors(self, require_equal: bool = False) -> None:
+        """Shared actor: every robot's actor uses AGENTS[0]'s parameters and buffers (weights, observation
+        normalizer, action noise). Each robot still reads its own observation groups (actor_<a>, top_<a>, front:
+        the same features, from its own point of view) and samples its own actions."""
+        import re
+        a0 = AGENTS[0]
+        m0 = self.actors[a0]
+        mods0 = dict(m0.named_modules())
+        for a in AGENTS[1:]:
+            m = self.actors[a]
+            pat = re.compile(rf"(?<=_){re.escape(a)}(?=\.|$)")
+            if require_equal:
+                sd0, sd = m0.state_dict(), m.state_dict()
+                bad = [k for k, v in sd.items() if not torch.equal(v, sd0[pat.sub(a0, k)])]
+                if bad:
+                    raise SystemExit(f"shared actor: {a}'s actor differs from {a0}'s ({len(bad)} tensors, e.g. "
+                                     f"{bad[0]}); start from a shared checkpoint (scripts/make_shared_ckpt.py)")
+            for name, mod in m.named_modules():
+                mod0 = mods0[pat.sub(a0, name)]
+                for pn, p_ in list(mod._parameters.items()):
+                    if p_ is not None:
+                        assert mod0._parameters[pn].shape == p_.shape, (name, pn)
+                        mod._parameters[pn] = mod0._parameters[pn]
+                for bn, b_ in list(mod._buffers.items()):
+                    if b_ is not None:
+                        mod._buffers[bn] = mod0._buffers[bn]
+            self.lr[a] = self.lr[a0]
+            self.std_cap[a] = self.std_cap[a0]
+        n_shared = sum(p_.numel() for p_ in m0.parameters())
+        print(f"[marl2] shared actor: {list(AGENTS)} use {a0}'s parameters ({n_shared} numbers), one optimizer", flush=True)
+
     def check_actor_transfer(self, path: str | Path, obs_file: str | Path, tol: float = 1e-6) -> dict:
         """Before any update: on saved observations, the trainer's actors must give the source
         checkpoint's sampling mean and std (what the rollout records), and its deterministic mean.
@@ -1395,6 +1461,10 @@ class MarlTrainer:
             f_act, f_logp, f_mu, f_sigma = act.reshape(B, -1), logp.reshape(B, A), mu.reshape(B, -1), sigma.reshape(B, -1)
             f_val, f_ret, f_adv = val.reshape(B, A), ret.reshape(B, A), adv_n.reshape(B, A)
             mb = B // cfg.num_mini_batches
+            active = self.active_actors()
+            if not warm:
+                for a in active:
+                    self.actor_updates[a] += 1
             stats = defaultdict(float)
             beta = self.kl_beta()
             n_upd = 0
@@ -1405,7 +1475,10 @@ class MarlTrainer:
                     o_mb = TensorDict({g_: flat[g_][idx] for g_ in groups}, batch_size=[len(idx)])
                     n_upd += 1
                     if not warm:
+                        pending = []  # shared actor: every robot's loss, one optimizer step after the loop
                         for k, a in enumerate(AGENTS):
+                            if a not in active:  # frozen this iteration: no forward, step, lr or std change
+                                continue
                             actor = self.actors[a]
                             sl = self.act_sl[a]
                             actor(o_mb, stochastic_output=True)
@@ -1422,7 +1495,7 @@ class MarlTrainer:
                                     kl = (kl_s * gk).sum() / gk.sum().clamp(min=1.0)
                                 else:
                                     kl = kl_s.mean()
-                                if cfg.desired_kl is not None:
+                                if cfg.desired_kl is not None and not cfg.shared_actor:
                                     if kl > cfg.desired_kl * 2.0:
                                         self.lr[a] = max(1e-5, self.lr[a] / 1.5)
                                     elif 0.0 < kl < cfg.desired_kl / 2.0:
@@ -1456,6 +1529,9 @@ class MarlTrainer:
                             if not torch.isfinite(loss):
                                 skipped += 1
                                 continue
+                            if cfg.shared_actor:
+                                pending.append((a, loss, surr, ent, kl, bound_loss, kl_ref, excess))
+                                continue
                             self.actor_opt[a].zero_grad()
                             loss.backward()
                             gn = torch.nn.utils.clip_grad_norm_(actor.parameters(), cfg.max_grad_norm)
@@ -1479,6 +1555,41 @@ class MarlTrainer:
                             if kl_ref is not None:
                                 stats[f"Loss/kl_ref_{a}"] += kl_ref.item()
                             stats[f"Policy/out_of_range_{a}"] += float((excess > 0).float().mean())
+                        if pending:  # shared actor: mean loss over both robots' samples (equal counts), one step
+                            a0 = AGENTS[0]
+                            kl = sum(float(x[4]) for x in pending) / len(pending)
+                            if cfg.desired_kl is not None:
+                                if kl > cfg.desired_kl * 2.0:
+                                    self.lr[a0] = max(1e-5, self.lr[a0] / 1.5)
+                                elif 0.0 < kl < cfg.desired_kl / 2.0:
+                                    self.lr[a0] = min(cfg.max_actor_learning_rate, self.lr[a0] * 1.5)
+                                for a in AGENTS:
+                                    self.lr[a] = self.lr[a0]
+                                for pg in self.actor_opt[a0].param_groups:
+                                    pg["lr"] = self.lr[a0]
+                            loss = sum(x[1] for x in pending) / len(pending)
+                            actor = self.actors[a0]
+                            self.actor_opt[a0].zero_grad()
+                            loss.backward()
+                            gn = torch.nn.utils.clip_grad_norm_(actor.parameters(), cfg.max_grad_norm)
+                            if not torch.isfinite(gn):
+                                self.actor_opt[a0].zero_grad()
+                                skipped += 1
+                            else:
+                                self.actor_opt[a0].step()
+                                with torch.no_grad():
+                                    cap = self.std_cap[a0]
+                                    sp_ = actor.distribution.std_param
+                                    sp_.copy_(sp_.clamp(min=cfg.min_std) if cap is None else
+                                              torch.maximum(torch.minimum(sp_, cap), torch.full_like(cap, cfg.min_std)))
+                                for a, _, surr, ent, kl_a, bound_loss, kl_ref, excess in pending:
+                                    stats[f"Loss/surrogate_{a}"] += surr.item()
+                                    stats[f"Loss/entropy_{a}"] += ent.mean().item()
+                                    stats[f"Loss/kl_{a}"] += float(kl_a)
+                                    stats[f"Loss/bound_{a}"] += bound_loss.item()
+                                    if kl_ref is not None:
+                                        stats[f"Loss/kl_ref_{a}"] += kl_ref.item()
+                                    stats[f"Policy/out_of_range_{a}"] += float((excess > 0).float().mean())
                     if cfg.algo == "ippo":
                         for k, a in enumerate(AGENTS):
                             vl = self._value_loss(self.critics[a](o_mb).squeeze(-1), f_val[idx, k], f_ret[idx, k])
@@ -1517,6 +1628,9 @@ class MarlTrainer:
             out["Perf/collect_s"] = collect_s
             out["Perf/iteration_s"] = dt_s
             out["Train/critic_warmup"] = float(warm)
+            for a in AGENTS:
+                out[f"Schedule/active_{a}"] = float((not warm) and a in active)
+                out[f"Schedule/actor_updates_{a}"] = float(self.actor_updates[a])
             out["Loss/kl_beta"] = beta
             out["BC/weight"] = self.bc_weight()
             out["Train/skipped_updates"] = float(skipped)
@@ -1556,6 +1670,8 @@ class MarlTrainer:
                       flush=True)
             if self.it % cfg.save_interval == 0 or self.it == cfg.max_iterations:
                 self.save()
+            if self.iter_hook is not None:  # checks (train_coop2.py --schedule-check)
+                self.iter_hook(self, tuple(active), bool(warm))
         self.writer.close()
         if self.wandb is not None:
             self.wandb.finish()
