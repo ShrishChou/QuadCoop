@@ -158,6 +158,8 @@ def main() -> int:
     ap.add_argument("--bc-coef", type=float, default=0.0, help="imitation loss weight at iteration 0")
     ap.add_argument("--bc-iters", type=int, default=0, help="the imitation weight fades linearly to 0 by this iteration")
     ap.add_argument("--bc-pretrain-steps", type=int, default=0, help="behaviour-cloning steps before PPO")
+    ap.add_argument("--bc-keep-norm", action="store_true",
+                    help="keep the warm-started actors' observation normalizers (do not fit them to the demonstrations)")
     ap.add_argument("--turn-signs", action="store_true",
                     help="goal heading change -1 or +1 x the --pilot-level value (turn in place)")
     ap.add_argument("--start-opposite", action="store_true",
@@ -567,7 +569,7 @@ def main() -> int:
                   arm=a.arm if a.pair in _pairs().ARM_PAIRS else "", pilot_level=pilot_level,
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
-                  solo_agent=a.solo_agent, bc_data=a.bc_data, bc_coef=a.bc_coef,
+                  solo_agent=a.solo_agent, bc_data=a.bc_data, bc_keep_norm=a.bc_keep_norm, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,
                   video_interval=0 if a.check else a.video_interval, video_length=a.video_length,
                   inputs=models["selection"], residual=a.residual or "", resid_scale=a.resid_scale,

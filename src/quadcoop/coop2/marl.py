@@ -99,8 +99,12 @@ class MarlCfg:
     # scripts/spot_arm/collect_demos.py. The actors' normalizers are fitted to the demonstrations (then frozen, as for
     # warm-started actors), the actors are behaviour-cloned for bc_pretrain_steps, and during PPO a separate
     # imitation loss (squared error of the action mean on a demonstration minibatch) is added with weight bc_coef,
-    # fading linearly to 0 by iteration bc_iters. PPO itself updates on fresh rollouts only.
+    # fading linearly to 0 over bc_iters iterations from the iteration the run started at (bc_origin: 0 for a
+    # fresh run, the warm start's iteration otherwise; saved, so a requeue keeps it). PPO itself updates on fresh
+    # rollouts only. bc_keep_norm: keep the actors' normalizers (warm-started actors) instead of fitting them.
+    # Shared actor: pretraining takes one step on the mean of both robots' losses.
     bc_data: str = ""
+    bc_keep_norm: bool = False
     bc_coef: float = 0.0
     bc_iters: int = 0
     bc_pretrain_steps: int = 0
@@ -569,6 +573,8 @@ class MarlTrainer:
         self.resume_it = None  # iteration a resumed run started from (critic_warmup_resume)
         self.sched_origin = None  # first actor-training iteration (actor_schedule's block 0)
         self.actor_updates = {a: 0 for a in AGENTS}  # iterations in which each actor was updated
+        self.bc_origin = None  # iteration the imitation schedule counts from (set at the first learn())
+        self.bc_done = False  # behaviour-cloning pretraining done
         self.iter_hook = None  # called after every iteration as hook(trainer, active_actors, critic_warmup)
         # reward split: team terms + each robot's own (names ending in _<robot>)
         rm = env.reward_manager
@@ -747,6 +753,7 @@ class MarlTrainer:
             "critic_opt": {k: o.state_dict() for k, o in self.critic_opt.items()},
             "lr": dict(self.lr), "warm_from": self.warm_from,
             "sched_origin": self.sched_origin, "resume_origin": self.resume_it, "actor_updates": dict(self.actor_updates),
+            "bc_origin": self.bc_origin, "bc_done": self.bc_done,
             "std_cap": {a: (None if c is None else c.tolist()) for a, c in self.std_cap.items()},
             "bank": None if self.bank is None else self.bank.state(),
             "env_state": {"common_step_counter": int(self.env.common_step_counter), "level": int(g.level),
@@ -844,6 +851,8 @@ class MarlTrainer:
             self.sched_origin = int(ck["sched_origin"])                     # second critic-only phase
             self.resume_it = ck.get("resume_origin", self.it)
             self.actor_updates = {a: int(v) for a, v in (ck.get("actor_updates") or {}).items()} or self.actor_updates
+        self.bc_origin = ck.get("bc_origin", self.bc_origin)
+        self.bc_done = bool(ck.get("bc_done", self.bc_done))
         self.warm_from = ck.get("warm_from", {})
         self._bank_state = ck.get("bank")
         es = ck.get("env_state", {})
@@ -1348,12 +1357,27 @@ class MarlTrainer:
         """Fit the actors' normalizers to the demonstrations, then behaviour-clone the actors."""
         self._bc_load()
         cfg = self.cfg
-        for a in AGENTS:
+        for a in ([] if cfg.bc_keep_norm else AGENTS):
             gs = actor_groups(a, cfg.variant)
             for s0 in range(0, self.bc_n, 8192):
                 idx = torch.arange(s0, min(s0 + 8192, self.bc_n), device=self.device)
                 self.actors[a].update_normalization(TensorDict({g_: self.bc["obs"][g_][idx].float() for g_ in gs},
                                                                batch_size=[len(idx)]))
+        if cfg.shared_actor:  # one network: one optimizer, the mean of both robots' losses per step
+            a0 = AGENTS[0]
+            opt = torch.optim.Adam([p_ for p_ in self.actors[a0].parameters() if p_.requires_grad], lr=1e-3)
+            for st in range(cfg.bc_pretrain_steps):
+                loss = sum(self._bc_loss(a) for a in AGENTS) / len(AGENTS)
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.actors[a0].parameters(), 1.0)
+                opt.step()
+                if st % 500 == 0 or st == cfg.bc_pretrain_steps - 1:
+                    print(f"[marl2] behaviour cloning (shared actor): step {st}, action mean squared error {loss.item():.4f}",
+                          flush=True)
+            if cfg.bc_pretrain_steps:
+                self._log({"BC/pretrain_mse_shared": float(loss)})
+            return
         for a in AGENTS:
             opt = torch.optim.Adam([p_ for p_ in self.actors[a].parameters() if p_.requires_grad], lr=1e-3)
             for st in range(cfg.bc_pretrain_steps):
@@ -1370,7 +1394,7 @@ class MarlTrainer:
         c = self.cfg
         if not c.bc_data or c.bc_coef <= 0 or c.bc_iters <= 0:
             return 0.0
-        return c.bc_coef * max(0.0, 1.0 - self.it / c.bc_iters)
+        return c.bc_coef * max(0.0, 1.0 - (self.it - (self.bc_origin or 0)) / c.bc_iters)
 
     def learn(self) -> None:
         from quadcoop.coop2.video import PairVideo
@@ -1379,8 +1403,13 @@ class MarlTrainer:
         self._open_logs()
         if cfg.bc_data:
             self._bc_load()
-            if self.it == 0 and cfg.bc_pretrain_steps > 0:
+            if self.bc_origin is None:
+                self.bc_origin = self.it
+            if self.it == self.bc_origin and cfg.bc_pretrain_steps > 0 and not self.bc_done:
                 self.bc_pretrain()
+                self.bc_done = True
+                if cfg.shared_actor:
+                    self.tie_actors()
         video = PairVideo(self.env, self.log_dir / "videos", cfg.video_length) if cfg.video_interval > 0 else None
         if self.it == 0:
             what = "random initial policies" if self.cfg.scratch else "the warm-started policies"
