@@ -205,6 +205,10 @@ class CoopPush2Command(Push2Command):
         # its last_action, so it gets the same action history as when it runs alone. Created in every mode, since
         # _resample_command zeroes it on any reset (it used to live in _build_contact_tables: non-contact envs crashed).
         self.resid_base_last = torch.zeros(n, 2, 3, device=dev)
+        # robot_xy / robot_yaw / front_point read these in every mode (the opposing-force costs use them without
+        # contact mode); a test rig may set them (_build_contact_tables resets them to None)
+        self.virt_xy = None
+        self.virt_yaw = None
         if cfg.contact_mode:
             self._build_contact_tables(nom, nom_rest)
 

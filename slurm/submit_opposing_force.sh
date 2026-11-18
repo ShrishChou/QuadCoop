@@ -5,7 +5,8 @@
 #   oppose_<robot>      per robot, OPPOSE x max(0, -(its wrench on the object . the wanted object twist) / 200 N)
 #   force_cancellation  team, CANCEL x (sum |F_i| - |sum F_i|) / 200 N x (1 - turning share of the wanted motion)
 # Arms: OFi (IPPO, against S0 = asS0_joint_s0), OFm (MAPPO), OFm0 (MAPPO control without the costs: no matched MAPPO
-# run exists under these settings). A check job (2 iterations, reward terms finite) runs first; training waits for
+# run exists under these settings). A check job (2 iterations at 4096 envs: the bank is drawn for 4096; reward terms
+# finite) runs first; training waits for
 # it and for AFTER (the S0-S4 trainings).
 #   AFTER=<ids, colon-separated> bash slurm/submit_opposing_force.sh
 set -euo pipefail
@@ -23,8 +24,8 @@ COST="--oppose-cost $OPPOSE --cancel-cost $CANCEL"
 ANY="-p mit_normal_gpu,mit_preemptable --requeue --exclude=node4207"
 chk=$(sbatch --parsable $ANY -G l40s:1 -c 8 --mem=64G -t 00:40:00 -J qc-ofchk -o logs/slurm/%x-%j.out --wrap \
   "source .venv/bin/activate && export MUJOCO_GL=egl WANDB_MODE=disabled && set -e && \
-python train_coop2.py --algo ippo --run-name chk_of_ippo_\$SLURM_JOB_ID --num-envs 1024 $COMMON $COST --critic-warmup-resume 1 --seed 0 --video-interval 0 --logger wandb --check && \
-python train_coop2.py --algo mappo --run-name chk_of_mappo_\$SLURM_JOB_ID --num-envs 1024 $COMMON $COST --critic-warmup-resume 1 --seed 0 --video-interval 0 --logger wandb --check")
+python train_coop2.py --algo ippo --run-name chk_of_ippo_\$SLURM_JOB_ID --num-envs 4096 $COMMON $COST --critic-warmup-resume 1 --seed 0 --video-interval 0 --logger wandb --check && \
+python train_coop2.py --algo mappo --run-name chk_of_mappo_\$SLURM_JOB_ID --num-envs 4096 $COMMON $COST --critic-warmup-resume 1 --seed 0 --video-interval 0 --logger wandb --check")
 echo "check: job $chk"
 dep="afterok:$chk${AFTER:+,afterany:$AFTER}"
 for arm in OFi OFm OFm0; do

@@ -95,7 +95,10 @@ class SpotArmAction(ActionTerm):
 
     @property
     def raw_action(self) -> torch.Tensor:
-        return self._raw
+        """The base and arm part of the last action (the previous-action input, the partner's command input, the
+        action costs): the torso outputs are left out so the input layout of older checkpoints is unchanged; the
+        torso command reaches the policy through torso_state (last in its input group)."""
+        return self._raw[:, :self._dim - 2] if self.cfg.torso else self._raw
 
     def process_actions(self, actions: torch.Tensor) -> None:
         self._raw[:] = actions
@@ -106,7 +109,7 @@ class SpotArmAction(ActionTerm):
         s = self.cfg.smoothing
         twist.vel_command_b[:] = (1.0 - s) * twist.vel_command_b + s * target
         if self.cfg.arm == "learned":
-            goal = torch.maximum(torch.minimum(self.stow + a[:, 3:] * self.span, self.arm_hi), self.arm_lo)
+            goal = torch.maximum(torch.minimum(self.stow + a[:, 3:3 + N_ARM] * self.span, self.arm_hi), self.arm_lo)
             goal = torch.where(self.arm_locked.unsqueeze(-1), self.stow.expand_as(goal), goal)
         elif self.cfg.arm == "hand":
             self.hand_cmd[:] = self.hand_c + a[:, 3:6] * self.hand_s
