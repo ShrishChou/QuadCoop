@@ -18,6 +18,8 @@ W=logs/rsl_rl/walker_spot_arm
 S2=$W/2026-11-17_14-26-35_push_ft_s2_posture/model_2999.pt
 S3=$(ls -d $W/*push_ft_s3_handload | tail -1)/model_2999.pt
 WALKERS=${WALKERS:-"rai=  s2=$S2  s3=$S3"}
+MECH_WALKERS=${MECH_WALKERS:-"rai="}   # mech and release parts: one job per walker
+REL_WALKERS=${REL_WALKERS:-"rai="}
 H="--object long --turn 60 --horizon 40 --reps 20 --videos 0 --seed 7100"
 H40="$H --mass 40 --dist 2"
 H20="$H --mass 20 --dist 1"
@@ -27,11 +29,15 @@ pre="source .venv/bin/activate && export MUJOCO_GL=egl && set -e"
 for part in ${PARTS:-mech sweep release}; do
   case "$part" in
     mech)
-      j=$(sbatch --parsable $ANY -t 04:00:00 -J qc-samech -o logs/slurm/%x-%j.out --wrap "$pre && \
-$PE --name sa-mech-rai-40kg-2m --modes both,only_1,only_2,none,hold_out $H40 && \
-$PE --name sa-mech-rai-holdmean-40kg-2m --modes hold_mean --hold-pose-from sa-mech-rai-40kg-2m $H40 && \
-$PE --name sa-mech-rai-nocollide-40kg-2m --modes both,only_1,only_2 --arm-object-collide off $H40")
-      echo "mech: job $j" ;;
+      for wv in $MECH_WALKERS; do
+        wn=${wv%%=*}; wp=${wv#*=}
+        j=$(sbatch --parsable $ANY -t 04:00:00 -J qc-samech -o logs/slurm/%x-%j.out --wrap "$pre && \
+export QUADCOOP_SPOT_ARM_WALKER=$wp && \
+$PE --name sa-mech-$wn-40kg-2m --modes both,only_1,only_2,none,hold_out $H40 && \
+$PE --name sa-mech-$wn-holdmean-40kg-2m --modes hold_mean --hold-pose-from sa-mech-$wn-40kg-2m $H40 && \
+$PE --name sa-mech-$wn-nocollide-40kg-2m --modes both,only_1,only_2 --arm-object-collide off $H40")
+        echo "mech $wn: job $j"
+      done ;;
     sweep)
       for wv in $WALKERS; do
         wn=${wv%%=*}; wp=${wv#*=}
@@ -44,15 +50,18 @@ $PE --name sa-mech-rai-nocollide-40kg-2m --modes both,only_1,only_2 --arm-object
         echo "sweep $wn: job $j"
       done ;;
     release)
-      cmds="$pre"
-      for task in "40kg-2m:$H40" "20kg-1m:$H20"; do
-        tn=${task%%:*}; ta=${task#*:}
-        for r in policy zero retract; do
-          cmds="$cmds && $PE --name sa-release-rai-$r-$tn --modes both --release $r --release-s 5 $ta"
+      for wv in $REL_WALKERS; do
+        wn=${wv%%=*}; wp=${wv#*=}
+        cmds="$pre && export QUADCOOP_SPOT_ARM_WALKER=$wp"
+        for task in "40kg-2m:$H40" "20kg-1m:$H20"; do
+          tn=${task%%:*}; ta=${task#*:}
+          for r in policy zero retract; do
+            cmds="$cmds && $PE --name sa-release${RTAG:-}-$wn-$r-$tn --modes both --release $r --release-s 5 $ta"
+          done
         done
-      done
-      j=$(sbatch --parsable $ANY -t 05:00:00 -J qc-sarel -o logs/slurm/%x-%j.out --wrap "$cmds")
-      echo "release: job $j" ;;
+        j=$(sbatch --parsable $ANY -t 05:00:00 -J qc-sarel -o logs/slurm/%x-%j.out --wrap "$cmds")
+        echo "release $wn: job $j"
+      done ;;
     *) echo "unknown part $part" >&2; exit 1 ;;
   esac
 done

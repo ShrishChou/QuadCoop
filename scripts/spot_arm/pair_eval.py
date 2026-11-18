@@ -29,7 +29,9 @@ Arm mechanism and integration (docs/spot_arm_pair.md, "Arm mechanism, torso, rel
   --release policy|zero|retract --release-s 5   after a success the episode continues for release-s: continued
                          policy; zero base velocity with the arm held where it is; or arm retracted (stowed, rate-
                          limited) with 0.2 m/s back-off for 2 s, then zero. Records object displacement and heading
-                         change during the release, retention (still within tolerance at its end), falls.
+                         change during the release, retention (within tolerance at its end; and at every step of
+                         it), falls. Success must come inside --horizon; the simulation runs release-s longer so
+                         every success gets its full window (release_complete marks it).
 The walker is QUADCOOP_SPOT_ARM_WALKER (default RAI's), recorded in the summary.
 """
 from __future__ import annotations
@@ -120,19 +122,25 @@ def tables(rows: list[dict], label: str = "") -> list[str]:
 def release_table(rows: list[dict]) -> list[str]:
     if not rows or rows[0].get("release", "none") == "none":
         return []
-    md = ["", f"Release ({rows[0]['release']}), episodes that succeeded: retained = still within tolerance at the "
-          "end of the release; displacement = object travel during it.", "",
-          "| arm mode | successes | retained | object displacement, median m | heading change, median abs deg | falls in release |",
-          "|---|---|---|---|---|---|"]
+    md = ["", f"Release ({rows[0]['release']}), episodes that succeeded (success only inside the task horizon; the "
+          "simulation continues for the release window): complete = the follow-up window finished (or a fall ended it); "
+          "rates over complete episodes. Inside at end = within tolerance at the end of the window; inside throughout "
+          "= within tolerance at every step of it; displacement = object travel during it.", "",
+          "| arm mode | successes | complete | inside at end | inside throughout | object displacement, median m | "
+          "heading change, median abs deg | falls in release |",
+          "|---|---|---|---|---|---|---|---|"]
     for m in dict.fromkeys(r["arm_mode"] for r in rows):
-        sel = [r for r in rows if r["arm_mode"] == m and r["success"] == "1"]
-        if not sel:
-            md.append(f"| {m} | 0 | - | - | - | - |")
+        sel = [r for r in rows if r["arm_mode"] == m and str(r["success"]) == "1"]
+        cpl = [r for r in sel if str(r.get("release_complete", "1")) == "1"]
+        if not cpl:
+            md.append(f"| {m} | {len(sel)} | 0 | - | - | - | - | - |")
             continue
-        med = lambda v: sorted(v)[len(v) // 2]  # noqa: E731
-        md.append(f"| {m} | {len(sel)} | {sum(int(r['retained']) for r in sel) / len(sel):.1%} | "
-                  f"{med([float(r['release_disp_m']) for r in sel]):.3f} | {med([abs(float(r['release_yaw_deg'])) for r in sel]):.1f} | "
-                  f"{sum(int(r['fell_release']) for r in sel) / len(sel):.1%} |")
+        med = lambda v: sorted(v)[len(v) // 2] if v else float("nan")  # noqa: E731
+        fin = lambda k: [float(r[k]) for r in cpl if r[k] != "" and not math.isnan(float(r[k]))]  # noqa: E731
+        md.append(f"| {m} | {len(sel)} | {len(cpl)} | {sum(int(r['retained']) for r in cpl) / len(cpl):.1%} | "
+                  f"{sum(int(r['retained_all']) for r in cpl) / len(cpl):.1%} | "
+                  f"{med(fin('release_disp_m')):.3f} | {med([abs(x) for x in fin('release_yaw_deg')]):.1f} | "
+                  f"{sum(int(r['fell_release']) for r in cpl) / len(cpl):.1%} |")
     return md
 
 
@@ -370,7 +378,9 @@ def main() -> int:
     rel_e0 = torch.zeros(n, device=dev)
     rel_disp = torch.full((n,), float("nan"), device=dev)
     rel_yaw = torch.full((n,), float("nan"), device=dev)
-    retained = torch.zeros(n, dtype=torch.bool, device=dev)
+    retained = torch.zeros(n, dtype=torch.bool, device=dev)  # inside tolerance at the end of the release window
+    left_tol = torch.zeros(n, dtype=torch.bool, device=dev)  # left tolerance at any step of the release window
+    rel_done = torch.zeros(n, dtype=torch.bool, device=dev)  # follow-up finished (full window, or a fall)
     fell_rel = torch.zeros(n, dtype=torch.bool, device=dev)
 
     def base_norm(ag, v):  # base velocity (m/s, rad/s) -> the normalized action that commands it
@@ -394,7 +404,10 @@ def main() -> int:
     last_xy = {ag: env.scene[ag].data.root_link_pos_w[:, :2].clone() for ag in AGENTS}
     realized = torch.rad2deg(g.goal_turn.clone())  # the goal heading change as placed (the object's symmetry caps it)
     with torch.no_grad():
-        for i in range(int(a.horizon / dt)):
+        # with a release, success must come inside --horizon, and the simulation runs release-s longer so a late
+        # success still gets its full follow-up window
+        n_steps = int(a.horizon / dt) + (int(math.ceil(a.release_s / dt)) if a.release != "none" else 0)
+        for i in range(n_steps):
             act = policy(obs, env=env)
             releasing = succ & ~done
             if a.release in ("zero", "retract") and bool(releasing.any()):
@@ -442,7 +455,7 @@ def main() -> int:
                 pose_n[ag] += on.float().sum()
             inside = (d < POS_TOL) & (e.abs() < math.radians(YAW_TOL_DEG))
             hold = torch.where(inside & live, hold + dt, torch.zeros_like(hold))
-            new = live & ~succ & (hold >= HOLD_S)
+            new = live & ~succ & (hold >= HOLD_S) & (t <= a.horizon + 1e-6)
             succ |= new
             t_succ = torch.where(new, torch.full_like(t_succ, t), t_succ)
             anyfell = fell[AGENTS[0]] | fell[AGENTS[1]]
@@ -462,11 +475,13 @@ def main() -> int:
                             t_.arm_pose_on[new] = True
                 rel_t = torch.where(succ & live & ~new, rel_t + dt, rel_t)
                 fell_rel |= succ & live & anyfell
-                fin = succ & live & ((rel_t >= a.release_s) | anyfell)
+                left_tol |= succ & live & ~new & ~inside
+                fin = succ & live & ((rel_t >= a.release_s - 1e-6) | anyfell)
+                rel_done |= fin
                 rel_disp = torch.where(fin, torch.linalg.norm(g.box_pos()[:, :2] - rel_xy0, dim=-1), rel_disp)
                 rel_yaw = torch.where(fin, torch.rad2deg(wrap(e - rel_e0)), rel_yaw)
                 retained |= fin & inside & ~anyfell
-                done |= fin | (anyfell & ~succ)
+                done |= fin | (anyfell & ~succ) | (live & ~succ & (t >= a.horizon - 1e-6))
             if film and i % 2 == 0:
                 sd = env.sim.data
                 for j in film:
@@ -505,7 +520,11 @@ def main() -> int:
                      "release": a.release,
                      "release_disp_m": "" if not bool(succ[j]) or a.release == "none" else round(float(rel_disp[j]), 4),
                      "release_yaw_deg": "" if not bool(succ[j]) or a.release == "none" else round(float(rel_yaw[j]), 2),
-                     "retained": "" if not bool(succ[j]) or a.release == "none" else int(bool(retained[j])),
+                     "release_complete": "" if not bool(succ[j]) or a.release == "none" else int(bool(rel_done[j])),
+                     "retained": "" if not bool(succ[j]) or a.release == "none" or not bool(rel_done[j])
+                     else int(bool(retained[j])),
+                     "retained_all": "" if not bool(succ[j]) or a.release == "none" or not bool(rel_done[j])
+                     else int(bool(rel_done[j] & ~left_tol[j] & ~fell_rel[j])),
                      "fell_release": int(bool(fell_rel[j]))})
     out = ROOT / "evals" / a.name
     out.mkdir(parents=True, exist_ok=True)

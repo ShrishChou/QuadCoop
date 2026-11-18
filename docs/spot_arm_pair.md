@@ -418,3 +418,36 @@ whole episodes. Each robot's command history, torso state and walker state are i
    masses): similar strength without the walking loss -> prefer the simpler continuation; applied forces add strength
    but cost mobility -> more free-walk rehearsal or a gentler load curriculum; force training also helps real
    contact and release -> a focused cooperative task (one pushes, one stabilizes / corrects heading, one object).
+
+### Results (2026-11-18; 120 episodes per cell, 40 kg, 2 m, long object)
+
+**Arm mechanism, RAI walker** (`sa-mech-rai-*`): learned arms 73.3%; both stowed 40.0%; only robot 1's arm 48.3%,
+only robot 2's 70.8% (similar with starts exchanged: the effect belongs to actor 2, not a side); held out 0.0%
+(the arms block the object); each arm held at its own mean pose 78.3%; learned arms with arm-object collisions off
+74.2%. Arm-object contact is 0.0-0.5% of steps with learned arms. The mean poses keep the arm folded (shoulder
+pitch / elbow at the stowed values) and yaw it (robot 1 -30 deg, robot 2 +78 deg). Supported: the arm
+configuration is sufficient for most of the advantage; direct arm contact and arm motion are not needed. **Not
+yet shown:** that it works by shifting the centre of mass (measure CoM, foot loading, trunk attitude, slip before
+claiming it). Repeated with s3 (`sa-mech-s3-*`, job 29543942): a stronger walker may shrink the arm advantage.
+
+**Torso sweep** (`sa-sweep-*`, success; rerun spread about +-5 points, RAI default 69-74% over four jobs):
+
+| torso | RAI | s2 | s3 (load-trained) | s3_ctrl (same continuation, no forces) |
+|---|---|---|---|---|
+| default | 69% | 78% | 94% | 75% |
+| height 0.47 | 81% | 87% | 96% | 85% |
+| height 0.43 | 79% | 92% | 96% | 78% |
+| pitch 0.1, height 0.52 | 55% | 76% | 94% | 57% |
+| pitch 0.1, height 0.47 | 66% | 77% | 90% | 66% |
+
+s3's advantage over s3_ctrl supports the load-training regimen (hand and trunk forces with loading / unloading
+segments; hand force alone not isolated) over extra training alone. Ramp test (`evals/walker_load/rai_s3_s3ctrl.md`):
+held force s3 151-176 N, s3_ctrl 89-108 N, RAI 69-73 N; s3's free-walk velocity error 0.16-0.25 m/s (RAI 0.06-0.09).
+
+**Release, first run: horizon bug.** The evaluator ran 40 s in total including the 5 s release, so a success after
+35 s could not finish its window: those episodes counted as not retained with NaN displacement (40 kg: 4 / 87
+continued policy, 8 / 83 zero command, 7 / 89 retract), and the zero-command run had one release fall. Fixed in
+`pair_eval.py`: success only inside `--horizon`, simulation continues `--release-s` longer, `release_complete`
+recorded, rates over complete episodes, and both "inside at the end" and "inside throughout" the window. The first
+run's percentages (continued policy 27-49% retained; zero / retract 88-93%) are qualitative only. Rerun with RAI and
+s3 as `sa-release-v2-{rai,s3}-*` (jobs 29543940, 29543941).

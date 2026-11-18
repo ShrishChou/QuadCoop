@@ -6,6 +6,9 @@
 #   S3  only:anymal2 B learns, A stays exactly A0
 #   S4  shared       one actor on both robots (--shared-actor), from the shared start SHARED (B0 + B0: closest to the
 #                    parent on the 2880-episode shared-start evaluation, docs/actor_schedule.md), joint updates
+#   S4sep  control for S4: the same B0 + B0 start and settings, two separate actors updated jointly (isolates
+#          sharing from S4's different initialization)
+# SEED (default 0): the continuation seed (run names end _s<SEED>; evaluation names gain -s<SEED> when not 0).
 # Common: --init-actors PARENT (weights, normalizers, noise), fresh critics, 100 critic-only iterations, then 2000
 # actor-training iterations (4000 -> 6100); uniform over the fixed task bank, start tuples exchanged with
 # probability 0.5 after replay (--swap-starts); r7, partner map, KL anchor 0.05, actor lr cap 1e-4, level 4,
@@ -18,6 +21,7 @@ PARENT=${PARENT:-logs/marl2/ippo_aa_kl_ten_s0/model_4000.pt}
 SHARED=${SHARED:-logs/shared_init/BB_ippo_ten_4000.pt}
 BANK=${BANK:-logs/next_wave/bank_ten_s0_k16.pt}
 ITERS=${ITERS:-6100}
+SEED=${SEED:-0}
 SH=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 read -r -a arms <<< "${ARMS:?set ARMS, e.g. \"S0 S1 S2 S3\"}"
 COMMON="--pair anymal --partner-map --reward r7 --kl-ref 0.05 --max-actor-lr 1e-4 --fixed-difficulty --fixed-level 4 \
@@ -33,12 +37,14 @@ for arm in "${arms[@]}"; do
     S2) sch=only:anymal1; what=onlyA ;;
     S3) sch=only:anymal2; what=onlyB ;;
     S4) sch=joint;        what=shared ;;
+    S4sep) sch=joint;     what=bbsep ;;
     *) echo "unknown arm $arm" >&2; exit 1 ;;
   esac
-  run="as${arm}_${what}_s0"
-  tid=$(ALGO=ippo SEED=0 VARIANT=b NUM_ENVS=4096 RUN_NAME="$run" ITERS="$ITERS" LOGGER=wandb \
-        EXTRA="$COMMON --init-actors $([[ $arm == S4 ]] && echo "$SHARED --shared-actor" || echo "$PARENT") --actor-schedule $sch" sbatch --parsable $ANY -t 06:00:00 "${dep[@]}" slurm/train_coop2.sbatch)
-  eid=$(NAME="as-${arm}-${what}-it${ITERS}-dev7100" CK="logs/marl2/$run/model_${ITERS}.pt" SOLO= MASSES=20,40,60,80 REPS=3 \
+  run="as${arm}_${what}_s${SEED}"
+  case "$arm" in S4) init="$SHARED --shared-actor" ;; S4sep) init="$SHARED" ;; *) init="$PARENT" ;; esac
+  tid=$(ALGO=ippo SEED=$SEED VARIANT=b NUM_ENVS=4096 RUN_NAME="$run" ITERS="$ITERS" LOGGER=wandb \
+        EXTRA="$COMMON --init-actors $init --actor-schedule $sch" sbatch --parsable $ANY -t 06:00:00 "${dep[@]}" slurm/train_coop2.sbatch)
+  eid=$(NAME="as-${arm}-${what}$([[ $SEED != 0 ]] && echo "-s$SEED")-it${ITERS}-dev7100" CK="logs/marl2/$run/model_${ITERS}.pt" SOLO= MASSES=20,40,60,80 REPS=3 \
         ARGS="--objects $SH --seed 7100 --videos 0 --swap --formations standard,flank,goal_behind" \
         sbatch --parsable $ANY -t 06:00:00 --dependency="afterok:${tid}" slurm/eval_coop2.sbatch)
   echo "arm $arm ($sch): train $run job $tid (to $ITERS) -> eval job $eid"

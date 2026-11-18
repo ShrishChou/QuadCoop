@@ -1,7 +1,7 @@
 # Actor schedules and a shared actor (two ANYmals, IPPO)
 
-Status (2026-11-17): code done; checks passed (job 29490662: only / alt / joint / shared schedule checks, swap-aware
-bank replay worst difference 0 with 49-51% of slots exchanged); S0-S3 training; shared-start evaluations queued.
+Status (2026-11-18): S0-S4 trained and evaluated (results below); S5 not implemented or tested. Follow-ups queued:
+checkpoint trajectory, fresh-task confirmation, a second continuation seed, and the S4sep initialization control.
 
 **Question.** The ten-object pair plateaus at about 315/480 (parent 315, IPPO continuation 315, MAPPO 316:
 `docs/next_wave.md`). Does the way the two actors learn around each other limit it? Five treatments and a control,
@@ -130,3 +130,40 @@ seeds. Arch failures are inspected case by case (contacts, access, steering, con
 | S2 only A | `asS2_onlyA_s0` | 29491001 | `as-S2-onlyA-it6100-dev7100` (29491002) |
 | S3 only B | `asS3_onlyB_s0` | 29491003 | `as-S3-onlyB-it6100-dev7100` (29491004) |
 | S4 shared (from B0 + B0) | `asS4_shared_s0` | 29494696 | `as-S4-shared-it6100-dev7100` (29494697) |
+
+## Result (2026-11-18; 2880 episodes each, seed-7100 tasks)
+
+| run | success | arch | falls | paired vs S0 (gained / lost) |
+|---|---|---|---|---|
+| parent A0 + B0 | 64.0% | 37% | 14.0% | +245 / -256 |
+| S0 joint | 64.4% | 32% | 13.1% | - |
+| S1 alt:100 | 63.3% | 34% | 13.9% | +255 / -288 |
+| S2 only A | 64.8% | 36% | 13.2% | +252 / -242 |
+| S3 only B | 63.2% | 35% | 15.0% | +256 / -292 |
+| S4 shared (from B0 + B0, 63.2%) | 65.9% | 41% | 12.1% | +264 / -222 |
+
+S4 - S0 = +1.46 points; a paired bootstrap over tasks (the six formation / assignment variants of a task grouped)
+gives about [-0.07, +2.92] (task uncertainty only, not training-seed variability). S4 also differs from S0 in its
+start (B0 + B0, not A0 + B0): S4 is +2.7 over its own start.
+
+**What it shows.** Under this warm start, reward, regularization (KL anchor 0.05, lr cap 1e-4), task bank and
+budget (2000 actor iterations, about 197 M joint transitions; each S1 actor 1000 active iterations, S2 / S3's learner
+the full 2000), these frozen-partner schedules did not improve the final checkpoint. That does not establish that a
+changing partner is irrelevant to the plateau in general, nor convergence.
+
+**Training diagnostics** (mean per bin, S0 / S1 / S2 / S4 alike): training success flat at about 0.59-0.60 from 4300
+to 6100 in every arm (the higher 0.67-0.74 before 4300 is start-up bias: the first episodes to end are the quick
+successes); actor KL per update about 0.003 with the learning rate at its 1e-4 cap throughout; KL to the
+single-robot reference flat at about 0.38-0.48; noise std flat at about 0.79-0.80; no skipped updates; critic loss
+falls 4.4 -> 2.3. About half of the actor's mean outputs are beyond +-1.1 (`Policy/out_of_range` 0.47-0.55; S4
+0.47-0.52), with `--mean-clip` and `--bound-coef` off: the clipped outputs give the policy gradient nothing to act on,
+the saturation problem this repository documented before. A candidate limit on improvement, not yet tested here.
+
+## Follow-ups (queued 2026-11-18)
+
+| what | runs / evaluations | jobs |
+|---|---|---|
+| checkpoint trajectory, seed 7100 | S0, S1, S4 at 4300 / 4700 / 5100 / 5500 (S1: after full cycles 1, 3, 5, 7) | 29543976-87 |
+| fresh tasks, seed 7500 (unused before) | parent, B0 + B0, S0 and S4 at 6100 (`*-fresh7500`) | 29543988-91 |
+| S4sep: B0 + B0, two separate actors, joint updates (isolates sharing from initialization) | `asS4sep_bbsep_s0` | 29543956; fresh-task eval 29543992 |
+| second continuation seed (fine-tuning variability around this parent, not an independent parent) | `asS4_shared_s1`, `asS0_joint_s1` | 29543958, 29543960; fresh-task evals 29543993-4 |

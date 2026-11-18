@@ -34,3 +34,20 @@ iterations, 2000 actor iterations to 6100, uniform bank, start swaps, joint upda
 Evaluation: the 480 benchmark tasks x standard / flank / goal-behind x starts exchanged. Read: success and its
 per-object minimum, 60-80 kg success, idle share (both robots' work, `--recovery` traces), opposing-power and
 cancellation rates in evaluation, falls. Risk to watch: robots avoiding contact to avoid the cost (idle share up).
+
+## Result (2026-11-18; 2880 episodes each)
+
+| arm | success | weakest object | paired vs control (gained / lost) |
+|---|---|---|---|
+| S0 (IPPO, no costs) | 64.4% | arch 32% | - |
+| OFi (IPPO + costs) | 63.0% | arch 33% | vs S0: +228 / -269 |
+| OFm0 (MAPPO, no costs) | 64.4% | arch 34% | - |
+| OFm (MAPPO + costs) | 62.7% | arch 33% | vs OFm0: +222 / -273 |
+
+In training the per-robot opposing cost grew from about -0.002 to -0.006 per step (first vs last 100 iterations;
+cancellation -0.0014 -> -0.0035), against box_progress about 0.10. Finding: **this formulation and weighting did
+not improve performance** (both algorithms slightly lower). Not established: that the signal was too weak (mean
+magnitude is not gradient influence), or that a larger weight would necessarily lower success further. The terms
+approximate the wrench with the robot's front point and net contact force and project on a prescribed wanted
+motion, which can penalize useful intermediate manoeuvres. Shelved; before any retuning, validate the metric on
+representative useful and harmful contacts.
