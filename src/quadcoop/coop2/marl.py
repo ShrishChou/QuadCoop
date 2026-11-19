@@ -97,6 +97,9 @@ class MarlCfg:
     goal_credit: bool = False  # env option (recorded): r7 goal_motion_credit instead of push_credit
     align_bonus: float = 1.0  # env option (recorded)
     arm_bonus: float = 0.0  # env option (recorded)
+    action_rate_w: float = 0.05  # env option (recorded)
+    action_limit_w: float = 0.02  # env option (recorded)
+    std_cap: float = 0.0  # > 0: hard cap on the action noise, applied after initialisation
     roll_ratio: float = 0.0  # env option (recorded): the planner's rolling-cylinder model
     turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
     # demonstrations (docs/spot_arm_pair.md, "Turn in place"): a file of actor observations and the env action from
@@ -473,7 +476,7 @@ def warm_start_model(model, single: dict, cols: list[tuple[slice, slice]], n1d_n
     return out
 
 
-def expand_state(model, old: dict, groups: list[str], obs, what: str, new_std: float = 0.2) -> None:
+def expand_state(model, old: dict, groups: list[str], obs, what: str, new_std: float = 0.2, cols=None) -> None:
     """Copy `old` into `model`. 1D input groups may have grown at their end (new columns zero weight, normalizer
     mean 0 / std 1); the output may have grown at its end (new rows of the last layer and new biases zero, new
     action noise new_std): the expanded network gives the old outputs exactly and 0 on the new ones (the torso
@@ -485,10 +488,14 @@ def expand_state(model, old: dict, groups: list[str], obs, what: str, new_std: f
     n1d_old = int(old["obs_normalizer._mean"].shape[-1])
     grow = n1d_new - n1d_old
     growing = [g_ for g_ in one_d if g_.startswith(("actor_", "state_"))]
-    if grow % max(len(growing), 1):
+    if cols is None and grow % max(len(growing), 1):
         raise RuntimeError(f"{what}: {grow} new inputs do not split evenly over {growing}")
     per = grow // max(len(growing), 1)
-    cols, o_off, n_off = [], 0, 0
+    if cols is not None:  # explicit (old columns, new columns) pairs over the 1D inputs (term-wise, see _shrunk_cols)
+        grow, per, one_d = 0, 0, []
+    else:
+        cols = []
+    o_off, n_off = 0, 0
     for g_ in one_d:
         n_old = n_new[g_] - (per if g_ in growing else 0)
         cols.append((slice(o_off, o_off + n_old), slice(n_off, n_off + n_old)))
@@ -510,14 +517,18 @@ def expand_state(model, old: dict, groups: list[str], obs, what: str, new_std: f
     wk, bk = f"mlp.{last}.weight", f"mlp.{last}.bias"
     n_out_old, n_out_new = int(old[wk].shape[0]), int(new[wk].shape[0])
     if n_out_new != n_out_old:
-        assert n_out_new > n_out_old, f"{what}: outputs shrank ({n_out_old} -> {n_out_new})"
+        # grown: the old outputs kept, new ones at 0. Shrunk (a robot whose arm interface changed, e.g. joint
+        # targets -> hand_rate): only the 3 base outputs (velocity command) kept, the arm outputs start fresh at 0.
+        keep = n_out_old if n_out_new > n_out_old else 3
+        if n_out_new < n_out_old:
+            print(f"[marl2] {what}: outputs {n_out_old} -> {n_out_new}: base outputs kept, arm outputs fresh", flush=True)
         W2, b2 = torch.zeros_like(new[wk]), torch.zeros_like(new[bk])
-        W2[:n_out_old] = out[wk] if wk != "mlp.0.weight" else W
-        b2[:n_out_old] = old[bk]
+        W2[:keep] = (out[wk] if wk != "mlp.0.weight" else W)[:keep]
+        b2[:keep] = old[bk][:keep]
         out[wk], out[bk] = W2, b2
         if "distribution.std_param" in new:
             sp = torch.full_like(new["distribution.std_param"], new_std)
-            sp[:n_out_old] = old["distribution.std_param"]
+            sp[:keep] = old["distribution.std_param"][:keep]
             out["distribution.std_param"] = sp
     for key in new:
         if key not in out:
@@ -864,7 +875,7 @@ class MarlTrainer:
         g = self.env.command_manager.get_term("goal")
         g.level = es.get("level", g.level)
         g.ema_success = es.get("ema_success", g.ema_success)
-        if "shape_success" in es:
+        if "shape_success" in es and len(es["shape_success"]) == g.shape_success.numel():
             g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
         g.last_change_iter = self.env.common_step_counter / self.cfg.num_steps_per_env
         if getattr(g, "tol_table", None) is not None:
@@ -885,17 +896,25 @@ class MarlTrainer:
         ck = torch.load(str(path), map_location=self.device, weights_only=False)
         assert ck["algo"] == self.cfg.algo, f"checkpoint is {ck['algo']}, trainer is {self.cfg.algo}"
         v = self.cfg.variant
+        n_old = {a: int(ck["actors"][a]["distribution.std_param"].shape[0]) for a in AGENTS}
+        shrunk = any(n_old[a] > self.act_dim[a] for a in AGENTS)
         for a in AGENTS:
-            self._expand(self.actors[a], ck["actors"][a], actor_groups(a, v), f"{a} actor")
+            g = actor_groups(a, v)
+            self._expand(self.actors[a], ck["actors"][a], g, f"{a} actor", new_std=0.6,
+                         cols=self._shrunk_cols(g, n_old) if shrunk else None)
         for k, c in self.critics.items():
-            self._expand(c, ck["critics"][k], critic_groups(self.cfg.algo, v, None if k == "central" else k), f"{k} critic")
+            g = critic_groups(self.cfg.algo, v, None if k == "central" else k)
+            self._expand(c, ck["critics"][k], g, f"{k} critic", cols=self._shrunk_cols(g, n_old) if shrunk else None)
         self.lr = dict(ck["lr"])
         for a in AGENTS:
             for pg in self.actor_opt[a].param_groups:
                 pg["lr"] = self.lr[a]
         for a, c in (ck.get("std_cap") or {}).items():
             if c is not None:
-                self.std_cap[a] = torch.tensor(c, device=self.device)
+                c = torch.tensor(c, device=self.device)
+                if c.numel() != self.act_dim[a]:  # arm interface changed: base caps kept, arm outputs capped at 0.6
+                    c = torch.cat([c[:3], torch.full((self.act_dim[a] - 3,), 0.6, device=self.device)])
+                self.std_cap[a] = c
         self.it = int(ck["iter"])
         self.resume_it = self.it
         self.warm_from = {"init_from": str(path), **ck.get("warm_from", {})}
@@ -904,7 +923,7 @@ class MarlTrainer:
         g = self.env.command_manager.get_term("goal")
         g.level = es.get("level", g.level)
         g.ema_success = es.get("ema_success", g.ema_success)
-        if "shape_success" in es:
+        if "shape_success" in es and len(es["shape_success"]) == g.shape_success.numel():
             g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
         g.last_change_iter = self.env.common_step_counter / self.cfg.num_steps_per_env
         if getattr(g, "tol_table", None) is not None:
@@ -948,7 +967,7 @@ class MarlTrainer:
         g = self.env.command_manager.get_term("goal")
         g.level = es.get("level", g.level)
         g.ema_success = es.get("ema_success", g.ema_success)
-        if "shape_success" in es:
+        if "shape_success" in es and len(es["shape_success"]) == g.shape_success.numel():
             g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
         g.last_change_iter = self.env.common_step_counter / self.cfg.num_steps_per_env
         if getattr(g, "tol_table", None) is not None:
@@ -1069,7 +1088,7 @@ class MarlTrainer:
         g = self.env.command_manager.get_term("goal")
         g.level = es.get("level", g.level)
         g.ema_success = es.get("ema_success", g.ema_success)
-        if "shape_success" in es:
+        if "shape_success" in es and len(es["shape_success"]) == g.shape_success.numel():
             g.shape_success[:] = torch.tensor(es["shape_success"], device=g.shape_success.device)
         if getattr(g, "tol_table", None) is not None:
             g.tol_level = int(es.get("tol_level", g.tol_level))
@@ -1298,8 +1317,43 @@ class MarlTrainer:
               f"{self.log_dir / 'resid_check.json'}", flush=True)
         return report
 
-    def _expand(self, model, old: dict, groups: list[str], what: str) -> None:
-        expand_state(model, old, groups, self.obs, what)
+    def _expand(self, model, old: dict, groups: list[str], what: str, new_std: float = 0.2, cols=None) -> None:
+        expand_state(model, old, groups, self.obs, what, new_std, cols)
+
+    def _shrunk_cols(self, groups: list[str], n_old: dict[str, int]) -> list:
+        """Input column map from a checkpoint whose robots had more actions (joint-target arm -> hand_rate): every
+        term as now, except each robot's last_action, which had n_old entries; only its 3 base entries are carried,
+        the new arm entries get zero weight."""
+        om = self.env.observation_manager
+        cols, o_off, n_off = [], 0, 0
+        for g_ in groups:
+            if self.obs[g_].dim() != 2:
+                continue
+            for name, dims in zip(om.active_terms[g_], om.group_obs_term_dim[g_]):
+                n = int(dims[-1])
+                if name == "last_action":
+                    agent = next((a for a in AGENTS if g_.endswith(a)), None)
+                    assert agent is not None and n == self.act_dim[agent], f"{g_}: unexpected last_action ({n})"
+                    cols.append((slice(o_off, o_off + 3), slice(n_off, n_off + 3)))
+                    o_off += n_old[agent]
+                else:
+                    cols.append((slice(o_off, o_off + n), slice(n_off, n_off + n)))
+                    o_off += n
+                n_off += n
+        return cols
+
+    def apply_std_cap(self) -> None:
+        """cfg.std_cap > 0: the action noise and its cap never above it (current noise clamped down now)."""
+        c = self.cfg.std_cap
+        if c <= 0:
+            return
+        for a in AGENTS:
+            sp = self.actors[a].distribution.std_param
+            with torch.no_grad():
+                sp.clamp_(max=c)
+            cap = self.std_cap[a]
+            self.std_cap[a] = torch.full_like(sp.detach(), c) if cap is None else cap.clamp(max=c)
+            print(f"[marl2] {a}: action noise capped at {c:g} (now {[round(x, 2) for x in sp.tolist()]})", flush=True)
 
     @staticmethod
     def newest(log_dir: Path) -> Path | None:

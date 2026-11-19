@@ -508,3 +508,26 @@ toward its goal pose, travel and turning through its radius, x (1 + cos) for the
 of the robot, the arm included, touches it with 5 N+; nothing for staying or leaving) and `--arm-bonus 0.25`. The
 single robot (`sp_solo20_gc_s0`) trains on the 20 objects of `docs/spot_low_tall.md` (low and tall ones 60%); the
 pairs (`sp_pair_{mappo,ippo}_gc_s0`) start from it on the ten objects.
+
+## Restart from the ten-object solo (2026-11-19, runs `sp_*_ft_*`)
+
+`sp_solo20_gc_s0` (from scratch, 20 objects, low/tall 60%) was cancelled at iteration ~2080:
+- success ~3% (never above 7%); cube 10%, sphere 49% -> 15% (forgetting); `sp_solo_s0` was at 77% by the same point;
+- 30% of episodes ended with the object tipped; arm contact 4%;
+- action noise fell to 0.28 by iteration 520, then rose back to its 0.6 cap as learning stalled; the actor learning
+  rate sat at its 1e-5 floor while the value loss grew 0.003 -> 1.3;
+- jerky motion: 10-20% of the mean actions past their range (bang-bang commands); the action-rate penalty (-0.05)
+  cost ~0.12 per episode, too small to matter.
+
+Cause: a from-scratch policy given mostly objects it cannot yet move never learned basic pushing.
+
+Restart (`slurm/submit_spot_pipeline.sh`, TAG _ft):
+- `--init-from logs/marl2/sp_solo_s0/model_3800.pt` (~73% on the ten objects); the iteration count carries over, so
+  the solo runs 3800 -> 9800;
+- the 20 objects drawn evenly (`LOWTALL_BIAS=1.0`; raise once the easy objects hold);
+- `--action-rate-w 0.2` (was 0.05), `--action-limit-w 0.1` (was 0.02), `--std-cap 0.4` (was 0.6);
+- goal credit and `--arm-bonus 0.25` as before.
+
+`ARM=hand_rate` (`sp_solo20_hr_ft_s0`, `SOLO_ONLY=1`): only the 3 base outputs load from the joint-arm checkpoint
+(`expand_state` keeps the base rows when the output shrinks); the 4 arm outputs start at 0 with noise 0.6, capped at
+0.4. The pairs (`sp_pair_{mappo,ippo}_ft_s0`) start from the joint-arm solo.

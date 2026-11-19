@@ -221,6 +221,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
                        dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False,
                        goal_credit: bool = False, align_bonus: float = 1.0, arm_bonus: float = 0.0,
+                       action_rate_w: float = 0.05, action_limit_w: float = 0.02,
                        oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
@@ -544,8 +545,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             rewards[f"near_surface_{a}"] = R(func=mdp.near_surface, weight=0.5, params={"robot": a})
         if reward_set == "r3":
             rewards[f"behind_box_{a}"] = R(func=mdp.behind_box, weight=0.3, params={"robot": a})
-        rewards[f"action_rate_{a}"] = R(func=mdp.agent_action_rate, weight=-0.05, params={"agent": k})
-        rewards[f"action_limit_{a}"] = R(func=mdp.agent_action_limit, weight=-0.02, params={"agent": k})
+        rewards[f"action_rate_{a}"] = R(func=mdp.agent_action_rate, weight=-action_rate_w, params={"agent": k})
+        rewards[f"action_limit_{a}"] = R(func=mdp.agent_action_limit, weight=-action_limit_w, params={"agent": k})
         if reward_set == "r8":
             rewards[f"work_credit_{a}"] = R(func=mdp.work_credit, weight=3.0, params={"robot": a})
         elif reward_set == "r7" and push_cmd:
