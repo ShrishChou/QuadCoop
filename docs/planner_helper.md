@@ -1,6 +1,7 @@
 # The contact planner with a third, helper robot for heavy objects
 
-Status (2026-11-19): code done; smoke job 29610901 queued, then the full test (seeds 7100 and 7500).
+Status (2026-11-19): tested (jobs 29612016-17, `evals/helper-{7100,7500}/summary.md`). The helper adds +7.5 to +13 pp
+at 80-100 kg over the same pair, but costs 7.5-13 pp at 60 kg; overall not significant.
 
 ## Why: two ANYmals run out of force
 
@@ -63,4 +64,33 @@ Read:
 
 ## Results
 
-(pending)
+Success % (all ten objects, 120 tasks per arm and mass per seed; seeds 7100 / 7500):
+
+| arm | 60 kg | 80 kg | 100 kg |
+|---|---|---|---|
+| pair250 | 50 / 64 | 38 / 35 | 20 / 18 |
+| pair160 | **68 / 78** | 32 / 28 | 10 / 10 |
+| helper | 60 / 64 | **39 / 38** | **18 / 23** |
+
+Paired differences (pp, 95% bootstrap):
+- helper - pair160: 60 kg -7.5 [-18, +3] / -13.3 [-23, -2.5]; 80 kg +7.5 [-2.5, +17.5] / +10.0 [0, +20];
+  100 kg +7.5 [+1.7, +13.3] / +13.3 [+6.7, +20].
+- helper - pair250, all masses: +2.8 [-3, +9] on both seeds.
+- pair160 - pair250: +17.5 / +13.3 at 60 kg, -8 to -10 at 100 kg.
+
+Reading:
+- **The measured force limit helps the pair at 60 kg** (+13-18 pp): with 160 N the planner picks contacts that
+  share the load instead of plans one robot cannot carry. At 100 kg it hurts, since no pair plan is strong enough.
+- **The helper helps where force is short (80-100 kg) and hurts where it is not (60 kg).** It engages in 94-95% of
+  60 kg episodes: with 160 N per robot and mu up to 0.6, the force model rates almost every 60 kg pair plan as too weak.
+- **Falls.** With the helper, robot 1 falls about twice as often (60 kg: 5 -> 16 and 5 -> 7; 80 kg: 7 -> 16 and 4 -> 15),
+  and the helper itself falls in 17 / 21 of 360 episodes. The helper walks into the pair.
+- Success at 80 kg is still 38-39%, far from the 60% target; the beam test's 6/6 at 80 kg was an engaged start,
+  straight push. The bottleneck at 80 kg is now reaching and holding contacts, not force.
+- The cylinder is unchanged by the helper (8-50%), as expected: it is not force-limited.
+
+Next, if pursued:
+- engage only when force is really short (for example strength < 0.8, or stalled progress for 2 s), not on the
+  model's verdict alone;
+- keep the helper's standing point at least 0.8 m from both pair robots, and route it around them;
+- use pair160 as the default limit for the pair below about 70 kg.

@@ -1,6 +1,7 @@
 # Teaching the contact planner that a lying cylinder rolls
 
-Status (2026-11-19): code done and checked on CPU; test job `slurm/cylinder_roll_test.sbatch` (29610362) running.
+Status (2026-11-19): the physics test passes at roll 0.1-0.2, but in closed loop the planner's cylinder success does
+not improve (roll 0.1: 38 / 23% vs 31 / 38%). Job 29610362 still running (roll 0.2, seed 7500).
 
 **Why.** On the benchmark tasks (start behind, 80 s, seeds 7100 and 7500 pooled) the planner reaches 34% on the cylinder,
 against 52-92% on the other sliding objects, and its success barely depends on mass (20 / 40 / 60 / 80 kg: 50 / 25 /
@@ -54,4 +55,30 @@ geometry in the episode logs); final heading error.
 
 ## Results
 
-(pending)
+**1. Physics test** (`evals/pp-cyl-roll*`): share of the planner's workable pushes that moved the cylinder as asked,
+150 N / 250 N per robot:
+
+| roll_ratio | 150 N | 250 N |
+|---|---|---|
+| 0 (old model) | 0.62 | 0.75 |
+| 0.05 | 0.60 | 0.75 |
+| 0.1 | 0.80 | **1.00 (PASS)** |
+| 0.2 | 0.87 | **1.00 (PASS)** |
+
+The rolling model fixes the force model: every failure left at roll 0.2 is a pure turn at 60-80 kg with 150 N.
+
+**2. Closed loop** (cylinder tasks of the benchmark, 48 matched tasks per seed, success %):
+
+| | seed 7100 | seed 7500 |
+|---|---|---|
+| roll 0 (baseline) | 31 | 38 |
+| roll 0.1 | 38 | 23 |
+| roll 0.2 | 27 | (running) |
+
+Final heading error is unchanged (about 25-33 deg mean) and both robots push together 15-19% of the time either way.
+
+**Reading.** The planner now asks for the right pushes (couples to turn), but the Stage 4 executor does not deliver
+them. It was trained on contacts on the same side of the object, never on one robot pushing behind at one end while
+the other pushes in front at the other, so the couple never forms. The limit on the cylinder is the executor, not
+the plan. Next step: fine-tune the executor on cylinder tasks with roll_ratio 0.1, so it trains on the couples the
+planner now asks for.

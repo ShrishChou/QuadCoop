@@ -31,6 +31,8 @@ live in a (num_envs, num_shapes, MAX_PARTS, 6) tensor the command term owns.
 
 from __future__ import annotations
 
+import os
+
 import torch
 from mjlab.entity import EntityCfg
 
@@ -54,6 +56,29 @@ PLUS = Shape("plus", (Part(BOX, (0.15, 0.70, 0.30), (0.0, 0.0, 0.0), 0.5),
 TRAIN_NAMES = ("cube", "long", "sphere", "cylinder", "arch", "dumbbell", "t_shape")
 HELDOUT_NAMES = ("beam", "l_shape", "asym", "u_channel", "plus")
 SHAPES2: tuple[Shape, ...] = tuple(_by_name[n] for n in TRAIN_NAMES + ("beam", "l_shape", "asym")) + (U_CHANNEL, PLUS)
+
+# QUADCOOP_SHAPE_SET=spot20 (docs/spot_low_tall.md): eight more objects after the twelve (indices of the twelve
+# unchanged). Low ones (16-24 cm tall: below a quadruped's chest, reachable with an arm) and tall ones (1.1 m: a push at
+# body height, about 0.45 m, tips the narrow ones, mu x push height > half width; pushing low or bracing high keeps
+# them up).
+SHAPE_SET = os.environ.get("QUADCOOP_SHAPE_SET", "base").lower()
+if SHAPE_SET not in ("base", "spot20"):
+    raise ValueError(f"QUADCOOP_SHAPE_SET must be base or spot20, got {SHAPE_SET!r}")
+LOW_TALL: tuple[Shape, ...] = (
+    Shape("low_slab", (Part(BOX, (0.45, 0.45, 0.09)),), 4, 0.09, (0.60, 0.60, 0.55, 1.0)),
+    Shape("low_bar", (Part(BOX, (0.12, 0.80, 0.08)),), 2, 0.08, (0.55, 0.35, 0.20, 1.0)),
+    Shape("low_plus", (Part(BOX, (0.12, 0.60, 0.09), (0.0, 0.0, 0.0), 0.5),
+                       Part(BOX, (0.60, 0.12, 0.09), (0.0, 0.0, 0.0), 0.5)), 4, 0.09, (0.45, 0.70, 0.65, 1.0)),
+    Shape("low_roller", (Part(CYL, (0.12, 0.60), axis_y=True),), 2, 0.12, (0.30, 0.55, 0.30, 1.0),
+          roller=True, heading_axis_y=True),
+    Shape("tall_box", (Part(BOX, (0.25, 0.25, 0.55)),), 4, 0.55, (0.85, 0.40, 0.35, 1.0)),
+    Shape("tall_column", (Part(BOX, (0.15, 0.15, 0.55)),), 4, 0.55, (0.75, 0.25, 0.25, 1.0)),
+    Shape("tall_wall", (Part(BOX, (0.10, 0.50, 0.50)),), 2, 0.50, (0.50, 0.50, 0.80, 1.0)),
+    Shape("top_heavy", (Part(BOX, (0.12, 0.12, 0.375), (0.0, 0.0, -0.175), 0.35),
+                        Part(BOX, (0.35, 0.35, 0.175), (0.0, 0.0, 0.375), 0.65)), 4, 0.55, (0.65, 0.30, 0.70, 1.0)),
+)
+if SHAPE_SET == "spot20":
+    SHAPES2 = SHAPES2 + LOW_TALL
 SHAPE_NAMES2 = tuple(s.name for s in SHAPES2)
 OBJ_NAMES2 = tuple(f"obj_{n}" for n in SHAPE_NAMES2)
 GOAL_NAMES2 = tuple(f"goal_{n}" for n in SHAPE_NAMES2)
@@ -136,6 +161,26 @@ def shape_parts(name: str, f: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]
     elif name == "plus":
         arm = 0.70 * f0
         parts = [_box(z, z, z, c(0.15), arm, c(0.30)), _box(z, z, z, arm, c(0.15), c(0.30))]
+    # -- spot20 (low and tall); heights stay nominal, as for the other boxes
+    elif name == "low_slab":
+        parts, rest = [_box(z, z, z, 0.45 * f0, 0.45 * f0, c(0.09))], c(0.09)
+    elif name == "low_bar":
+        parts, rest = [_box(z, z, z, 0.12 * f0, 0.80 * f1, c(0.08))], c(0.08)
+    elif name == "low_plus":
+        arm = 0.60 * f0
+        parts, rest = [_box(z, z, z, c(0.12), arm, c(0.09)), _box(z, z, z, arm, c(0.12), c(0.09))], c(0.09)
+    elif name == "low_roller":
+        r = 0.12 * f0
+        parts, rest = [_box(z, z, z, r, 0.60 * f1, r)], r
+    elif name == "tall_box":
+        parts, rest = [_box(z, z, z, 0.25 * f0, 0.25 * f0, c(0.55))], c(0.55)
+    elif name == "tall_column":
+        parts, rest = [_box(z, z, z, 0.15 * f0, 0.15 * f0, c(0.55))], c(0.55)
+    elif name == "tall_wall":
+        parts, rest = [_box(z, z, z, 0.10 * f0, 0.50 * f1, c(0.50))], c(0.50)
+    elif name == "top_heavy":
+        b, t = 0.12 * f0, 0.35 * f1
+        parts, rest = [_box(z, z, c(-0.175), b, b, c(0.375)), _box(z, z, c(0.375), t, t, c(0.175))], c(0.55)
     else:
         raise KeyError(name)
     out = torch.zeros(n, MAX_PARTS, 6, device=f.device)
