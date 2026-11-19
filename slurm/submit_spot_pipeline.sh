@@ -18,6 +18,9 @@
 # spot20: the ten below + beam, asym + 4 low + 4 tall that body-height pushing handles badly), the low and tall ones
 # drawn 60% of the time, with x 1.25 pay while the arm touches (--arm-bonus 0.25), so it learns to use the arm. The
 # pairs then train on the ten objects (comparable with ANYmal). Inputs do not depend on the object set.
+# ARM=hand_rate (default learned = joint targets): the arm is driven by a hand target that each action moves relative to
+# where it is (a x 0.6 m/s in the robot's body frame) plus an extension rate, turned into joint targets by IK
+# (spot_arm_term.py); runs are named with _hr. SOLO_ONLY=1: submit only the check and the single-robot run.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 W=logs/rsl_rl/walker_spot_arm
@@ -25,7 +28,9 @@ S3=$(ls -d $W/*push_ft_s3_handload | tail -1)/model_2999.pt
 [[ -s "$S3" ]] || { echo "missing s3 walker: $S3" >&2; exit 1; }
 export QUADCOOP_SPOT_ARM_WALKER=$S3
 TAG=${TAG-_gc}
+ARM=${ARM:-learned}
 CREDIT=""; [[ -n "$TAG" ]] && CREDIT="--goal-credit --arm-bonus ${ARM_BONUS:-0.25}"
+[[ "$ARM" == hand_rate ]] && TAG="_hr$TAG"
 export QUADCOOP_SHAPE_SET=spot20
 SH20=cube,long,sphere,cylinder,arch,dumbbell,t_shape,beam,l_shape,asym,u_channel,plus,low_slab,low_bar,low_plus,\
 low_roller,tall_box,tall_column,tall_wall,top_heavy
@@ -35,7 +40,7 @@ SOLO_ITERS=${SOLO_ITERS:-6000}
 PAIR_ITERS=${PAIR_ITERS:-6000}
 TEN=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 ROW="25,0,10,60,0.10,6,1.0"   # spread, behind offset, start yaw, goal turn (deg), tol 0.10 m / 6 deg, hold 1 s
-BASE="--pair spot_arm --arm learned --hand-obs --partner-map --reward r7 $CREDIT --mean-clip 1.1 --bound-coef 0.01 \
+BASE="--pair spot_arm --arm $ARM --hand-obs --partner-map --reward r7 $CREDIT --mean-clip 1.1 --bound-coef 0.01 \
 --entropy-coef 0.003 --fixed-difficulty --fixed-level 0 --dyaw-choices --pilot-episode-s 40"
 # columns: d_lo, d_hi, ROW, max mass, min mass
 SOLO_LV="--pilot-level 1.0,1.5,$ROW,20,5 --extra-levels 1.5,2.5,$ROW,30,5;2.0,3.5,$ROW,40,5 \
@@ -52,6 +57,7 @@ echo "check: $chk"
 solo=$(ALGO=ippo SEED=0 RUN_NAME=$SOLO ITERS=$SOLO_ITERS LOGGER=wandb \
        EXTRA="$BASE --scratch --solo-agent 0 $SOLO_LV" sbatch --parsable $PART --dependency=afterok:$chk slurm/train_coop2.sbatch)
 echo "solo pusher $SOLO: $solo"
+[[ "${SOLO_ONLY:-0}" == 1 ]] && exit 0
 INIT=logs/shared_init/SP_solo20${TAG}_${SOLO_ITERS}.pt
 mk=$(sbatch --parsable -p mit_normal_gpu,mit_preemptable --exclude=node4207 -c 2 --mem=8G -t 00:10:00 \
      -J qc-spinit -o logs/slurm/%x-%j.out --dependency=afterok:$solo \
