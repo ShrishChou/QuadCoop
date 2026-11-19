@@ -355,8 +355,13 @@ def main() -> int:
             mk = [torch.cat([g.contact_world(k_)[0], g.on_contact(k_).float().unsqueeze(-1)], -1) for k_ in range(2)]
             rec_cap.append(torch.stack([d_, torch.rad2deg(e_), h_on.float(), (ph & h_on).float(),
                                         g.current_strength(), *[x for m_ in mk for x in m_.unbind(-1)],
-                                        h_p[:, 0], h_p[:, 1]], -1)[fid].cpu().numpy())
+                                        *h_world().unbind(-1)], -1)[fid].cpu().numpy())
         ph = torch.zeros(n, dtype=torch.bool, device=dev)
+
+        def h_world():  # the helper's contact point is kept in the object's contact frame
+            yw = g.contact_frame_yaw()
+            cs_, sn_ = torch.cos(yw), torch.sin(yw)
+            return g.box_pos()[:, :2] + torch.stack([cs_ * h_p[:, 0] - sn_ * h_p[:, 1], sn_ * h_p[:, 0] + cs_ * h_p[:, 1]], -1)
         h_push_t = torch.zeros(n, device=dev)
         h_force = torch.zeros(n, device=dev)
         touch_t = torch.zeros(n, device=dev)
