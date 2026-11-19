@@ -82,3 +82,11 @@ them. Most likely it was trained mostly on contacts on the same side of the obje
 the other pushes in front at the other, so the couple does not form. The limit on the cylinder is the executor, not
 the plan. Next step: fine-tune the executor on cylinder tasks with roll_ratio 0.1, so it trains on the couples the
 planner now asks for.
+
+## Executor fine-tune and failure videos (2026-11-19)
+
+- `cyl_ft_s0` (`slurm/submit_cylinder_ft.sh`, job 29661847): turn_debug's recipe from `model_15000.pt`, 2000 more
+  iterations, `--roll-ratio 0.1` (new `train_coop2.py` flag) and `--shape-bias cylinder:6` (about half the
+  episodes). Evaluate on the cylinder tasks with `contact_test.py --set roll_ratio=0.1`.
+- Videos of the two-robot planner's cylinder failures (old model, seeds 7100 / 7500): `slurm/cylinder_fail_videos.sbatch`
+  -> `logs/evals/cyl-fail-<seed>-expert/pair/videos/index.html` (successes removed).

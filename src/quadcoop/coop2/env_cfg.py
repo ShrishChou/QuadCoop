@@ -220,6 +220,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        track_w: float = 0.5, short_tasks: bool = False, arm: str = "stowed",
                        pilot_level: tuple = (), pilot_episode_s: float = 0.0,
                        dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False,
+                       goal_credit: bool = False, align_bonus: float = 1.0, arm_bonus: float = 0.0,
                        oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
@@ -326,7 +327,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
-    if (reward_set == "r8" or guide or push_sensors or resid or "compliant" in kinds.values() or any(ARM.values())
+    if (reward_set == "r8" or guide or push_sensors or goal_credit or resid or "compliant" in kinds.values() or any(ARM.values())
             or oppose_cost > 0 or cancel_cost > 0):
         # contact between each robot and the object (work_credit, bump cost; a compliant walker's force input)
         cfg.scene.sensors += tuple(ContactSensorCfg(
@@ -553,6 +554,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             rewards[f"walk_cost_{a}"] = R(func=mdp.walk_cost, weight=-walk_cost, params={"robot": a})
             if exec_v2:  # Phase 2: told to hold -> stay on the contact without pushing or walking
                 rewards[f"hold_cost_{a}"] = R(func=mdp.hold_cost, weight=-hold_cost_w, params={"robot": a})
+        elif reward_set == "r7" and goal_credit:  # moving the object toward its goal, by any part (arm included)
+            rewards[f"goal_credit_{a}"] = R(func=mdp.goal_motion_credit, weight=1.0, params={
+                "robot": a, "align_bonus": align_bonus, "arm_bonus": arm_bonus if ARM[a] else 0.0})
         elif reward_set == "r7":
             rewards[f"push_credit_{a}"] = R(func=mdp.push_credit, weight=1.0, params={"robot": a})
         else:

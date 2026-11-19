@@ -214,6 +214,16 @@ def main() -> int:
                     help="bonus for reaching real contact: on contact, 30 N+ along the push direction for 0.5 s; once per "
                          "assignment, re-armed by a new assignment only after 0.1 m of pose progress; 0 = off")
     ap.add_argument("--time-cost", type=float, default=0.0, help="team cost per second (0 = off)")
+    ap.add_argument("--goal-credit", action="store_true",
+                    help="r7: replace push_credit (trunk front on the object) with goal_motion_credit: the object's "
+                         "motion toward its goal pose (travel + turning), paid while any part (arm included) touches it")
+    ap.add_argument("--align-bonus", type=float, default=1.0,
+                    help="--goal-credit: pay x (1 + this x cos(object motion, wanted motion))")
+    ap.add_argument("--arm-bonus", type=float, default=0.0,
+                    help="--goal-credit: pay x (1 + this) while the arm touches the object (Spot-arm)")
+    ap.add_argument("--roll-ratio", type=float, default=0.0,
+                    help="contact planner's rolling model for lying cylinders (goal command roll_ratio; 0 = isotropic, "
+                         "docs/planner_cylinder.md)")
     ap.add_argument("--touch-cost", type=float, default=0.0,
                     help="team cost per second while any part of one robot touches the other (the minimal reward has "
                          "none: nothing stopped a robot shoving its partner aside); 0 = off")
@@ -526,7 +536,7 @@ def main() -> int:
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
+                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
     if a.swap_starts:
@@ -542,6 +552,9 @@ def main() -> int:
         print(f"[marl2] rewards dropped: {gone}")
     env_cfg.commands["goal"].start_level = a.start_level
     env_cfg.commands["goal"].turn_frac = a.turn_frac
+    if a.roll_ratio > 0:
+        env_cfg.commands["goal"].roll_ratio = a.roll_ratio
+        print(f"[marl2] planner rolling model: roll_ratio {a.roll_ratio:g}")
     if a.fixed_difficulty:  # the very first episodes (drawn at construction, before the warm start) match too
         env_cfg.commands["goal"].start_level = a.fixed_level
         env_cfg.commands["goal"].tol_start_finest = True
@@ -567,7 +580,8 @@ def main() -> int:
                   contact_sense=a.contact_sense, acq_bonus=a.acq_bonus, time_cost=a.time_cost, touch_cost=a.touch_cost,
                   partner_map=a.partner_map, reward_set=a.reward, pair=a.pair,
                   arm=a.arm if a.pair in _pairs().ARM_PAIRS else "", pilot_level=pilot_level,
-                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs,
+                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus,
+                  arm_bonus=a.arm_bonus, roll_ratio=a.roll_ratio,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
                   solo_agent=a.solo_agent, bc_data=a.bc_data, bc_keep_norm=a.bc_keep_norm, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,
@@ -599,6 +613,8 @@ def main() -> int:
             trainer.init_from(a.init_from)
         else:
             trainer.warm_start(models["policy"])
+    if a.check and trainer.it > 0:  # a check from a later checkpoint (--init-from / --resume): 2 more iterations
+        trainer.cfg.max_iterations = trainer.it + 2
     if a.fixed_difficulty:  # re-apply the declared settings after any warm start / resume, and check the
         g_ = env.command_manager.get_term("goal")  # episodes already running were drawn with them
         g_.level = a.fixed_level

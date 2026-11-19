@@ -495,3 +495,16 @@ from it.
 Jobs (resubmitted with the ANYmal masses): check 29611752, solo 29611753, init 29611754, MAPPO 29611755, IPPO 29611756
 (each after the previous).
 Not yet queued: the ten-object benchmark evaluation of each stage (eval_coop2 with a Spot task bank).
+
+## Rerun with goal credit and 20 objects (2026-11-19)
+
+`sp_solo_s0` plateaued near 73% (arch 5-15%, dumbbell 8-27%, cylinder 35-50%, the rest 90%+), stopped using the arm
+(arm contact 29% -> 2%, trunk 20%) and often walked off the object. Cause in the reward: r7's push_credit paid only
+with the trunk's front within 8 cm of the object and only for travel, never for turning, so an arm push and a turn
+earned nothing. Cancelled at iteration 3580.
+
+Rerun (`slurm/submit_spot_pipeline.sh`, TAG _gc): `--goal-credit` (`mdp.goal_motion_credit`: the object's motion
+toward its goal pose, travel and turning through its radius, x (1 + cos) for the right direction, paid while any part
+of the robot, the arm included, touches it with 5 N+; nothing for staying or leaving) and `--arm-bonus 0.25`. The
+single robot (`sp_solo20_gc_s0`) trains on the 20 objects of `docs/spot_low_tall.md` (low and tall ones 60%); the
+pairs (`sp_pair_{mappo,ippo}_gc_s0`) start from it on the ten objects.

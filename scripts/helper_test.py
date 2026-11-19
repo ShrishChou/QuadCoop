@@ -47,6 +47,68 @@ SCENARIOS = (("A_straight", 3.0, 0.0, 0.0), ("B_left", 3.0, 60.0, 30.0), ("C_bac
 TEN = "cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus"
 
 
+def _film(a, base, cases, film_ids, how, t_succ, mass, fdt, rec_q, rec_mp, rec_mq, rec_pts, rec_cap, out):
+    """One MP4 per filmed episode in logs/evals/<prefix>/videos/ (+ index.html), with the planner's two contacts
+    (cyan, yellow posts), the helper's contact (magenta post, solid once engaged) and a caption."""
+    import numpy as np
+
+    from quadcoop.coop2.video import Camera, render_episode
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from contact_test import _video_index
+
+    vw, vh = (int(x) for x in a.video_size.lower().split("x"))
+    cam = Camera(base, vw, vh)
+    Q = np.stack(rec_q, 1)
+    MP = np.stack(rec_mp, 1) if rec_mp else None
+    MQ = np.stack(rec_mq, 1) if rec_mq else None
+    P = np.stack(rec_pts, 1)
+    C = np.stack(rec_cap, 1)
+    vdir = out / "videos"
+    for fi, j in enumerate(film_ids):
+        arm, o, s, r, _ = cases[j]
+        outcome = how[j] or "horizon"
+        end = float(t_succ[j]) if not math.isnan(float(t_succ[j])) else Q.shape[1] * fdt
+        F = min(Q.shape[1], int(end / fdt) + int(1.0 / fdt) + 1)
+        stem = f"{o}_{mass:g}kg_{SCENARIOS[s][0]}_r{r}_{arm}"
+        name = f"{stem}__{outcome}.mp4"
+        head = f"{arm}: {o} {mass:g} kg {SCENARIOS[s][0]} rep {r} -> {outcome}"
+
+        def cap(f, fi=fi, head=head):
+            d_, e_, on, pushing, st = C[fi, f, :5]
+            return (f"{head} | t {f * fdt:4.1f} s\nto goal {d_:.2f} m, {e_:+.0f} deg | pair strength {st:.2f} | helper "
+                    f"{'ENGAGED' if on > 0.5 else 'waiting'}{' PUSHING' if pushing > 0.5 else ''}\n"
+                    "cyan / yellow: planner pair contacts, magenta: helper contact; ball above = robot")
+
+        def marks(f, fi=fi):
+            out_ = []
+            row = C[fi, f]
+            for k, col in enumerate(((0.0, 0.95, 0.95), (1.0, 0.85, 0.0))):
+                px, py, on = row[5 + 3 * k: 8 + 3 * k]
+                al = 1.0 if on > 0.5 else 0.4
+                out_.append(("arrow", (px, py, 0.25), (px, py, 1.05), 0.012, (*col, al)))
+                out_.append(("sphere", (px, py, 1.05), 0.07, (*col, al)))
+            hx, hy = row[11:13]
+            if row[2] > 0.5:
+                out_.append(("arrow", (hx, hy, 0.25), (hx, hy, 1.05), 0.012, (1.0, 0.2, 1.0, 1.0)))
+                out_.append(("sphere", (hx, hy, 1.05), 0.07, (1.0, 0.2, 1.0, 1.0)))
+            for k, col in enumerate(((0.0, 0.95, 0.95), (1.0, 0.85, 0.0), (1.0, 0.2, 1.0))):
+                rx, ry = P[fi, f, k]
+                out_.append(("sphere", (rx, ry, 1.45), 0.11, (*col, 1.0)))
+            return out_
+
+        try:
+            render_episode(cam, j, Q[fi, :F], None if MP is None else MP[fi, :F], None if MQ is None else MQ[fi, :F],
+                           P[fi, :F], vdir / name, 1.0 / fdt, caption=cap, marks=marks)
+            (vdir / f"{stem}.json").write_text(json.dumps({"object": o, "mass": mass, "scenario": SCENARIOS[s][0],
+                                                           "rep": r, "arm": arm, "outcome": outcome,
+                                                           "success": int(outcome == "success"), "file": name}))
+        except Exception as ex:  # noqa: BLE001
+            print(f"video failed {name}: {ex}", flush=True)
+    _video_index(vdir)
+    print(f"[{mass:g} kg] {len(film_ids)} videos in {vdir}", flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="logs/keep/marl2/turn_debug/model_15000.pt")
@@ -66,6 +128,15 @@ def main() -> int:
     ap.add_argument("--set", default="", help="more goal-command settings, key=value comma list (e.g. roll_ratio=0.1)")
     ap.add_argument("--prefix", default="helper")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--videos", type=int, default=0, help="1 = film the --video-* episodes (helper arm by default)")
+    ap.add_argument("--video-arms", default="helper")
+    ap.add_argument("--video-objects", default="all")
+    ap.add_argument("--video-masses", default="80")
+    ap.add_argument("--video-scenarios", default="A_straight,D_far_turn")
+    ap.add_argument("--video-reps", default="0")
+    ap.add_argument("--video-size", default="640x480")
+    ap.add_argument("--video-only", type=int, default=0,
+                    help="1 = run only the filmed episodes' tasks (no statistics; for making videos)")
     a = ap.parse_args()
 
     os.environ["QUADCOOP_HELPER"] = "1"
@@ -114,6 +185,19 @@ def main() -> int:
     hrng = random.Random(f"{a.seed}-helper")
     jit_h = [hrng.uniform(-10, 10) for _ in base_cases]
     cases = [(arm, o, s, r, k) for arm in arms for k, (o, s, r) in enumerate(base_cases)]
+    v_arms = {x.strip() for x in a.video_arms.split(",")}
+    v_objs = None if a.video_objects == "all" else {x.strip() for x in a.video_objects.split(",")}
+    v_mass = {float(x) for x in a.video_masses.split(",")}
+    v_scen = None if a.video_scenarios == "all" else {x.strip() for x in a.video_scenarios.split(",")}
+    v_reps = None if a.video_reps == "all" else {int(x) for x in a.video_reps.split(",")}
+
+    def filmed(c):
+        arm, o, s_, r, _ = c
+        return (a.videos > 0 and arm in v_arms and (v_objs is None or o in v_objs)
+                and (v_scen is None or SCENARIOS[s_][0] in v_scen) and (v_reps is None or r in v_reps))
+    if a.video_only:
+        cases = [c for c in cases if filmed(c)]
+        masses = [m for m in masses if m in v_mass]
     n = len(cases)
     print(f"helper test: arms {arms}; {len(objects)} objects x {len(SCENARIOS)} scenarios x {a.reps} reps = "
           f"{len(base_cases)} tasks per arm, {n} envs per mass; masses {masses}; push force {a.push_force:g} N, "
@@ -252,6 +336,27 @@ def main() -> int:
         t_succ = torch.full((n,), float("nan"), device=dev)
         how = [""] * n
         fell = [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]
+        film_ids = [j for j, c in enumerate(cases) if filmed(c) and mass in v_mass]
+        fid = torch.tensor(film_ids, dtype=torch.long, device=dev) if film_ids else None
+        stride = 2
+        rec_q, rec_mp, rec_mq, rec_pts, rec_cap = [], [], [], [], []
+        nmocap = base.sim.mj_model.nmocap
+
+        def record():
+            sd = base.sim.data
+            rec_q.append(sd.qpos[fid].cpu().numpy().copy())
+            if nmocap:
+                rec_mp.append(sd.mocap_pos[fid].cpu().numpy().copy())
+                rec_mq.append(sd.mocap_quat[fid].cpu().numpy().copy())
+            pts = [r_.data.root_link_pos_w[fid, :2] for r_ in robots] + [g.box_pos()[fid, :2], g.goal_xy[fid]]
+            rec_pts.append(np.stack([p_.cpu().numpy() for p_ in pts], 1))
+            d_, e_ = g.errors()
+            e_ = torch.where(g.symmetry() > 0, e_, torch.zeros_like(e_))
+            mk = [torch.cat([g.contact_world(k_)[0], g.on_contact(k_).float().unsqueeze(-1)], -1) for k_ in range(2)]
+            rec_cap.append(torch.stack([d_, torch.rad2deg(e_), h_on.float(), (ph & h_on).float(),
+                                        g.current_strength(), *[x for m_ in mk for x in m_.unbind(-1)],
+                                        h_p[:, 0], h_p[:, 1]], -1)[fid].cpu().numpy())
+        ph = torch.zeros(n, dtype=torch.bool, device=dev)
         h_push_t = torch.zeros(n, device=dev)
         h_force = torch.zeros(n, device=dev)
         touch_t = torch.zeros(n, device=dev)
@@ -262,6 +367,8 @@ def main() -> int:
         with torch.no_grad():
             for i in range(steps):
                 t = i * dt
+                if fid is not None and i % stride == 0:
+                    record()
                 live = ~done
                 strength = g.current_strength()
                 weak = live & is_helper & ~h_on & (strength < 1.0)
@@ -335,6 +442,8 @@ def main() -> int:
                          "helper_push_s": round(float(h_push_t[j]), 2),
                          "helper_force_n": round(float(h_force[j] / h_push_t[j].clamp(min=1e-6)), 1) if float(h_push_t[j]) > 0 else "",
                          "robots_touch_frac": round(float(touch_t[j] / live_t[j].clamp(min=1e-6)), 3)})
+        if fid is not None:
+            _film(a, base, cases, film_ids, how, t_succ, mass, dt * stride, rec_q, rec_mp, rec_mq, rec_pts, rec_cap, out)
         sel = [x for x in rows if x["mass"] == mass]
         print(f"[{mass:g} kg] " + "  ".join(f"{arm} {sum(x['success'] for x in sel if x['arm'] == arm)}/"
                                           f"{sum(1 for x in sel if x['arm'] == arm)}" for arm in arms)

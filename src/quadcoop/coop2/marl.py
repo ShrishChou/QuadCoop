@@ -94,6 +94,10 @@ class MarlCfg:
     solo_agent: int = -1  # env option (recorded): solo control, only this robot acts (the other parked, actions 0)
     dyaw_choices: bool = False  # env option (recorded): goal heading change in {-1, 0, +1} x the level's value
     hand_obs: bool = False  # env option (recorded): Spot-arm actors read the hand point and extension
+    goal_credit: bool = False  # env option (recorded): r7 goal_motion_credit instead of push_credit
+    align_bonus: float = 1.0  # env option (recorded)
+    arm_bonus: float = 0.0  # env option (recorded)
+    roll_ratio: float = 0.0  # env option (recorded): the planner's rolling-cylinder model
     turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
     # demonstrations (docs/spot_arm_pair.md, "Turn in place"): a file of actor observations and the env action from
     # scripts/spot_arm/collect_demos.py. The actors' normalizers are fitted to the demonstrations (then frozen, as for

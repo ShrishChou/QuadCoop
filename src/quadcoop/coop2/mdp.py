@@ -3123,6 +3123,31 @@ def _desired_twist(env):
     return vh, wh, (wh.abs()).clamp(0.0, 1.0), rho, wanted
 
 
+def goal_motion_credit(env, robot: str, max_speed: float = 1.0, min_force: float = 5.0, align_bonus: float = 1.0,
+                       arm_bonus: float = 0.0) -> torch.Tensor:
+    """r7 + goal credit (per robot): pays for moving the object toward its goal pose, nothing for being near it.
+    Credited while ANY part of this robot touches the object (contact sensor push_<robot>: trunk, legs, arm) with
+    at least min_force N, so an arm push counts as much as a body push (push_credit needs the trunk's front within
+    8 cm, so an arm push alone earned nothing). Pay = the object's speed toward the goal pose (travel and turning,
+    turning through the object's radius rho: the wanted unit twist of _desired_twist), clipped to 0..max_speed,
+    x (1 + align_bonus x cos), cos = how well the object's whole motion points the wanted way (sideways or spinning
+    motion lowers it, motion away pays nothing). arm_bonus > 0: x (1 + arm_bonus) while the arm is touching."""
+    g = _g(env)
+    vh, wh, _, rho, wanted = _desired_twist(env)
+    v = g.box_vel()[:, :2]
+    w = rho * g.box_ang_vel()[:, 2]
+    proj = (v * vh).sum(-1) + w * wh
+    mag = torch.sqrt(v.square().sum(-1) + w.square())
+    cos = (proj / mag.clamp(min=1e-6)).clamp(0.0, 1.0)
+    pay = proj.clamp(0.0, max_speed) * (1.0 + align_bonus * cos)
+    f = torch.linalg.norm(object_force_from(env, robot), dim=-1)
+    touching = env.scene[f"push_{robot}"].data.found.view(env.num_envs, -1).any(-1) & (f >= min_force)
+    if arm_bonus > 0:  # (only passed for robots with an arm: env_cfg)
+        arm = env.scene[f"arm_{robot}"].data.found.view(env.num_envs, -1).any(-1)
+        pay = pay * (1.0 + arm_bonus * arm.float())
+    return torch.where(touching & wanted, pay, torch.zeros_like(pay))
+
+
 def robot_wrench_power(env, robot: str, f_ref: float = 200.0) -> torch.Tensor:
     """(n,) this robot's push projected on the wanted object motion, in units of f_ref: (F . v_hat + (tau / rho)
     w_hat) / f_ref, F its contact force on the object (push_<robot> sensor), tau = (front point - object) x F.

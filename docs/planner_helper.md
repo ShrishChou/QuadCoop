@@ -94,3 +94,9 @@ Next, if pursued:
   model's verdict alone;
 - keep the helper's standing point at least 0.8 m from both pair robots, and route it around them;
 - use pair160 as the default limit for the pair below about 70 kg.
+
+## Videos
+
+`helper_test.py --videos 1 --video-only 1` films the helper arm's episodes (cyan / yellow posts: the pair's contacts;
+magenta: the helper's, once engaged; caption: errors, pair strength, helper state). `slurm/helper_videos.sbatch`: all
+twelve objects x four scenarios, rep 0, 80 and 100 kg, seed 7100 -> `logs/evals/helper-videos/videos/index.html`.
