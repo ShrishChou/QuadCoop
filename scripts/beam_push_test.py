@@ -68,11 +68,13 @@ def main() -> int:
     ap.add_argument("--gap", type=float, default=0.05, help="start: robot front to the beam's back face, m")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--pair", choices=("anymal", "anymal3"), default="anymal",
+                    help="two ANYmals (slots +/- --slot) or three (slots +--slot, 0, ---slot)")
     a = ap.parse_args()
 
     from train_coop2 import resolve_models, set_env
 
-    models = resolve_models("b", "anymal")
+    models = resolve_models("b", a.pair)
     set_env(models)
     os.environ.setdefault("QUADCOOP_CMD_IF", "raw")
     import numpy as np
@@ -93,7 +95,8 @@ def main() -> int:
     from quadcoop.stage2 import mdp as m2
     from quadcoop.stage2.shapes import OBJ_NAMES2, SHAPE_NAMES2, SHAPES2, kinds_tensor, nominal_parts
 
-    assert AGENTS == ("anymal1", "anymal2"), f"expected two ANYmals, got {AGENTS}"
+    want = ("anymal1", "anymal2") if a.pair == "anymal" else ("anymal1", "anymal2", "anymal3")
+    assert AGENTS == want, f"expected {want}, got {AGENTS}"
     assert os.environ["QUADCOOP_CMD_IF"] == "raw", "this test commands the walker through the raw interface"
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     speeds = [float(x) for x in a.speeds.split(",")]
@@ -107,7 +110,7 @@ def main() -> int:
     nom, nom_rest = nominal_parts("cpu")
     kinds = kinds_tensor("cpu")
     n = len(speeds)  # one env per speed; one env build per (mass, friction)
-    slot = {AGENTS[0]: a.slot, AGENTS[1]: -a.slot}
+    slot = dict(zip(AGENTS, (a.slot, -a.slot) if len(AGENTS) == 2 else (a.slot, 0.0, -a.slot), strict=True))
     start_x = {ag: back_face_x(nom[bk], kinds[bk], float(nom_rest[bk]), slot[ag]) - SPECS[ag].half_length - a.gap
                for ag in AGENTS}
     print(f"beam push: speeds {speeds} x masses {masses} x friction {mus}, {a.horizon:g} s, slots +/-{a.slot} m, "
@@ -136,7 +139,7 @@ def main() -> int:
             sc = {"shape": torch.full((n,), bk, device=dev, dtype=torch.long), "obj_xy_rel": torch.zeros(n, 2, device=dev),
                   "obj_heading": z.clone(), "goal_xy_rel": torch.tensor([[3.0, 0.0]], device=dev).repeat(n, 1),
                   "goal_yaw": z.clone(), "bearings": [torch.full((n,), math.pi, device=dev) for _ in AGENTS],
-                  "gaps": [torch.full((n,), 0.5, device=dev) for _ in AGENTS], "yaw_noise": [z, z],
+                  "gaps": [torch.full((n,), 0.5, device=dev) for _ in AGENTS], "yaw_noise": [z for _ in AGENTS],
                   "park": [torch.zeros(n, dtype=torch.bool, device=dev) for _ in AGENTS]}
             g.scenario = lambda env_ids: {k: ([x[env_ids] for x in v] if isinstance(v, list) else v[env_ids])
                                           for k, v in sc.items()}
@@ -179,7 +182,7 @@ def main() -> int:
             tipped = torch.zeros(n, dtype=torch.bool, device=dev)
             X, FX, TOUCH, CY, MEAS = [], [], [], [], []
             vx_a = torch.tensor([to_action(s, VX_RANGE) for s in speeds], device=dev)
-            act = torch.zeros(n, 6, device=dev)
+            act = torch.zeros(n, 3 * len(AGENTS), device=dev)
             with torch.no_grad():
                 for i in range(steps):
                     bxy = g.box_pos()[:, :2]
@@ -246,7 +249,8 @@ def main() -> int:
                        "dx": round(float(dx_stop[j]), 3), "v_mean": round(float(dx_stop[j]) / a.horizon, 3),
                        "v_last": 0.0 if st_j else round(float(X[-1, j] - X[-1 - last, j]) / (last * dt), 3),
                        "yaw_drift": round(float(dyaw[j]), 1), "lat": round(float(lat[j]), 3),
-                       "fell_anymal1": int(bool(fell[AGENTS[0]][j])), "fell_anymal2": int(bool(fell[AGENTS[1]][j])),
+                       **{f"fell_{ag}": int(bool(fell[ag][j])) for ag in AGENTS},
+                       "falls": sum(int(bool(fell[ag][j])) for ag in AGENTS),
                        "t_fall": "" if math.isnan(float(t_fall[j])) else round(float(t_fall[j]), 2),
                        "tipped": int(bool(tipped[j])), "measured_s": round(T_m, 2),
                        "F_x": round(float(ftot.sum() * dt / max(T_m, 1e-9)), 1) if T_m else "",
@@ -258,12 +262,12 @@ def main() -> int:
                     ys = CY[mj, j, k][tc[:, k]] if len(tc) else np.zeros(0)
                     row[f"cy_mean_{ag}"] = round(float(ys.mean()), 3) if len(ys) else ""
                     row[f"cy_sd_{ag}"] = round(float(ys.std()), 3) if len(ys) else ""
-                row["duty_both"] = round(float((tc[:, 0] & tc[:, 1]).mean()), 3) if len(tc) else ""
-                row["duty_any"] = round(float((tc[:, 0] | tc[:, 1]).mean()), 3) if len(tc) else ""
+                row["duty_both"] = round(float(tc.all(-1).mean()), 3) if len(tc) else ""  # every robot touching
+                row["duty_any"] = round(float(tc.any(-1).mean()), 3) if len(tc) else ""
                 rows.append(row)
             print(f"[{mass:g} kg, mu {mu}] " + "  ".join(
                 f"{r['speed']} m/s: dx {r['dx']:.2f} m F_x {r['F_x']} N both {r['duty_both']} fell "
-                f"{r['fell_anymal1'] + r['fell_anymal2']}" for r in rows[-n:]) + f"  ({time.time() - t0:.0f} s)", flush=True)
+                f"{r['falls']}" for r in rows[-n:]) + f"  ({time.time() - t0:.0f} s)", flush=True)
             base.close()
             del base
 
@@ -281,11 +285,11 @@ def main() -> int:
         for s in speeds:
             sel = [r for r in rows if r["mass"] == m and r["speed"] == s]
             cells[f"{m:g} kg / {s} m/s"] = {k: mean(sel, k) for k in (
-                "dx", "v_mean", "v_last", "yaw_drift", "lat", "fell_anymal1", "fell_anymal2", "F_x", "F_x_p90",
-                "duty_anymal1", "duty_anymal2", "duty_both", "mu_m_g")} | {
+                "dx", "v_mean", "v_last", "yaw_drift", "lat", "falls", "F_x", "F_x_p90",
+                *[f"duty_{ag}" for ag in AGENTS], *[f"F_x_{ag}" for ag in AGENTS], "duty_both", "mu_m_g")} | {
                 "transported": sum(1 for r in sel if float(r["dx"]) >= 1.0), "n": len(sel),
                 "dx_by_mu": {str(r["mu_set"]): r["dx"] for r in sel}}
-    summary = {"name": a.name, "speeds": speeds, "masses": masses, "mus": mus, "horizon_s": a.horizon,
+    summary = {"name": a.name, "robots": list(AGENTS), "speeds": speeds, "masses": masses, "mus": mus, "horizon_s": a.horizon,
                "settle_s": a.settle, "slot_m": a.slot, "gap_m": a.gap, "cells": cells}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
     prov = {"argv": sys.argv, "models": models, "pair": AGENTS,
@@ -295,20 +299,20 @@ def main() -> int:
     (out / "provenance.json").write_text(json.dumps(prov, indent=1, default=str))
 
     md = [f"# Engaged-start beam push: {a.name}", "",
-          f"Two ANYmals, frozen walker, scripted: constant forward command, lateral slot +/-{a.slot} m and heading held. "
+          f"{len(AGENTS)} ANYmals at slots {[slot[ag] for ag in AGENTS]} m, frozen walker, scripted: constant forward command, lateral slot and heading held. "
           f"Beam broadside, robots start {a.gap} m behind it. {a.horizon:g} s per case; force and contact from "
           f"{a.settle:g} s until the first fall. Beam friction per repeat: {mus}. 'transported' = moved >= 1 m "
           f"(0.05 m/s average) before any fall.", "",
           "| mass | speed cmd | transported | dx m (by mu " + "/".join(map(str, mus)) + ") | v last 10 s | yaw drift deg | "
-          "falls | F_x N (impulse/time) | F_x 1 s p90 | duty r1 / r2 / both | mu m g N |",
-          "|---|---|---|---|---|---|---|---|---|---|---|"]
+          "falls | F_x N (impulse/time) | F_x per robot | F_x 1 s p90 | duty per robot / all | mu m g N |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for m in masses:
         for s in speeds:
             c = cells[f"{m:g} kg / {s} m/s"]
             md.append(f"| {m:g} | {s} | {c['transported']}/{c['n']} | {' / '.join(f'{float(v):.2f}' for v in c['dx_by_mu'].values())} | "
-                      f"{c['v_last']:.3f} | {c['yaw_drift']:.0f} | {c['fell_anymal1'] + c['fell_anymal2']:.2f} | "
-                      f"{c['F_x']:.0f} | {c['F_x_p90']:.0f} | {c['duty_anymal1']:.2f} / {c['duty_anymal2']:.2f} / "
-                      f"{c['duty_both']:.2f} | {c['mu_m_g']:.0f} |")
+                      f"{c['v_last']:.3f} | {c['yaw_drift']:.0f} | {c['falls']:.2f} | "
+                      f"{c['F_x']:.0f} | {' / '.join(f'{c[f"F_x_{ag}"]:.0f}' for ag in AGENTS)} | {c['F_x_p90']:.0f} | "
+                      f"{' / '.join(f'{c[f"duty_{ag}"]:.2f}' for ag in AGENTS)} / {c['duty_both']:.2f} | {c['mu_m_g']:.0f} |")
     (out / "summary.md").write_text("\n".join(md) + "\n")
     stats_dir.mkdir(parents=True, exist_ok=True)
     for f in ("summary.md", "summary.json", "episodes.csv", "provenance.json"):

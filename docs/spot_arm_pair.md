@@ -470,3 +470,28 @@ throughout / median displacement / falls in release):
 Continued control rarely keeps the object in place throughout. With RAI either scripted release holds it; s3 does
 not stand still on a zero command (its stop-command velocity error 0.115 m/s vs RAI 0.008 in the ramp test) and
 nudges the object, worst at 20 kg: retract + back-off is needed with s3, and still loses 5-19%.
+
+## Spot-arm through the ANYmal pipeline (2026-11-19; `slurm/submit_spot_pipeline.sh`)
+
+Walker: `push_ft_s3_handload` (model_2999; held force 151-176 N on the ramp test, about an ANYmal's 150-165 N in
+`evals/beam-push`). Same steps as ANYmal: one robot learns to push the ten objects to their goals, then pairs start
+from it.
+
+1. **Solo pusher** `sp_solo_s0` (IPPO, `--solo-agent 0`: partner parked; from scratch; arm learned, hand inputs,
+   partner map, r7; ten objects; 6000 iterations). Fixed level mix:
+   - L0: 1-1.5 m, 5-20 kg;
+   - L1: 1.5-2.5 m, 5-30 kg;
+   - L2: 2-3.5 m, 5-40 kg;
+   - weights 0.6/0.4/0 from 0, 0.3/0.4/0.3 from 1000, 0.2/0.3/0.5 from 2500.
+   Masses match ANYmal's single-robot training (Stage 1b / 2: 5-40 kg, cap rising 15 -> 40 kg).
+2. **Shared start:** the solo actor is copied to both robots (`scripts/make_shared_ckpt.py ... spotarm1`, as B0 + B0)
+   -> `logs/shared_init/SP_solo_6000.pt`.
+3. **Pairs from it, one after the other:** `sp_pair_mappo_s0`, then `sp_pair_ippo_s0` (`--init-actors`, 100
+   critic-only iterations, 6000 iterations). Fixed level mix:
+   - L0: 1.5-2.5 m; L1: 2-3 m; L2: 2-4 m; 20-80 kg uniform at every level (as ANYmal's ten-object pair runs,
+     `--train-mass 20,80`), evaluated at 20 / 40 / 60 / 80 kg;
+   - same weights schedule as the solo run.
+
+Jobs (resubmitted with the ANYmal masses): check 29611752, solo 29611753, init 29611754, MAPPO 29611755, IPPO 29611756
+(each after the previous).
+Not yet queued: the ten-object benchmark evaluation of each stage (eval_coop2 with a Spot task bank).

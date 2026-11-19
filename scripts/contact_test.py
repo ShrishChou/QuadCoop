@@ -210,7 +210,7 @@ def ref_update_push(self) -> None:
     yaw = self.contact_frame_yaw()
     cs, sn = torch.cos(yaw), torch.sin(yaw)
     v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
-    f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, wz, self.c_cg, self.robot_cap())
+    f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, wz, self.c_cg, self.robot_cap(), self.roll_factor())
     mag = torch.linalg.norm(f, dim=-1)
     want = (torch.linalg.norm(v_w, dim=-1) > 0.02) | (wz.abs() > 0.02)
     d_new = torch.where((mag > 1e-6).unsqueeze(-1), f / mag.unsqueeze(-1).clamp(min=1e-9), -self.c_nobj)

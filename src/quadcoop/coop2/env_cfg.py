@@ -201,7 +201,7 @@ REWARD_SETS = ("r3", "r4", "r5", "r7", "r8", "rmin")
 GOAL_ERROR_COST = 0.25  # r7: per second at the start error (distance fraction 1 + heading fraction)
 
 
-def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool = False,
+def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool = False, helper: bool = False,
                        reward_set: str = "r3", start_mode: str = "behind", need_frac: float = 0.0,
                        need_mass: float = 45.0, contacts: bool = False, tol_levels: tuple = (),
                        contact_mix: tuple = (1.0, 1.0, 1.0), contact_start_at: float = 0.7,
@@ -314,7 +314,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         secondary=ContactMatch(mode="subtree", pattern=SPECS[y].base_body, entity=y),
         fields=("found",), reduce="none", num_slots=1,
     ) for x, y in PAIRS_OF)
-    assert len(AGENTS) == 2 or not contacts, "the contact planner (contacts) is written for two robots"
+    # helper (evaluation only, scripts/helper_test.py): three robots with contacts, the planner drives the first two
+    # and the third is a scripted helper with the plain (non-contact) inputs; rewards are not built for it
+    assert len(AGENTS) == 2 or not contacts or (helper and len(AGENTS) == 3 and play), \
+        "the contact planner (contacts) is written for two robots (three: helper=True, play only)"
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
     assert not exec_v2 or push_cmd, "exec_v2 builds on push_cmd (Stage 4e)"
@@ -406,13 +409,14 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     T = ObservationTermCfg
     obs = {}
     for a, o in PARTNER.items():
-        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=contacts, guide=guide,
-                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
-                                                                   effort=effort, contact_sense=contact_sense),
+        ca = contacts and AGENTS.index(a) < 2  # the helper (third robot) has no planner contact
+        obs[f"actor_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=True, contacts=ca, guide=guide and ca,
+                                                                   push_cmd=push_cmd and ca, exec_v2=exec_v2 and push_cmd and ca,
+                                                                   effort=effort and ca, contact_sense=contact_sense and ca),
                                                 concatenate_terms=True, enable_corruption=not play)
-        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=contacts, guide=guide,
-                                                                   push_cmd=push_cmd, exec_v2=exec_v2 and push_cmd and contacts,
-                                                                   effort=effort, contact_sense=contact_sense),
+        obs[f"state_{a}"] = ObservationGroupCfg(terms=_agent_terms(a, o, noisy=False, contacts=ca, guide=guide and ca,
+                                                                   push_cmd=push_cmd and ca, exec_v2=exec_v2 and push_cmd and ca,
+                                                                   effort=effort and ca, contact_sense=contact_sense and ca),
                                                 concatenate_terms=True, enable_corruption=False)
         if hand_obs and ARM[a]:  # the hand point measured and commanded, the extension (last; docs/spot_arm_pair.md)
             for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.02, n_max=0.02)), (f"state_{a}", None)):
@@ -583,6 +587,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     if touch_cost > 0:  # (the minimal reward drops robots_touch; this puts a contact cost back)
         rewards["robots_touch"] = R(func=mdp.robots_touching, weight=-touch_cost)
     cfg.rewards = rewards
+    if helper and len(AGENTS) == 3:  # the helper's per-robot terms would read planner buffers it has no slot in
+        cfg.rewards = {k: v for k, v in rewards.items() if not k.endswith(f"_{AGENTS[2]}")}
 
     # -- terminations ----------------------------------------------------------------------------------
     cfg.terminations = {"time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True)}

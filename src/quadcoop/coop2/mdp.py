@@ -75,6 +75,10 @@ from quadcoop.stage2.shapes import (
 from quadcoop.coop2.pairs import AGENTS, NEAREST, OTHERS, PAIRS_OF, PARTNER, ROBOT_TYPE  # noqa: E402
 from quadcoop.contacts import PLANNER_PARTS  # noqa: E402
 
+# the contact planner's two robots; with three (pair anymal3 + contacts, docs/planner_helper.md) the third is a
+# helper outside the planner's pair (scripted in scripts/helper_test.py), so planner buffers stay (n, 2)
+PLAN = AGENTS[:2]
+
 _FOOTPRINT_OF_TYPE = {"anymal_c": (0.55, 0.30), "spot": (0.55, 0.28), "spot_arm": (0.55, 0.28)}  # m: half-length, half-width
 FOOTPRINT_HALF = {a: _FOOTPRINT_OF_TYPE[ROBOT_TYPE[a]] for a in AGENTS}  # partner map, body gap
 SPREAD = 2  # level-table column 2: each robot's spread around "behind", +- deg
@@ -246,6 +250,12 @@ class CoopPush2Command(Push2Command):
         # a lone sphere spins freely as it rolls: its contacts live in the frame it started with
         valid_parts = self.kinds >= 0
         self.c_free_spin = ((self.kinds == 1) | ~valid_parts).all(-1)
+        # a lying cylinder rolls across its axis (object frame x) and slides along it (y) and in yaw: the planner's
+        # limit surface is scaled by roll_ratio along x for such shapes (1 = isotropic, the model before 2026-11-18)
+        lying_cyl = ((self.kinds == 2) | ~valid_parts).all(-1) & valid_parts.any(-1)
+        rr = self.cfg.roll_ratio
+        self.c_roll_shape = torch.where(lying_cyl & (rr > 0), torch.full_like(lying_cyl, rr, dtype=torch.float),
+                                        torch.ones_like(lying_cyl, dtype=torch.float))
         self.c_bbox_nom = self.bbox_env[0, :, 2:4].clone()  # nominal half extents (before the startup event)
         self.c_idx = torch.zeros(n, 2, dtype=torch.long, device=dev)
         self.c_pobj = torch.zeros(n, 2, 2, device=dev)
@@ -348,6 +358,7 @@ class CoopPush2Command(Push2Command):
         self.c_cmd_flips = torch.zeros(n, device=dev)  # push -> hold changes of the command (logged)
         self.c_mass = torch.ones(n, device=dev)
         self.c_exp_t = 0.0  # time since the last expert update
+        self.c_cap_mult = torch.ones(n, device=dev)  # per env x robot_push_force (a helper adds force: > 1)
         self.c_mu = torch.full((n,), 0.5, device=dev)  # sliding friction: weight-averaged over the grounded parts
         self.c_cof = torch.zeros(n, 2, device=dev)  # centre of friction (object frame): friction-weighted pressure centroid
         self._part_geom = None  # (S, MAX_PARTS) geom index of each part
@@ -624,7 +635,7 @@ class CoopPush2Command(Push2Command):
             w = w * fac
         return v, w
 
-    def _split(self, p, nn, com, v, wz, cg, cap=None):
+    def _split(self, p, nn, com, v, wz, cg, cap=None, roll=None):
         """Split a wanted motion over two contacts (object frame). p, nn: (B, 2, 2) contact points and
         outward normals; com (B, 2); v (B, 2) wanted velocity; wz (B,) wanted yaw rate; cg (B,)
         ground-contact radius. Under an ellipsoidal limit surface the wrench for that motion is
@@ -652,6 +663,7 @@ class CoopPush2Command(Push2Command):
         tq = (R[..., 0] * E[..., 1] - R[..., 1] * E[..., 0]) / cg.unsqueeze(-1)
         M = torch.cat([E, tq.unsqueeze(-1)], -1)  # (B, 4, 3): rows = cone edges
         w = torch.cat([v, (cg * wz).unsqueeze(-1)], -1)  # (B, 3)
+        M, w = self._roll_scale(M, w, roll)
         wn = torch.linalg.norm(w, dim=-1)
         w = w / wn.unsqueeze(-1).clamp(min=1e-9)
         Gm = M @ M.transpose(1, 2)  # (B, 4, 4)
@@ -712,7 +724,7 @@ class CoopPush2Command(Push2Command):
         none = wn < 1e-6
         return f, torch.where(none, torch.zeros_like(best_r2), best_r2.sqrt())
 
-    def _pair_strength(self, p, nn, com, v, wz, cg, cap):
+    def _pair_strength(self, p, nn, com, v, wz, cg, cap, roll=None):
         """How hard a pair can push the way it should, in units of the force that slides the object:
         the largest component along the wanted wrench of a wrench the two robots can make inside
         their friction cones and force limits (cap, as in _split). >= 1: the pair can slide the
@@ -730,6 +742,7 @@ class CoopPush2Command(Push2Command):
         tq = (R[..., 0] * E[..., 1] - R[..., 1] * E[..., 0]) / cg.unsqueeze(-1)
         M = torch.cat([E, tq.unsqueeze(-1)], -1)
         w = torch.cat([v, (cg * wz).unsqueeze(-1)], -1)
+        M, w = self._roll_scale(M, w, roll)
         wn = torch.linalg.norm(w, dim=-1)
         w = w / wn.unsqueeze(-1).clamp(min=1e-9)
         Gm = M @ M.transpose(1, 2)
@@ -751,7 +764,7 @@ class CoopPush2Command(Push2Command):
         v_w = self.c_vdes[ids]
         v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
         s = self._pair_strength(self.c_pobj[ids], self.c_nobj[ids], self.c_comobj[ids], v_o, self.c_wdes[ids],
-                                self.c_cg[ids], self.robot_cap(ids))
+                                self.c_cg[ids], self.robot_cap(ids), self.roll_factor(ids))
         return torch.where(self.c_rule[ids] == 4, s, out)
 
     _BF_SETS: dict = {}
@@ -815,7 +828,7 @@ class CoopPush2Command(Push2Command):
         best = torch.where((jbest < -1e-12).unsqueeze(-1), best, torch.zeros_like(best))
         return best if multi else best.squeeze(1)
 
-    def _pair_residuals(self, p, nn, com, v, wz, cg, use, chunk: int = 8192, cap=None):
+    def _pair_residuals(self, p, nn, com, v, wz, cg, use, chunk: int = 8192, cap=None, roll=None):
         """Residual of every usable contact pair (m, K, K) for the wanted motion (v, wz) per env;
         1 where not usable. The physical residual does not depend on which robot takes which contact:
         computed once per unordered pair {i, j} usable either way round, mirrored, and only then
@@ -831,7 +844,8 @@ class CoopPush2Command(Push2Command):
             i, j = iu[q], ju[q]
             pp = torch.stack([p[e, i], p[e, j]], 1)
             nq = torch.stack([nn[e, i], nn[e, j]], 1)
-            _, r = self._split(pp, nq, com[e], v[e], wz[e], cg[e], None if cap is None else cap[e])
+            _, r = self._split(pp, nq, com[e], v[e], wz[e], cg[e], None if cap is None else cap[e],
+                               None if roll is None else roll[e])
             out[e, i, j] = r
             out[e, j, i] = r
         return torch.where(use, out, torch.ones_like(out))
@@ -850,7 +864,7 @@ class CoopPush2Command(Push2Command):
         yaw = self.contact_frame_yaw()
         cs, sn = torch.cos(yaw), torch.sin(yaw)
         v_o = torch.stack([cs * v_a[:, 0] + sn * v_a[:, 1], -sn * v_a[:, 0] + cs * v_a[:, 1]], -1)
-        f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, w_a, self.c_cg, self.robot_cap())
+        f, r = self._split(self.c_pobj, self.c_nobj, self.c_comobj, v_o, w_a, self.c_cg, self.robot_cap(), self.roll_factor())
         mag = torch.linalg.norm(f, dim=-1)  # (n, 2)
         d_new = torch.where((mag > 1e-6).unsqueeze(-1), f / mag.unsqueeze(-1).clamp(min=1e-9), -self.c_nobj)
         alpha = min(1.0, dt / max(c.push_tau, 1e-6))
@@ -900,7 +914,7 @@ class CoopPush2Command(Push2Command):
         if not self._fs_sensors:
             raise RuntimeError("share_adapt / share_perturb / track_on need the robot-object force sensors (push_sensors)")
         a = min(1.0, dt / max(c.fs_tau, 1e-6))
-        for k, ag in enumerate(AGENTS):
+        for k, ag in enumerate(PLAN):
             self.fs_force[:, k] += a * (object_force_from(self._env, ag) - self.fs_force[:, k])
             touch = self._env.scene[f"push_{ag}"].data.found.view(self.num_envs, -1).any(-1).float()
             self.fs_touch[:, k] += a * (touch - self.fs_touch[:, k])
@@ -1017,13 +1031,33 @@ class CoopPush2Command(Push2Command):
         out["track_limited"] = self.tr_limited.float()
         return out
 
+    def roll_factor(self, ids=None) -> torch.Tensor:
+        """Per env: the limit surface's scale along the object-frame x axis (roll_ratio for a lying cylinder when
+        roll_ratio > 0, else 1). Passed as `roll` to _split / _pair_strength / _pair_residuals."""
+        ids = slice(None) if ids is None else ids
+        return self.c_roll_shape[self.shape[ids]]
+
+    @staticmethod
+    def _roll_scale(M: torch.Tensor, w: torch.Tensor, roll):
+        """Anisotropic (rolling) limit surface. With resistance rho mu m g along x and mu m g along y, the limit
+        surface (Fx / rho)^2 + Fy^2 + (tau / cg)^2 = 1 becomes the unit sphere in scaled coordinates
+        F' = (Fx / rho, Fy, tau / cg), where the wrench is parallel to the scaled motion (rho vx, vy, cg wz). So the
+        fit is the isotropic one with the x column of the cone edges divided by rho and the wanted x velocity
+        multiplied by it; force sizes (the edge coefficients) stay physical."""
+        if roll is None:
+            return M, w
+        r = roll.view(-1, *([1] * (M.dim() - 1)))
+        M = torch.cat([M[..., :1] / r, M[..., 1:]], -1)
+        w = torch.cat([w[..., :1] * roll.view(-1, 1), w[..., 1:]], -1)
+        return M, w
+
     def robot_cap(self, ids=None):
         """Expert envs: the normal (pushing) force one robot can apply, as a share of the force that
         slides the object, robot_push_force / (mu m g) (None when the expert is off: rule 3 keeps its trained split)."""
         if not self.cfg.expert:
             return None
         ids = slice(None) if ids is None else ids
-        cap = self.cfg.robot_push_force / (self.c_mu[ids] * self.c_mass[ids] * 9.81).clamp(min=1e-6)
+        cap = self.cfg.robot_push_force * self.c_cap_mult[ids] / (self.c_mu[ids] * self.c_mass[ids] * 9.81).clamp(min=1e-6)
         return torch.where(self.c_rule[ids] == 4, cap, torch.full_like(cap, 1e6))
 
     def pose_error(self) -> torch.Tensor:
@@ -1113,14 +1147,14 @@ class CoopPush2Command(Push2Command):
         if c.expert:  # expert envs: the centre of friction and each robot's force limit
             ex = rule == 4
             com = torch.where(ex.unsqueeze(-1), self.c_cof[env_ids], com)
-            cap = torch.where(ex, c.robot_push_force / (self.c_mu[env_ids] * self.c_mass[env_ids] * 9.81).clamp(min=1e-6),
+            cap = torch.where(ex, c.robot_push_force * self.c_cap_mult[env_ids] / (self.c_mu[env_ids] * self.c_mass[env_ids] * 9.81).clamp(min=1e-6),
                               torch.full((m,), 1e6, device=dev))
         score, _, _, _ = self._pair_scores(p, nn, com, valid, sep, u, rule)
         w3 = (rule >= 3).nonzero().flatten()  # wrench and expert: the smallest residual
         if len(w3) and v_obj is not None:
             usable = valid[w3].unsqueeze(2) & valid[w3].unsqueeze(1) & sep[w3]
             res = self._pair_residuals(p[w3], nn[w3], com[w3], v_obj[w3], wz[w3], self.c_cg[env_ids[w3]], usable,
-                                       cap=None if cap is None else cap[w3])
+                                       cap=None if cap is None else cap[w3], roll=self.roll_factor(env_ids[w3]))
             score[w3] = torch.where(usable, -res + 1e-4 * torch.rand_like(res), torch.full_like(res, -1e9))
         flat = score.view(m, -1).argmax(-1)
         i, j = flat // self.c_K, flat % self.c_K
@@ -1173,13 +1207,13 @@ class CoopPush2Command(Push2Command):
         v_o = torch.stack([cs * v_w[:, 0] + sn * v_w[:, 1], -sn * v_w[:, 0] + cs * v_w[:, 1]], -1)
         cur = self.c_idx[ids]
         use = valid.unsqueeze(2) & valid.unsqueeze(1) & sep & self._order_mask(ids, p, nn)
-        res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use)
+        res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use, roll=self.roll_factor(ids))
         kk = torch.arange(K, device=dev).unsqueeze(0)
         pos = [self.robot_xy(k)[ids] for k in range(len(AGENTS))]
-        fr = [self.front_point(a)[ids] for a in AGENTS]
+        fr = [self.front_point(a)[ids] for a in PLAN]
         pw = obj.unsqueeze(1) + rot(p)
         bad, walk = [], []
-        for k, a in enumerate(AGENTS):
+        for k, a in enumerate(PLAN):
             st = obj.unsqueeze(1) + rot(p + nn * (self.reach[a] + 0.06))
             bad.append((torch.linalg.norm(st - pos[1 - k].unsqueeze(1), dim=-1) < c.partner_stand) & (kk != cur[:, 1 - k : 2 - k]))
             walk.append(torch.linalg.norm(fr[k].unsqueeze(1) - pw, dim=-1) * (kk != cur[:, k : k + 1]).float())
@@ -1272,7 +1306,8 @@ class CoopPush2Command(Push2Command):
         cur = self.c_idx[ids]
         use = valid.unsqueeze(2) & valid.unsqueeze(1) & sep & self._order_mask(ids, p, nn)
         com = self.c_cof[ids]  # friction acts about the centre of friction
-        res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use, cap=self.robot_cap(ids))
+        res = self._pair_residuals(p, nn, com, v_o, self.c_wdes[ids], self.c_cg[ids], use, cap=self.robot_cap(ids),
+                                   roll=self.roll_factor(ids))
         kk = torch.arange(K, device=dev).unsqueeze(0)
         t_arr, stop, t_route, ons = [], [], [], []
         for k in range(2):
@@ -1414,7 +1449,7 @@ class CoopPush2Command(Push2Command):
         for k in range(2):
             pk = self.c_pobj[:, k : k + 1].expand(-1, 2, -1)
             nk = self.c_nobj[:, k : k + 1].expand(-1, 2, -1)
-            _, solo = self._split(pk, nk, self.c_comobj, v_o, self.c_wdes, self.c_cg, 0.5 * self.robot_cap())
+            _, solo = self._split(pk, nk, self.c_comobj, v_o, self.c_wdes, self.c_cg, 0.5 * self.robot_cap(), self.roll_factor())
             alone = (solo < c.resid_bad) & (self.c_arrive[:, 1 - k] > c.solo_wait_s) & ~heavy
             ph = torch.where(on[:, 1 - k] | alone, torch.full_like(self.c_phase[:, k], 2), torch.ones_like(self.c_phase[:, k]))
             self.c_phase[:, k] = torch.where(on[:, k], ph, torch.zeros_like(ph))
@@ -1641,7 +1676,7 @@ class CoopPush2Command(Push2Command):
                 if self.c_exp_t >= self.cfg.expert_dt - 1e-6:
                     self._update_expert(self.c_exp_t)
                     self.c_exp_t = 0.0
-            for k in range(len(AGENTS)):
+            for k in range(len(PLAN)):
                 near = self.on_contact(k)
                 arrived = near & ~self.c_engaged[:, k] & (self.c_free_t[:, k] > 0.5)  # walked to it (not started on it)
                 if bool(arrived.any()):
@@ -1705,7 +1740,7 @@ class CoopPush2Command(Push2Command):
                 self._update_resid_hist(dt)
             # the approach potential's baseline for the next step (after resets and re-selections, so
             # a new contact or a new episode never pays for the jump)
-            for k in range(len(AGENTS)):
+            for k in range(len(PLAN)):
                 self.c_prev_phi[:, k] = self.contact_phi(k)
             if self.cfg.push_cmd:
                 self.c_prev_pose[:] = self.pose_error()
@@ -2078,7 +2113,7 @@ class CoopPush2Command(Push2Command):
                 self.c_reselect_t[env_ids] = torch.where(rule == 4, torch.full_like(self.c_reselect_t[env_ids], 0.1),
                                                          self.c_reselect_t[env_ids])
             stands, pres = [], []
-            for k, a in enumerate(AGENTS):
+            for k, a in enumerate(PLAN):
                 nk = cn[:, k]
                 lat_k = torch.stack([-nk[:, 1], nk[:, 0]], -1)
                 stands.append(cp[:, k] + nk * (self.reach[a] + U(0.02, 0.10)).unsqueeze(-1)
@@ -2086,7 +2121,7 @@ class CoopPush2Command(Push2Command):
                 pres.append(cpre[:, k])
             cpose = []
             radius = self.radius_env[env_ids, shape]
-            for k, a in enumerate(AGENTS):
+            for k, a in enumerate(PLAN):
                 # each robot starts at its contact, at its approach point (probability 1 - contact_start_at)
                 # or anywhere around the object (random_start), the last two only where they keep 1 m
                 # from where the partner is (robot 1) / will most likely be (robot 0: its contact)
@@ -2123,7 +2158,7 @@ class CoopPush2Command(Push2Command):
             dist = self.radius_env[env_ids, shape] + self.reach[a] + gaps[k]
             pos = obj_xy + dist.unsqueeze(-1) * torch.stack([torch.cos(bearings[k]), torch.sin(bearings[k])], -1)
             yaw = bearings[k] + math.pi + yaw_noise[k]
-            if cpose is not None:
+            if cpose is not None and k < len(cpose):  # a helper (k >= 2) starts at its placement
                 sb = sc.get("start_behind") if sc is not None else None  # eval: start at the placements, walk to the contacts
                 if sb is None:
                     pos, yaw = cpose[k]
@@ -2163,7 +2198,7 @@ class CoopPush2Command(Push2Command):
                 e = env_ids[crossed]
                 for t in (self.c_idx, self.c_pobj, self.c_nobj, self.c_preobj, self.push_dir_obj):
                     t[e] = t[e].flip(1)
-                for k, a in enumerate(AGENTS):
+                for k, a in enumerate(PLAN):
                     v = self.c_pobj[e, k]
                     hc, hs = ch[crossed], sh[crossed]
                     pw = obj_xy[crossed] + torch.stack([hc * v[:, 0] - hs * v[:, 1], hs * v[:, 0] + hc * v[:, 1]], -1)
@@ -2375,6 +2410,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     finish_resid: float = 0.5  # ... stalls not penalised, the pair changed only if its residual is above this
     turn_full_dist: float = 0.0  # > 0: beyond this distance (m) the wanted turn shrinks as 1 / distance
     robot_push_force: float = 250.0  # N one robot can push with (assumed; to be measured): heavier -> push together
+    roll_ratio: float = 0.0  # > 0: lying cylinders roll; resistance across the axis = roll_ratio x sliding (0 = isotropic)
     # push effort (force_track): each robot gets an absolute push target - its share of what slides the object,
     # effort_margin x mu m g, at most robot_push_force - and feedback of the force it actually applies
     effort: bool = False
@@ -2757,7 +2793,7 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
                 "tol_level": torch.tensor(float(g.tol_level)), "tol_pos_m": torch.tensor(float(tl[0])),
                 "tol_yaw_deg": torch.tensor(float(tl[1])), "tol_success_ema": torch.tensor(g.tol_ema)})
     if g.cfg.contact_mode:
-        for k, a in enumerate(AGENTS):
+        for k, a in enumerate(PLAN):
             out[f"engaged_{a}"] = g.c_engaged[:, k].float().mean()
             out[f"contact_dist_{a}"] = g.contact_dist(k).mean()
             out[f"on_contact_{a}"] = g.on_contact(k).float().mean()
@@ -2777,7 +2813,7 @@ def contact_curriculum(env, env_ids: torch.Tensor, tol_advance: float = 0.5, lev
         if g.cfg.disturb_frac > 0:
             out["disturbed_now"] = ((g.c_time >= g.d_t0) & (g.c_time < g.d_t1)).float().mean()
         if g.cfg.exec_v2:
-            for k, a in enumerate(AGENTS):
+            for k, a in enumerate(PLAN):
                 for ph, nm in ((0, "walk"), (1, "hold"), (2, "push")):
                     out[f"cmd_{nm}_{a}"] = (g.c_cmd[:, k] == ph).float().mean()
             out["team_pushing"] = g.c_go.float().mean()

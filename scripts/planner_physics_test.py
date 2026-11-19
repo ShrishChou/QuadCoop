@@ -86,6 +86,8 @@ def main() -> int:
                     help="object friction: the middle of the training range for every env (paired cases see the "
                          "same object), or randomised as in training")
     ap.add_argument("--settle", type=float, default=0.3, help="s at rest before pushing")
+    ap.add_argument("--roll-ratio", type=float, default=0.0,
+                    help="planner model: lying cylinders roll, resistance across the axis = this x sliding (0 = isotropic)")
     ap.add_argument("--max-envs", type=int, default=1024,
                     help="envs per simulation batch; each batch runs in its own process so GPU memory is freed "
                          "(4096 ran out of memory on an L40S in collision detection)")
@@ -209,6 +211,7 @@ def run_chunk(chunk, mass, a, device, objects, torch, ManagerBasedRlEnv, make_co
     cfg.scene.num_envs = n
     cfg.episode_length_s = 1e5
     cfg.terminations = {}
+    cfg.commands["goal"].roll_ratio = a.roll_ratio
     alpha = 0.5 * math.log(mass / NOMINAL_MASS)
     for name in OBJ_NAMES2:
         cfg.events[f"{name}_mass"].params["alpha_range"] = (alpha, alpha)
@@ -249,6 +252,7 @@ def run_chunk(chunk, mass, a, device, objects, torch, ManagerBasedRlEnv, make_co
                         for m in mot], device=dev)
     wz = torch.tensor([wmax if m in ("turn", "move_turn") else 0.0 for m in mot], device=dev)
     wz = torch.where(g.sym[obj_idx] > 0, wz, torch.zeros_like(wz))
+    roll = g.c_roll_shape[obj_idx]  # 1 unless --set roll_ratio=... (lying cylinder)
     plan = [c[2] for c in chunk]
     ii = torch.tensor([c[3] for c in chunk], device=dev)
     jj = torch.tensor([c[4] for c in chunk], device=dev)
@@ -256,7 +260,7 @@ def run_chunk(chunk, mass, a, device, objects, torch, ManagerBasedRlEnv, make_co
     if bool(is_pl.any()):  # the planner's pick: the usable pair with the lowest residual for this motion
         e = torch.nonzero(is_pl).squeeze(-1)
         use = valid[e].unsqueeze(2) & valid[e].unsqueeze(1) & sep[e]
-        res = g._pair_residuals(P[e], N[e], com[e], v_o[e], wz[e], cg[e], use, cap=cap[e])
+        res = g._pair_residuals(P[e], N[e], com[e], v_o[e], wz[e], cg[e], use, cap=cap[e], roll=roll[e])
         K = res.shape[1]
         flat = torch.where(use, res, torch.full_like(res, 9.0)).view(len(e), -1).argmin(-1)
         ii[e], jj[e] = flat // K, flat % K
@@ -265,8 +269,8 @@ def run_chunk(chunk, mass, a, device, objects, torch, ManagerBasedRlEnv, make_co
     pp = torch.stack([P[ar, ii], P[ar, j2]], 1)
     nq = torch.stack([N[ar, ii], N[ar, j2]], 1)
     capx = torch.where(single, 0.5 * cap, cap)
-    f, resid = g._split(pp, nq, com, v_o, wz, cg, capx)
-    strength = g._pair_strength(pp, nq, com, v_o, wz, cg, capx)
+    f, resid = g._split(pp, nq, com, v_o, wz, cg, capx, roll)
+    strength = g._pair_strength(pp, nq, com, v_o, wz, cg, capx, roll)
     fn = (f * -nq).sum(-1)  # each push's normal component
     # scale: the hardest-pressing robot at fmax, the other in proportion (single: both halves together)
     fs = torch.where(single.view(-1, 1, 1), (f.sum(1, keepdim=True) / 2).expand(-1, 2, -1), f)

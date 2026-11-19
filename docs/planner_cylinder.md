@@ -1,0 +1,57 @@
+# Teaching the contact planner that a lying cylinder rolls
+
+Status (2026-11-19): code done and checked on CPU; test job `slurm/cylinder_roll_test.sbatch` (29610362) running.
+
+**Why.** On the benchmark tasks (start behind, 80 s, seeds 7100 and 7500 pooled) the planner reaches 34% on the cylinder,
+against 52-92% on the other sliding objects, and its success barely depends on mass (20 / 40 / 60 / 80 kg: 50 / 25 /
+29 / 33%). So force is not the limit there. Failed cylinder episodes end 0.59 m from the goal with the axis 38 deg
+off, both robots pushing together only 13% of the time, and the robots usually off the object
+(`evals/planner-bench-*-expert`).
+
+The cylinder lies with its axis along the object's y axis (`stage2/shapes.py`, radius 0.30 m, length 1.20 m). Pushed
+across the axis it rolls, with almost no resistance; along the axis, and in yaw (the ends must slip sideways along the
+rolling direction), it slides. The planner's force model (`_split`, `_pair_strength`, `_pair_residuals`) uses one
+isotropic ellipsoidal limit surface for every object. For the cylinder it therefore:
+- rates same-side pushes at the two ends as a good way to turn it (they only roll it);
+- overestimates the force a cross-axis push needs.
+
+## Change (`src/quadcoop/coop2/mdp.py`; off by default)
+
+`CoopPush2CommandCfg.roll_ratio` (0 = the old model). When > 0, shapes whose grounded parts are all lying cylinders
+get resistance `roll_ratio x mu m g` across the axis (object frame x) and `mu m g` along it, with the yaw term
+unchanged. That surface is (Fx / rho)^2 + Fy^2 + (tau / cg)^2 = 1. In the scaled coordinates F' = (Fx / rho, Fy,
+tau / cg) it is the unit sphere, and the wrench is parallel to the scaled motion (rho vx, vy, cg wz). The fit is
+therefore the existing one with:
+- the cone edges' x column divided by rho;
+- the wanted x velocity multiplied by rho.
+
+Force sizes stay physical (`_roll_scale`; per env `roll_factor()`; passed as `roll=` to every call of the three fits,
+and in `contact_test.py`'s reference split and `planner_physics_test.py --roll-ratio`).
+
+CPU check (toy cylinder, two contacts; residual 0 = can make the motion exactly, 1 = cannot):
+
+| wanted motion | same side, both ends | couple (one behind at one end, one in front at the other) |
+|---|---|---|
+| pure turn, old model | 0.46 | 0.03 |
+| pure turn, roll 0.1 | **0.98** | 0.03 |
+| roll + turn, old model | **0.08** | 0.67 |
+| roll + turn, roll 0.1 | 0.78 | **0.03** |
+| pure roll, both models | 0.00-0.09 | 0.13-0.79 |
+
+The rolling model sends a turn to a couple, and a roll-plus-turn to a couple with slightly unequal forces. The old
+model picks same-side pushes, which in the simulator only roll the cylinder.
+
+## Test (`sbatch slurm/cylinder_roll_test.sbatch`)
+
+1. `planner_physics_test.py --objects cylinder --fmax 150,250`, roll 0 / 0.05 / 0.1 / 0.2 (`evals/pp-cyl-roll*`):
+   with no robots, do the planner's chosen pushes move the cylinder as asked?
+2. The planner on the benchmark's cylinder tasks, as `planner-bench` (start behind, 80 s, 20-80 kg, 3 reps, seeds 7100
+   and 7500), roll 0.1 and 0.2 (`evals/cyl-roll*-expert`). Baseline: roll 0 = `evals/planner-bench-*-expert`
+   (cylinder 34%, 48 tasks per seed).
+
+Read: cylinder success against the baseline, matched tasks; whether the planner now uses couples (contact pair
+geometry in the episode logs); final heading error.
+
+## Results
+
+(pending)

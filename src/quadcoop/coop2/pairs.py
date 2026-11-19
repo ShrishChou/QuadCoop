@@ -51,4 +51,6 @@ ROBOT_TYPE = dict(slots(PAIR))
 NEAREST = "nearest"  # PARTNER value in teams of more than two: the nearest teammate, chosen per env and step
 OTHERS = {a: tuple(b for b in AGENTS if b != a) for a in AGENTS}
 PARTNER = {AGENTS[0]: AGENTS[1], AGENTS[1]: AGENTS[0]} if len(AGENTS) == 2 else {a: NEAREST for a in AGENTS}
+if len(AGENTS) == 3 and os.environ.get("QUADCOOP_HELPER") == "1":  # planner + helper (scripts/helper_test.py):
+    PARTNER = {AGENTS[0]: AGENTS[1], AGENTS[1]: AGENTS[0], AGENTS[2]: NEAREST}  # the planner pair sees each other
 PAIRS_OF = tuple((AGENTS[i], AGENTS[j]) for i in range(len(AGENTS)) for j in range(i + 1, len(AGENTS)))
