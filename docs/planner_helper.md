@@ -79,7 +79,7 @@ Paired differences (pp, 95% bootstrap):
 - pair160 - pair250: +17.5 / +13.3 at 60 kg, -8 to -10 at 100 kg.
 
 Reading:
-- **The measured force limit helps the pair at 60 kg** (+13-18 pp): with 160 N the planner picks contacts that
+- **The measured force limit helps the pair at 60 kg** (+13-18 pp): a likely reason is that with 160 N the planner picks contacts that
   share the load instead of plans one robot cannot carry. At 100 kg it hurts, since no pair plan is strong enough.
 - **The helper helps where force is short (80-100 kg) and hurts where it is not (60 kg).** It engages in 94-95% of
   60 kg episodes: with 160 N per robot and mu up to 0.6, the force model rates almost every 60 kg pair plan as too weak.

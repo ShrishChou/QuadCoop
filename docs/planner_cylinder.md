@@ -78,7 +78,7 @@ The rolling model fixes the force model: every failure left at roll 0.2 is a pur
 Final heading error is unchanged (about 25-33 deg mean) and both robots push together 15-19% of the time either way.
 
 **Reading.** The planner now asks for the right pushes (couples to turn), but the Stage 4 executor does not deliver
-them. It was trained on contacts on the same side of the object, never on one robot pushing behind at one end while
-the other pushes in front at the other, so the couple never forms. The limit on the cylinder is the executor, not
+them. Most likely it was trained mostly on contacts on the same side of the object, rarely on one robot pushing behind at one end while
+the other pushes in front at the other, so the couple does not form. The limit on the cylinder is the executor, not
 the plan. Next step: fine-tune the executor on cylinder tasks with roll_ratio 0.1, so it trains on the couples the
 planner now asks for.
