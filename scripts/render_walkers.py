@@ -94,7 +94,7 @@ def fleet(a, device: str) -> None:
     corner.type = mujoco.mjtCamera.mjCAMERA_FREE
     # above the top-right corner (+x, +y), looking back across the grid toward the far corner
     corner.lookat[:] = [c[0] - 0.05 * span, c[1] - 0.05 * span, 0.0]
-    corner.azimuth, corner.elevation, corner.distance = 225.0, -24.0, 0.95 * span
+    corner.azimuth, corner.elevation, corner.distance = 225.0, -33.0, 0.85 * span
     fly = mujoco.MjvCamera()
     fly.type = mujoco.mjtCamera.mjCAMERA_FREE
     fly.azimuth, fly.elevation, fly.distance = 90.0, -32.0, 11.0

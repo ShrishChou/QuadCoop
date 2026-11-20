@@ -1417,10 +1417,12 @@ def main() -> int:
                     legend = (f"cyan {AGENTS[0]}, yellow {AGENTS[1]} | post = contact (faint: not on it), "
                               "arrow = push, dot = waypoint") if MK is not None else ""
                     if a.clear_marks and MK is not None:
-                        legend = (f"lime = {AGENTS[0]}, magenta = {AGENTS[1]} | arrow above robot = planned push direction | "
+                        legend = (f"lime = {AGENTS[0]}, magenta = {AGENTS[1]} | arrow above robot = planned push direction\n"
                                   "down arrow + ball = planned contact point (faded: robot not on it yet)")
 
-                    def cap(f, fi=fi, head=head, legend=legend):
+                    c0n, c1n = ("lime", "magenta") if a.clear_marks else ("cyan", "yellow")
+
+                    def cap(f, fi=fi, head=head, legend=legend, c0n=c0n, c1n=c1n):
                         txt = f"{head} | t {f * stride * dt:4.1f} s"
                         if CP is not None:
                             d_, e_, sw, c0, c1, trd, f0, f1, rl = CP[fi, f]
@@ -1431,8 +1433,8 @@ def main() -> int:
                             ff0 = f" {f0:.0f} N" if f0 >= 0 else ""
                             ff1 = f" {f1:.0f} N" if f1 >= 0 else ""
                             team = (" | team READY" if trd > 0.5 else " | team not ready") if trd >= 0 else ""
-                            txt += (f"\nto goal {d_:.2f} m, {e_:+.0f} deg | cyan {'ON' if on[0] > 0.5 else 'off'}{r0}{ff0}, "
-                                    f"yellow {'ON' if on[1] > 0.5 else 'off'}{r1}{ff1}{team} | contact changes {sw:.0f}"
+                            txt += (f"\nto goal {d_:.2f} m, {e_:+.0f} deg | {c0n} {'ON' if on[0] > 0.5 else 'off'}{r0}{ff0}, "
+                                    f"{c1n} {'ON' if on[1] > 0.5 else 'off'}{r1}{ff1}{team} | contact changes {sw:.0f}"
                                     f" | rule {int(rl)}\n{legend}")
                         return txt
 
