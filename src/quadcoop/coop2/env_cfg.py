@@ -350,8 +350,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             if arm_self_cost > 0:  # the arm against its own body / legs (adjacent links are filtered by MuJoCo)
                 cfg.scene.sensors += (ContactSensorCfg(
                     name=f"self_{a}",
-                    primary=ContactMatch(mode="subtree", pattern=SPOT_ARM_BASE, entity=a),
-                    secondary=ContactMatch(mode="body", pattern=("body", ".*_hip", ".*_upper_leg", ".*_lower_leg"), entity=a),
+                    primary=ContactMatch(mode="body", pattern=("body", ".*_hip", ".*_upper_leg", ".*_lower_leg"), entity=a),
+                    secondary=ContactMatch(mode="subtree", pattern=SPOT_ARM_BASE, entity=a),
                     fields=("found",), reduce="netforce", num_slots=1,
                 ),)
     cfg.sim.njmax = 1500 if len(AGENTS) == 2 else 4500  # three robots: 3994 constraints at the initial pose

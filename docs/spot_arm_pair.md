@@ -551,5 +551,5 @@ effector to positions computed from the object's geometry; contacts are otherwis
   logged as `Arm/hand_target_dist_<robot>`.
 
 The pairs now train on the solo's 20 objects at its light masses (5-20 / 5-30 / 5-40 kg levels), so they compare
-directly with the single robot (`PAIR_SET=ten` restores the ten objects at 20-80 kg). Jobs: check 29732765, solo
-29732766 (held until the presentation videos are queued), init 29732767, MAPPO 29732768, IPPO 29732769.
+directly with the single robot (`PAIR_SET=ten` restores the ten objects at 20-80 kg). Jobs: check 29737405 (passed), solo
+29737407 (held until the presentation videos are queued), init 29737409, MAPPO 29737410, IPPO 29737412.
