@@ -223,6 +223,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        goal_credit: bool = False, align_bonus: float = 1.0, arm_bonus: float = 0.0,
                        action_rate_w: float = 0.05, action_limit_w: float = 0.02,
                        yaw_gate: float = 1.5, yaw_w: float = 0.0, geom_obs: bool = False, hist_obs: bool = False,
+                       arm_self_cost: float = 0.0, hand_shaping: float = 0.0,
                        oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
@@ -346,6 +347,13 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                 secondary=ContactMatch(mode=mode, pattern=pat, entity=a),
                 fields=("found", "force"), reduce="netforce", num_slots=1,
             ) for part, mode, pat in (("arm", "subtree", SPOT_ARM_BASE), ("trunk", "body", SPECS[a].base_body)))
+            if arm_self_cost > 0:  # the arm against its own body / legs (adjacent links are filtered by MuJoCo)
+                cfg.scene.sensors += (ContactSensorCfg(
+                    name=f"self_{a}",
+                    primary=ContactMatch(mode="subtree", pattern=SPOT_ARM_BASE, entity=a),
+                    secondary=ContactMatch(mode="body", pattern=("body", ".*_hip", ".*_upper_leg", ".*_lower_leg"), entity=a),
+                    fields=("found",), reduce="netforce", num_slots=1,
+                ),)
     cfg.sim.njmax = 1500 if len(AGENTS) == 2 else 4500  # three robots: 3994 constraints at the initial pose
     cfg.episode_length_s = EPISODE_S
     cfg.metrics = {}
@@ -432,6 +440,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                                                   noise=nz)
         # observation study (docs/obs_study.md), last so init_from widens at the end: explicit contact geometry,
         # interaction history (pairs only)
+        if hand_shaping > 0 and ARM[a]:  # Spot hand shaping: hand -> geometric hand target (last)
+            for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.02, n_max=0.02)), (f"state_{a}", None)):
+                obs[grp].terms["hand_target"] = T(func=mdp.hand_target_obs, params={"robot": a}, noise=nz)
         if geom_obs or hist_obs:
             assert len(AGENTS) == 2 and not contacts, "contact geometry / history inputs: the ordinary pair policy"
         if geom_obs:
@@ -579,6 +590,10 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                                            params={"robot": a})
         rewards[f"own_fall_{a}"] = R(func=mdp.own_fall, weight=-0.2 * BONUS / step_dt,
                                      params={"robot": a, "nominal_height": SPECS[a].nominal_height})
+        if ARM[a] and hand_shaping > 0:  # RAI-style end-effector shaping toward a geometric target
+            rewards[f"hand_approach_{a}"] = R(func=mdp.hand_approach, weight=hand_shaping, params={"robot": a})
+        if ARM[a] and arm_self_cost > 0:  # the arm hitting its own body or legs
+            rewards[f"arm_self_{a}"] = R(func=mdp.arm_self_contact, weight=-arm_self_cost, params={"robot": a})
         if contacts and not soft:  # leaving its contact costs the robot that left as much as its own fall
             rewards[f"own_off_contact_{a}"] = R(func=mdp.own_off_contact, weight=-0.2 * BONUS / step_dt,
                                                 params={"robot": a})

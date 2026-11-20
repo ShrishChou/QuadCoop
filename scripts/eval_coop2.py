@@ -151,6 +151,10 @@ def main() -> int:
                     help="film these tasks whatever their outcome (presentation sets, same tasks for every system): "
                          "OBJECTS/MASSES/SCENARIOS/REPS, comma lists or 'all', e.g. arch,long/40,80/A_straight,D_far_turn/0; "
                          "standard formation, unswapped. Default: one video per object at --video-mass")
+    ap.add_argument("--video-best", action="store_true",
+                    help="with --video-tasks: of the selected reps, film only the best per object x scenario x mass: the "
+                         "fastest success, else the one ending closest to the goal (final distance / task distance + "
+                         "final heading error / 180 deg)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--formations", default="standard", help="comma list of standard, flank, goal_behind")
@@ -527,6 +531,17 @@ def main() -> int:
                     picks = [j for j, c in enumerate(cases) if c[3] == "standard" and not c[4]
                              and (vsel[0] is None or c[0] in vsel[0]) and (vsel[2] is None or SCENARIOS[c[1]][0] in vsel[2])
                              and (vsel[3] is None or c[2] in vsel[3])]
+                    if a.video_best:  # one per object x scenario: fastest success, else closest to the goal
+                        best = {}
+                        for j in picks:
+                            o_, s_ = cases[j][0], cases[j][1]
+                            if how[j] == "success":
+                                key = (0, float(t_succ[j]))
+                            else:
+                                key = (1, float(last_d[j]) / SCENARIOS[s_][1] + math.degrees(float(last_e[j])) / 180.0)
+                            if (o_, s_) not in best or key < best[(o_, s_)][0]:
+                                best[(o_, s_)] = (key, j)
+                        picks = [v[1] for v in best.values()]
                 for j in picks:
                     o = cases[j][0]
                     F = min(Q.shape[1], int(float(t_end[j]) / (stride * dt)) + int(1.0 / (stride * dt)) + 1)

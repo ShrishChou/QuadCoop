@@ -537,3 +537,19 @@ for turning the object toward its goal heading, charged for turning it away) use
 goal, at weight 1 (a radian worth 1/3 m of travel); in `sp_solo20_gc_s0` it was ~4% of the progress reward. It now
 applies at every distance at weight 2. Only the joint-arm pipeline runs (one GPU for Spot); the hand_rate solo is
 not queued. Jobs: check 29717633 (passed), solo 29717634, init 29717635, MAPPO 29717636, IPPO 29717637.
+
+## Arm shaping and 20-object pairs (2026-11-20, runs `sp_*_arm_*`)
+
+Two additions, both from the RAI comparison (their tire-rolling RL policy is rewarded for bringing the torso and end
+effector to positions computed from the object's geometry; contacts are otherwise not prescribed):
+- `--arm-self-cost 1.0`: contact sensor `self_<robot>` (arm subtree vs body, hips, legs; adjacent links are filtered
+  by MuJoCo), cost 1 per second while touching; logged as `Arm/self_touch_<robot>`.
+- `--hand-shaping 1.0`: `mdp.hand_target` = the surface point on the side away from the goal (nearest point to one
+  radius + 0.3 m behind the object, on the true body-height slice), at 35% of the object's height (0.12-0.40 m: low on
+  tall objects so they do not tip, the edge of low ones); `hand_approach` pays the decrease of the hand's distance to it
+  (potential-based: leaving takes it back); the actor and critic get the hand -> target vector and distance (4, last);
+  logged as `Arm/hand_target_dist_<robot>`.
+
+The pairs now train on the solo's 20 objects at its light masses (5-20 / 5-30 / 5-40 kg levels), so they compare
+directly with the single robot (`PAIR_SET=ten` restores the ten objects at 20-80 kg). Jobs: check 29732765, solo
+29732766 (held until the presentation videos are queued), init 29732767, MAPPO 29732768, IPPO 29732769.

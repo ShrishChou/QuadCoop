@@ -327,6 +327,8 @@ def main() -> int:
                          "10 cm / 3 deg; default with --contacts: 0.30:15,0.20:10,0.15:6,0.12:4,0.10:3")
     ap.add_argument("--kl-ramp", type=int, default=0,
                     help="> 0: the KL anchor's beta falls linearly to 0 over this many iterations")
+    ap.add_argument("--kl-ramp-start", type=int, default=0,
+                    help="--kl-ramp counts from this iteration (e.g. the --init-from checkpoint's iteration)")
     ap.add_argument("--actor-lr", type=float, default=None,
                     help="starting actor learning rate (adapted to the KL target); default 1e-4, 3e-4 with --scratch")
     ap.add_argument("--max-actor-lr", type=float, default=None,
@@ -379,6 +381,11 @@ def main() -> int:
                     help="action noise may not rise above this x its warm-start value")
     ap.add_argument("--std-cap", type=float, default=0.0,
                     help="> 0: action noise never above this (applied after any warm start / init, current noise clamped)")
+    ap.add_argument("--arm-self-cost", type=float, default=0.0,
+                    help="Spot: cost per second while the arm touches its own body or legs (contact sensor self_<robot>)")
+    ap.add_argument("--hand-shaping", type=float, default=0.0,
+                    help="Spot: > 0 = weight of the potential-based pull of the hand to a geometric target on the object "
+                         "(mdp.hand_target), plus the hand -> target input")
     ap.add_argument("--geom-obs", action="store_true",
                     help="pair inputs: explicit contact geometry for self and partner (docs/obs_study.md)")
     ap.add_argument("--hist-obs", action="store_true",
@@ -584,7 +591,7 @@ def main() -> int:
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
+                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs, arm_self_cost=a.arm_self_cost, hand_shaping=a.hand_shaping, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
     if a.swap_starts:
@@ -615,7 +622,7 @@ def main() -> int:
                   mean_clip=a.mean_clip, bound_coef=a.bound_coef, kl_ref=a.kl_ref,
                   kl_partner_scale=a.kl_partner_scale, start_mode="around" if a.start_around else "opposite" if a.start_opposite else "behind",
                   need_frac=a.need_frac, contacts=a.contacts, contact_mix=contact_mix,
-                  contact_start_at=a.contact_start_at, tol_levels=tol_levels, kl_ramp=a.kl_ramp,
+                  contact_start_at=a.contact_start_at, tol_levels=tol_levels, kl_ramp=a.kl_ramp, kl_ramp_start=a.kl_ramp_start,
                   drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
                   reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
                   off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
@@ -631,6 +638,7 @@ def main() -> int:
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus,
                   arm_bonus=a.arm_bonus, roll_ratio=a.roll_ratio, action_rate_w=a.action_rate_w,
                   action_limit_w=a.action_limit_w, std_cap=a.std_cap, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs,
+                  arm_self_cost=a.arm_self_cost, hand_shaping=a.hand_shaping,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
                   solo_agent=a.solo_agent, bc_data=a.bc_data, bc_keep_norm=a.bc_keep_norm, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,

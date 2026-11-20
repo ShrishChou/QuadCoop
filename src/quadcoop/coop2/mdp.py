@@ -1296,13 +1296,10 @@ class CoopPush2Command(Push2Command):
             self.ihist_valid[:] = torch.where(due[:, None], shv, self.ihist_valid)
             self.ihist_t[:] = torch.where(due, torch.zeros_like(self.ihist_t), self.ihist_t)
 
-    def surface_geometry(self, robot: str):
-        """Robot's bumper against the object's true body-height slice (compound parts, not a bounding box):
-        signed distance (n,), nearest surface point (world, (n, 2)), outward normal there (world, (n, 2)), that point
-        in the object frame ((n, 2)) and the bumper point (world, (n, 2)). Normal from the distance field's
-        central difference (1 cm); nearest point = bumper - distance x normal."""
+    def nearest_surface(self, p_w: torch.Tensor):
+        """Nearest point on the object's true body-height slice to world points p_w (n, 2): signed distance (n,),
+        the point (world), the outward normal there (world), the point in the object frame."""
         parts, kinds, rest = self.active()
-        p_w = self.front_point(robot)
         obj = self.box_pos()[:, :2]
         h = self.heading()
         cs, sn = torch.cos(h), torch.sin(h)
@@ -1319,7 +1316,35 @@ class CoopPush2Command(Push2Command):
         n_o = torch.where(gn > 1e-6, grad / gn.clamp(min=1e-9), fallback)
         s_o = p - dist.unsqueeze(-1) * n_o
         to_w = lambda v: torch.stack([cs * v[:, 0] - sn * v[:, 1], sn * v[:, 0] + cs * v[:, 1]], -1)  # noqa: E731
-        return dist, obj + to_w(s_o), to_w(n_o), s_o, p_w
+        return dist, obj + to_w(s_o), to_w(n_o), s_o
+
+    def object_top(self) -> torch.Tensor:
+        """(n,) height of the object's top at rest (m): rest height + the highest part top."""
+        parts, kinds, rest = self.active()
+        top = torch.where(kinds >= 0, rest.unsqueeze(-1) + parts[..., 2] + parts[..., 5], torch.full_like(parts[..., 2], -1e3))
+        return top.max(-1).values
+
+    def hand_target(self) -> torch.Tensor:
+        """(n, 3) world: where a Spot hand should push (RAI-style geometric end-effector target): the surface point on
+        the side facing away from the goal (nearest to a point behind the object, radius + 0.3 m back along goal ->
+        object), at 35% of the object's height (0.12-0.40 m: low enough not to tip tall objects, on the edge of low
+        ones)."""
+        obj = self.box_pos()[:, :2]
+        u = self.goal_xy - obj
+        u = u / torch.linalg.norm(u, dim=-1, keepdim=True).clamp(min=1e-6)
+        rad = self.radius_env[torch.arange(self.num_envs, device=self.device), self.shape]
+        _, s_w, _, _ = self.nearest_surface(obj - u * (rad + 0.3).unsqueeze(-1))
+        z = (0.35 * self.object_top()).clamp(0.12, 0.40)
+        return torch.cat([s_w, z.unsqueeze(-1)], -1)
+
+    def surface_geometry(self, robot: str):
+        """Robot's bumper against the object's true body-height slice (compound parts, not a bounding box):
+        signed distance (n,), nearest surface point (world, (n, 2)), outward normal there (world, (n, 2)), that point
+        in the object frame ((n, 2)) and the bumper point (world, (n, 2)). Normal from the distance field's
+        central difference (1 cm); nearest point = bumper - distance x normal."""
+        p_w = self.front_point(robot)
+        dist, s_w, n_w, s_o = self.nearest_surface(p_w)
+        return dist, s_w, n_w, s_o, p_w
 
     def _update_resid_hist(self, dt: float) -> None:
         """Every 0.1 s, push the newest sample (residual-pilot inputs)."""
@@ -3122,6 +3147,36 @@ def contact_geom_obs(env, robot: str) -> torch.Tensor:
         vec = vec * (ln.clamp(max=3.0) / ln.clamp(min=1e-6))
         out += [dist.clamp(-0.5, 3.0).unsqueeze(-1), rf(vec), rf(n_w), s_o]
     return torch.cat(out, -1)
+
+
+def hand_target_obs(env, robot: str) -> torch.Tensor:
+    """Spot hand shaping (4): hand point -> hand target (mdp hand_target), this robot's body frame, and its length."""
+    from mjlab.utils.lab_api.math import quat_apply_inverse
+
+    from quadcoop.coop2 import spot_arm_term as sat
+
+    v = _g(env).hand_target() - sat.hand_pos_w(env, robot)
+    vb = quat_apply_inverse(env.scene[robot].data.root_link_quat_w, v)
+    return torch.cat([vb, torch.linalg.norm(v, dim=-1, keepdim=True)], -1)
+
+
+def hand_approach(env, robot: str, max_rate: float = 2.0) -> torch.Tensor:
+    """Spot hand shaping (per robot, potential-based): decrease per second of the hand's distance to its target
+    (hand_target). Getting there pays the distance once, moving away takes it back; zero on an episode's first step."""
+    from quadcoop.coop2 import spot_arm_term as sat
+
+    g = _g(env)
+    d = torch.linalg.norm(g.hand_target() - sat.hand_pos_w(env, robot), dim=-1)
+    key = f"_hand_prev_{robot}"
+    prev = getattr(g, key, None)
+    prev = d if prev is None else torch.where(env.episode_length_buf <= 1, d, prev)
+    setattr(g, key, d.clone())
+    return ((prev - d) / env.step_dt).clamp(-max_rate, max_rate)
+
+
+def arm_self_contact(env, robot: str) -> torch.Tensor:
+    """1 while this Spot's arm touches its own body or legs (sensor self_<robot>)."""
+    return env.scene[f"self_{robot}"].data.found.view(env.num_envs, -1).any(-1).float()
 
 
 def interaction_history_obs(env, robot: str) -> torch.Tensor:

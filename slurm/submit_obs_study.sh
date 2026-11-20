@@ -14,6 +14,9 @@
 #
 #   bash slurm/submit_obs_study.sh                 # all four
 #   ARMS="B D" SEED=1 bash slurm/submit_obs_study.sh   # a second seed of two arms
+# Round 2 (RTAG=r2): the same arms with XCOMMON added to every arm (e.g. the KL anchor faded out), each arm starting
+# after DEP_<arm> (a job id, afterany), e.g.:
+#   RTAG=r2 XCOMMON="--kl-ramp 1000 --kl-ramp-start 5000" DEP_A=123 DEP_B=124 bash slurm/submit_obs_study.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PARENT=${PARENT:-logs/marl2/nwB_mappo_uniform_s0/model_5000.pt}
@@ -25,8 +28,9 @@ pit=$(source .venv/bin/activate && python -I -c "import torch; print(int(torch.l
 ITERS=$((pit + ${ITERS_ADD:-2000}))
 shapes=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 COMMON="--pair anymal --partner-map --reward r7 --kl-ref 0.05 --max-actor-lr 1e-4 --fixed-difficulty --fixed-level 4 \
---train-mass 20,80 --train-shapes $shapes --task-bank uniform --task-bank-file $BANK --init-from $PARENT"
-chk=$(ALGO=mappo SEED=$SEED VARIANT=b NUM_ENVS=4096 RUN_NAME=obs_study_check_s$SEED ITERS=2 LOGGER=wandb WANDB_MODE=disabled \
+--train-mass 20,80 --train-shapes $shapes --task-bank uniform --task-bank-file $BANK --init-from $PARENT ${XCOMMON:-}"
+RTAG=${RTAG:-}
+chk=$(ALGO=mappo SEED=$SEED VARIANT=b NUM_ENVS=4096 RUN_NAME=obs_study${RTAG}_check_s$SEED ITERS=2 LOGGER=wandb WANDB_MODE=disabled \
       EXTRA="$COMMON --geom-obs --hist-obs --check" \
       sbatch --parsable -p mit_normal_gpu,mit_preemptable --requeue --exclude=node4207 -t 00:30:00 slurm/train_coop2.sbatch)
 echo "check (arm D inputs): $chk"
@@ -42,10 +46,12 @@ for arm in $ARMS; do
     A|B) part=(-p mit_normal_gpu -t 06:00:00) ;;
     *)   part=(-p mit_preemptable --requeue -t 12:00:00) ;;
   esac
-  run="obs${arm}_mappo_${what}_s${SEED}"
+  run="obs${arm}${RTAG}_mappo_${what}_s${SEED}"
+  dv="DEP_${arm}"
+  dep="afterok:$chk${!dv:+,afterany:${!dv}}"
   tid=$(ALGO=mappo SEED=$SEED VARIANT=b NUM_ENVS=4096 RUN_NAME="$run" ITERS="$ITERS" LOGGER=wandb EXTRA="$COMMON $extra" \
-        sbatch --parsable "${part[@]}" --exclude=node4207 --dependency=afterok:$chk slurm/train_coop2.sbatch)
-  eid=$(NAME="obs-${arm}-${what}-s${SEED}-it${ITERS}-dev7100" CK="logs/marl2/$run/model_${ITERS}.pt" SOLO= MASSES=20,40,60,80 \
+        sbatch --parsable "${part[@]}" --exclude=node4207 --dependency=$dep slurm/train_coop2.sbatch)
+  eid=$(NAME="obs-${arm}${RTAG}-${what}-s${SEED}-it${ITERS}-dev7100" CK="logs/marl2/$run/model_${ITERS}.pt" SOLO= MASSES=20,40,60,80 \
         REPS=3 ARGS="--objects $shapes --seed 7100 --videos 0" \
         sbatch --parsable --exclude=node4207 --dependency="afterok:$tid" slurm/eval_coop2.sbatch)
   echo "arm $arm ($what): train $run job $tid (${part[1]}, to iteration $ITERS) -> eval job $eid"

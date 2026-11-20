@@ -35,7 +35,7 @@ W=logs/rsl_rl/walker_spot_arm
 S3=$(ls -d $W/*push_ft_s3_handload | tail -1)/model_2999.pt
 [[ -s "$S3" ]] || { echo "missing s3 walker: $S3" >&2; exit 1; }
 export QUADCOOP_SPOT_ARM_WALKER=$S3
-TAG=${TAG-_ft}
+TAG=${TAG-_arm}
 ARM=${ARM:-learned}
 CREDIT=""; [[ -n "$TAG" ]] && CREDIT="--goal-credit --arm-bonus ${ARM_BONUS:-0.25}"
 [[ "$ARM" == hand_rate ]] && TAG="_hr$TAG"
@@ -51,18 +51,29 @@ SOLO_START=$(basename "$SOLO_INIT" .pt); SOLO_START=${SOLO_START#model_}
 SMOOTH="--action-rate-w ${RATE_W:-0.2} --action-limit-w ${LIMIT_W:-0.1} --std-cap ${STD_CAP:-0.4}"
 # heading paid and charged the whole way (was only within 1.5 m of the goal), a radian worth 2/3 m of travel (was 1/3)
 HEADING="--yaw-gate 0 --yaw-w 2.0"
+# arm (2026-11-20): a cost while the arm hits its own body / legs, and RAI-style hand shaping: a potential-based pull
+# of the hand toward a geometric target on the object (the side away from the goal, 35% of the object's height) with
+# the hand -> target vector as an input
+ARMX="--arm-self-cost ${SELF_COST:-1.0} --hand-shaping ${HAND_W:-1.0}"
 SOLO_ITERS=${SOLO_ITERS:-6000}
 PAIR_ITERS=${PAIR_ITERS:-6000}
 TEN=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 ROW="25,0,10,60,0.10,6,1.0"   # spread, behind offset, start yaw, goal turn (deg), tol 0.10 m / 6 deg, hold 1 s
 BASE="--pair spot_arm --arm $ARM --hand-obs --partner-map --reward r7 $CREDIT --mean-clip 1.1 --bound-coef 0.01 \
-$SMOOTH $HEADING --entropy-coef 0.003 --fixed-difficulty --fixed-level 0 --dyaw-choices --pilot-episode-s 40"
+$SMOOTH $HEADING $ARMX --entropy-coef 0.003 --fixed-difficulty --fixed-level 0 --dyaw-choices --pilot-episode-s 40"
 # columns: d_lo, d_hi, ROW, max mass, min mass
 SOLO_LV="--pilot-level 1.0,1.5,$ROW,20,5 --extra-levels 1.5,2.5,$ROW,30,5;2.0,3.5,$ROW,40,5 \
 --level-mix 0:0.6,0.4,0;1000:0.3,0.4,0.3;2500:0.2,0.3,0.5"
 SOLO_LV="$SOLO_OBJ $SOLO_LV"
-PAIR_LV="--train-shapes $TEN --pilot-level 1.5,2.5,$ROW,80,20 --extra-levels 2.0,3.0,$ROW,80,20;2.0,4.0,$ROW,80,20 \
+# pairs (2026-11-20): the solo's 20 objects and light masses (its levels: 5-20 / 5-30 / 5-40 kg), so the pairs compare
+# directly with the single robot; PAIR_SET=ten restores the ten objects at 20-80 kg
+if [[ "${PAIR_SET:-twenty}" == ten ]]; then
+  PAIR_LV="--train-shapes $TEN --pilot-level 1.5,2.5,$ROW,80,20 --extra-levels 2.0,3.0,$ROW,80,20;2.0,4.0,$ROW,80,20 \
 --level-mix 0:0.5,0.5,0;1000:0.3,0.4,0.3;2500:0.2,0.3,0.5"
+else
+  PAIR_LV="$SOLO_OBJ --pilot-level 1.0,1.5,$ROW,20,5 --extra-levels 1.5,2.5,$ROW,30,5;2.0,3.5,$ROW,40,5 \
+--level-mix 0:0.6,0.4,0;1000:0.3,0.4,0.3;2500:0.2,0.3,0.5"
+fi
 PART="-p mit_preemptable --requeue -t 1-00:00:00 --exclude=node4207"
 SOLO=sp_solo20${TAG}_s0
 chk=$(ALGO=ippo SEED=0 RUN_NAME=${SOLO}_check ITERS=2 LOGGER=wandb WANDB_MODE=disabled NUM_ENVS=512 \

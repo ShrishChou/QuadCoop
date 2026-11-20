@@ -104,6 +104,8 @@ class MarlCfg:
     yaw_w: float = 0.0  # env option (recorded)
     geom_obs: bool = False  # env option (recorded)
     hist_obs: bool = False  # env option (recorded)
+    arm_self_cost: float = 0.0  # env option (recorded)
+    hand_shaping: float = 0.0  # env option (recorded)
     roll_ratio: float = 0.0  # env option (recorded): the planner's rolling-cylinder model
     turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
     # demonstrations (docs/spot_arm_pair.md, "Turn in place"): a file of actor observations and the env action from
@@ -195,6 +197,7 @@ class MarlCfg:
     reselect_min_dist: float = 0.15  # env option (recorded): no contact re-choice this close to the goal (m)
     tol_levels: tuple = ()  # env option (recorded): success-tolerance curriculum
     kl_ramp: int = 0  # > 0: the KL anchor's beta falls linearly from kl_ref to 0 over this many iterations
+    kl_ramp_start: int = 0  # the iteration the ramp starts from (e.g. a warm start's iteration)
     max_std_factor: float = 1.0  # action noise may fall, but not rise above factor x its starting value
     max_actor_learning_rate: float = 3.0e-4
     reward_clip: float = 100.0  # per robot per step (a success is +50 at most, a fall -35)
@@ -632,6 +635,12 @@ class MarlTrainer:
             on = sd.found.view(self.n, -1).any(-1)
             logs[f"Arm/touch_{a}"].append(float(on.float().mean()))
             logs[f"Arm/trunk_touch_{a}"].append(float(env.scene[f"trunk_{a}"].data.found.view(self.n, -1).any(-1).float().mean()))
+            if self.cfg.arm_self_cost > 0:
+                logs[f"Arm/self_touch_{a}"].append(float(env.scene[f"self_{a}"].data.found.view(self.n, -1).any(-1).float().mean()))
+            if self.cfg.hand_shaping > 0:
+                from quadcoop.coop2 import spot_arm_term as _sat
+                hd = torch.linalg.norm(env.command_manager.get_term("goal").hand_target() - _sat.hand_pos_w(env, a), dim=-1)
+                logs[f"Arm/hand_target_dist_{a}"].append(float(hd.mean()))
             term = env.action_manager.get_term(f"walker_{a}")
             logs[f"Arm/unfold_{a}"].append(float((term.arm_target - term.stow)[:, 1:3].abs().sum(-1).mean()))
             if term.cfg.arm == "hand":  # extension, and how far the measured hand is from the commanded point at w = 1
@@ -736,7 +745,7 @@ class MarlTrainer:
         c = self.cfg
         if c.kl_ref <= 0:
             return 0.0
-        return c.kl_ref if c.kl_ramp <= 0 else c.kl_ref * max(0.0, 1.0 - self.it / c.kl_ramp)
+        return c.kl_ref if c.kl_ramp <= 0 else c.kl_ref * min(1.0, max(0.0, 1.0 - (self.it - c.kl_ramp_start) / c.kl_ramp))
 
     def kl_weight(self, a: str, o_mb: TensorDict) -> torch.Tensor:
         """Per-sample anchor weight: 1 with the partner far, kl_partner_scale with it near."""

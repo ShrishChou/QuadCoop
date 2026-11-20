@@ -314,6 +314,12 @@ def main() -> int:
                     help="write the videos to <video-dir>/<prefix>-<rule>/ (e.g. eval_videos) instead of "
                          "logs/evals/<prefix>-<rule>/pair/videos/; either way the folder gets index.html / index.csv")
     ap.add_argument("--video-size", default="640x480")
+    ap.add_argument("--video-best", action="store_true",
+                    help="of the filmed reps, render only the best per rule x object x scenario x mass: the fastest success, "
+                         "else the one ending closest to the goal (final distance / task distance + heading error / 180 deg)")
+    ap.add_argument("--clear-marks", action="store_true",
+                    help="presentation overlay: robot 1 lime, robot 2 magenta; a bold arrow above each robot = the direction "
+                         "it is told to push, a downward arrow + ball = the point on the object it is told to push")
     ap.add_argument("--diag", type=int, default=1,
                     help="stage4: executor diagnosis (commands vs what the robots do, the push, the object, every "
                          "standstill by cause; quadcoop.coop2.diag) in the episodes and the summary")
@@ -1387,7 +1393,19 @@ def main() -> int:
                 MK = np.stack(rec_mark, 1) if rec_mark else None
                 CP = np.stack(rec_cap, 1) if rec_cap else None
                 touched = set()
+                chosen = None
+                if a.video_best:
+                    best = {}
+                    for j in film_ids:
+                        rule_, o_, s_, _, _ = cases[j]
+                        key = ((0, float(t_succ[j])) if how[j] == "success" else
+                               (1, float(last_d[j]) / SCENARIOS[s_][1] + math.degrees(float(last_e[j])) / 180.0))
+                        if (rule_, o_, s_) not in best or key < best[(rule_, o_, s_)][0]:
+                            best[(rule_, o_, s_)] = (key, j)
+                    chosen = {v[1] for v in best.values()}
                 for fi, j in enumerate(film_ids):
+                    if chosen is not None and j not in chosen:
+                        continue
                     rule, o, s, r, _ = cases[j]
                     F = min(Q.shape[1], int(float(t_end[j]) / (stride * dt)) + int(1.0 / (stride * dt)) + 1)
                     vdir = (ROOT / a.video_dir / f"{prefix}-{rule}") if a.video_dir else \
@@ -1398,6 +1416,9 @@ def main() -> int:
                     head = f"{rule}: {o} {mass:g} kg {SCENARIOS[s][0]} rep {r} -> {how[j]}"
                     legend = (f"cyan {AGENTS[0]}, yellow {AGENTS[1]} | post = contact (faint: not on it), "
                               "arrow = push, dot = waypoint") if MK is not None else ""
+                    if a.clear_marks and MK is not None:
+                        legend = (f"lime = {AGENTS[0]}, magenta = {AGENTS[1]} | arrow above robot = planned push direction | "
+                                  "down arrow + ball = planned contact point (faded: robot not on it yet)")
 
                     def cap(f, fi=fi, head=head, legend=legend):
                         txt = f"{head} | t {f * stride * dt:4.1f} s"
@@ -1419,6 +1440,16 @@ def main() -> int:
                         if MK is None:
                             return None
                         out = []
+                        if a.clear_marks:
+                            for k, col in enumerate(((0.3, 1.0, 0.1), (1.0, 0.15, 0.9))):
+                                px, py, dx, dy, wx, wy, on = MK[fi, f, k]
+                                alpha = 1.0 if on > 0.5 else 0.55
+                                rx, ry = P[fi, f, k]
+                                out.append(("arrow", (rx - 0.35 * dx, ry - 0.35 * dy, 1.25),
+                                            (rx + 0.45 * dx, ry + 0.45 * dy, 1.25), 0.07, (*col, 1.0)))
+                                out.append(("arrow", (px, py, 1.35), (px, py, 0.62), 0.045, (*col, alpha)))
+                                out.append(("sphere", (px, py, 0.55), 0.09, (*col, alpha)))
+                            return out
                         for k, col in enumerate(((0.0, 0.95, 0.95), (1.0, 0.85, 0.0))):
                             px, py, dx, dy, wx, wy, on = MK[fi, f, k]
                             alpha = 1.0 if on > 0.5 else 0.4
