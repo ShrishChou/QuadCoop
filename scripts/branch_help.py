@@ -132,6 +132,9 @@ def main() -> int:
     ap.add_argument("--stage-dist", type=float, default=3.0, help="helper staging distance behind the object (m)")
     ap.add_argument("--horizon", type=float, default=80.0)
     ap.add_argument("--check", action="store_true", help="clone check: both twins stay solo for 5 s, report divergence")
+    ap.add_argument("--null", action="store_true",
+                    help="noise floor: the copy is made but no help is added (both twins continue as before) for the whole "
+                         "episode; every outcome disagreement is a false rescue / disruption from simulator nondeterminism")
     ap.add_argument("--same-actions", action="store_true",
                     help="--check: after the copy the twin replays its source's actions (physics-only divergence)")
     ap.add_argument("--device", default=None)
@@ -275,7 +278,7 @@ def main() -> int:
                     t_succ[H], hold[H] = t_succ[S], hold[S]
                     print(f"[{mass:g} kg] branch at {t:.1f} s: {cnt} per-env tensors cloned; "
                           f"{int(done[S].sum())}/{N} tasks already ended", flush=True)
-                    if not a.check:
+                    if not (a.check or a.null):
                         is_help[H] = True
                         bp = g.box_pos()[H, :2]
                         u = g.goal_xy[H] - bp
@@ -352,7 +355,7 @@ def main() -> int:
         for j, (o, s, r) in enumerate(base_cases):
             jh = N + j
             rows.append({"object": o, "mass": mass, "scenario": SCENARIOS[s][0], "rep": r, "seed": a.seed,
-                         "team_from": K, "team_to": K + 1, "probe_s": a.probe_s,
+                         "team_from": K, "team_to": K + 1, "null": int(a.null), "probe_s": a.probe_s,
                          "ended_in_probe": int(bool(feats["done_probe"][j])), "outcome_solo": how[j],
                          "outcome_help": how[jh], "success_solo": int(how[j] == "success"),
                          "success_help": int(how[jh] == "success"),
