@@ -1,0 +1,193 @@
+mass_kg,object,position,trials,success_rate,precise_rate,mean_time_s,sd_time_s,successes,fell_rate,timeout_rate,mean_final_pos_err_m,mean_final_yaw_err_deg,mean_min_pos_err_m,failure_note
+20,cube,A_straight,10,1.000,1.000,12.22,14.14,10,0.000,0.000,0.049,1.8,0.022,
+20,cube,B_left,10,0.900,0.800,18.04,14.47,9,0.000,0.100,0.088,1.8,0.050,1/10 failed (1 timeout; closest stop 0.27 m / 1 deg)
+20,cube,C_backright,10,0.800,0.600,26.05,11.25,8,0.000,0.200,0.094,2.8,0.056,2/10 failed (2 timeout; closest stop 0.19 m / 2 deg)
+20,cube,D_far_turn,10,0.900,0.600,17.11,5.94,9,0.000,0.100,0.077,2.3,0.043,1/10 failed (1 timeout; closest stop 0.15 m / 2 deg)
+20,long,A_straight,10,0.700,0.700,18.94,7.73,7,0.000,0.300,0.076,16.6,0.019,3/10 failed (3 timeout; closest stop 0.07 m / 49 deg)
+20,long,B_left,10,1.000,1.000,24.90,15.07,10,0.000,0.000,0.070,1.6,0.029,
+20,long,C_backright,10,0.800,0.700,23.16,9.04,8,0.000,0.200,0.073,7.1,0.026,2/10 failed (2 timeout; closest stop 0.06 m / 53 deg)
+20,long,D_far_turn,10,1.000,1.000,34.54,12.28,10,0.000,0.000,0.072,1.6,0.046,
+20,sphere,A_straight,10,1.000,1.000,10.86,4.99,10,0.000,0.000,0.065,0.0,0.043,
+20,sphere,B_left,10,1.000,1.000,15.58,2.70,10,0.000,0.000,0.041,0.0,0.035,
+20,sphere,C_backright,10,1.000,1.000,32.19,19.96,10,0.000,0.000,0.057,0.0,0.047,
+20,sphere,D_far_turn,10,1.000,1.000,15.20,5.37,10,0.000,0.000,0.049,0.0,0.046,
+20,cylinder,A_straight,10,0.300,0.200,16.53,8.71,3,0.000,0.700,0.234,42.9,0.060,7/10 failed (7 timeout; closest stop 0.05 m / 85 deg)
+20,cylinder,B_left,10,0.600,0.500,17.72,5.63,6,0.100,0.300,0.300,14.9,0.243,"4/10 failed (3 timeout, 1 fell anymal2; closest stop 0.12 m / 14 deg)"
+20,cylinder,C_backright,10,0.200,0.400,26.30,3.56,2,0.200,0.600,0.503,34.9,0.400,"8/10 failed (6 timeout, 1 fell anymal2, 1 fell anymal1; closest stop 0.10 m / 70 deg)"
+20,cylinder,D_far_turn,10,0.600,0.600,48.80,21.90,6,0.200,0.200,0.655,19.9,0.612,"4/10 failed (2 timeout, 2 fell anymal1; closest stop 0.10 m / 65 deg)"
+20,arch,A_straight,10,0.900,0.800,22.82,12.84,9,0.000,0.100,0.078,2.4,0.048,1/10 failed (1 timeout; closest stop 0.19 m / 4 deg)
+20,arch,B_left,10,1.000,0.900,25.05,10.52,10,0.000,0.000,0.068,2.8,0.037,
+20,arch,C_backright,10,0.800,0.800,31.96,13.12,8,0.000,0.200,0.126,1.3,0.064,2/10 failed (2 timeout; closest stop 0.26 m / 1 deg)
+20,arch,D_far_turn,10,1.000,0.800,33.49,9.36,10,0.000,0.000,0.072,4.0,0.025,
+20,dumbbell,A_straight,10,1.000,0.900,29.73,14.01,10,0.000,0.000,0.071,3.3,0.054,
+20,dumbbell,B_left,10,0.800,0.800,32.66,19.30,8,0.000,0.200,0.103,1.8,0.048,2/10 failed (2 timeout; closest stop 0.15 m / 2 deg)
+20,dumbbell,C_backright,10,0.500,0.500,24.58,5.39,5,0.000,0.500,0.128,4.0,0.073,5/10 failed (5 timeout; closest stop 0.11 m / 2 deg)
+20,dumbbell,D_far_turn,10,0.400,0.400,38.92,11.97,4,0.000,0.600,0.323,4.8,0.257,6/10 failed (6 timeout; closest stop 0.20 m / 6 deg)
+20,t_shape,A_straight,10,0.700,0.800,28.32,6.75,7,0.000,0.300,0.101,6.7,0.041,3/10 failed (3 timeout; closest stop 0.17 m / 15 deg)
+20,t_shape,B_left,10,0.500,0.400,27.12,7.97,5,0.000,0.500,0.160,6.6,0.023,5/10 failed (5 timeout; closest stop 0.08 m / 8 deg)
+20,t_shape,C_backright,10,0.600,0.700,43.49,15.48,6,0.100,0.300,0.130,4.3,0.075,"4/10 failed (3 timeout, 1 fell anymal2; closest stop 0.05 m / 12 deg)"
+20,t_shape,D_far_turn,10,0.800,0.900,43.85,11.06,8,0.000,0.200,0.102,3.1,0.026,2/10 failed (2 timeout; closest stop 0.17 m / 1 deg)
+20,beam,A_straight,10,0.400,0.300,47.66,26.47,4,0.000,0.600,0.281,5.9,0.224,6/10 failed (6 timeout; closest stop 0.12 m / 1 deg)
+20,beam,B_left,10,0.700,0.700,32.69,14.84,7,0.000,0.300,0.437,5.9,0.408,3/10 failed (3 timeout; closest stop 0.15 m / 3 deg)
+20,beam,C_backright,10,0.600,0.600,32.92,22.56,6,0.000,0.400,0.700,22.1,0.679,4/10 failed (4 timeout; closest stop 0.08 m / 52 deg)
+20,beam,D_far_turn,10,0.400,0.500,25.41,2.23,4,0.000,0.600,0.222,32.1,0.204,6/10 failed (6 timeout; closest stop 0.01 m / 28 deg)
+20,l_shape,A_straight,10,0.600,0.600,35.78,16.79,6,0.000,0.400,0.101,12.7,0.030,4/10 failed (4 timeout; closest stop 0.11 m / 25 deg)
+20,l_shape,B_left,10,0.700,0.500,39.68,22.64,7,0.000,0.300,0.096,10.6,0.029,3/10 failed (3 timeout; closest stop 0.10 m / 29 deg)
+20,l_shape,C_backright,10,0.800,0.500,29.69,17.03,8,0.100,0.100,0.241,17.1,0.212,"2/10 failed (1 timeout, 1 fell anymal2; closest stop 0.14 m / 67 deg)"
+20,l_shape,D_far_turn,10,0.800,0.900,40.75,8.05,8,0.000,0.200,0.071,4.0,0.022,2/10 failed (2 timeout; closest stop 0.06 m / 16 deg)
+20,asym,A_straight,10,0.800,0.800,35.88,18.62,8,0.100,0.100,0.126,3.6,0.028,"2/10 failed (1 timeout, 1 fell anymal1; closest stop 0.13 m / 17 deg)"
+20,asym,B_left,10,0.600,0.900,17.40,8.24,6,0.000,0.400,0.141,11.7,0.037,4/10 failed (4 timeout; closest stop 0.08 m / 31 deg)
+20,asym,C_backright,10,0.100,0.200,36.48,–,1,0.000,0.900,0.264,25.8,0.132,9/10 failed (9 timeout; closest stop 0.05 m / 38 deg)
+20,asym,D_far_turn,10,0.500,0.600,37.16,13.17,5,0.000,0.400,0.653,12.6,0.526,"5/10 failed (4 timeout, 1 tipped; closest stop 0.30 m / 2 deg)"
+20,u_channel,A_straight,10,0.900,0.900,20.43,7.90,9,0.000,0.100,0.082,2.8,0.033,1/10 failed (1 timeout; closest stop 0.16 m / 8 deg)
+20,u_channel,B_left,10,1.000,0.900,26.66,7.17,10,0.000,0.000,0.062,2.3,0.046,
+20,u_channel,C_backright,10,0.900,0.900,39.84,17.04,9,0.000,0.100,0.110,2.1,0.023,1/10 failed (1 timeout; closest stop 0.65 m / 1 deg)
+20,u_channel,D_far_turn,10,0.700,0.900,34.32,7.41,7,0.000,0.300,0.090,4.9,0.050,3/10 failed (3 timeout; closest stop 0.06 m / 8 deg)
+20,plus,A_straight,10,0.500,0.500,22.18,11.52,5,0.000,0.500,0.142,6.0,0.061,5/10 failed (5 timeout; closest stop 0.14 m / 12 deg)
+20,plus,B_left,10,0.500,0.800,28.03,15.95,5,0.000,0.500,0.115,6.7,0.041,5/10 failed (5 timeout; closest stop 0.12 m / 12 deg)
+20,plus,C_backright,10,0.600,0.800,45.75,17.78,6,0.000,0.400,0.207,4.3,0.129,4/10 failed (4 timeout; closest stop 0.12 m / 11 deg)
+20,plus,D_far_turn,10,0.900,0.700,43.20,17.04,9,0.000,0.100,0.072,2.6,0.030,1/10 failed (1 timeout; closest stop 0.20 m / 0 deg)
+40,cube,A_straight,10,0.800,0.800,8.79,1.90,8,0.000,0.200,0.076,3.0,0.053,2/10 failed (2 timeout; closest stop 0.09 m / 17 deg)
+40,cube,B_left,10,1.000,0.900,28.84,10.73,10,0.000,0.000,0.070,2.5,0.069,
+40,cube,C_backright,10,1.000,1.000,33.31,14.63,10,0.000,0.000,0.064,1.8,0.062,
+40,cube,D_far_turn,10,0.800,0.800,22.81,11.89,8,0.000,0.200,0.080,2.2,0.067,2/10 failed (2 timeout; closest stop 0.15 m / 3 deg)
+40,long,A_straight,10,0.900,0.700,30.41,17.30,9,0.000,0.100,0.058,3.0,0.044,1/10 failed (1 timeout; closest stop 0.13 m / 5 deg)
+40,long,B_left,10,0.600,0.600,33.21,16.78,6,0.000,0.400,0.125,12.1,0.073,4/10 failed (4 timeout; closest stop 0.11 m / 35 deg)
+40,long,C_backright,10,0.800,0.700,34.35,20.09,8,0.000,0.200,0.234,7.6,0.213,2/10 failed (2 timeout; closest stop 0.14 m / 51 deg)
+40,long,D_far_turn,10,0.700,0.700,37.98,20.05,7,0.000,0.300,0.222,14.1,0.197,3/10 failed (3 timeout; closest stop 0.13 m / 41 deg)
+40,sphere,A_straight,10,1.000,1.000,8.64,2.78,10,0.000,0.000,0.065,0.0,0.040,
+40,sphere,B_left,10,0.900,0.900,14.04,2.64,9,0.000,0.100,0.074,0.0,0.063,1/10 failed (1 timeout; closest stop 0.25 m / 0 deg)
+40,sphere,C_backright,10,0.900,0.900,22.48,8.34,9,0.000,0.100,0.346,0.0,0.339,1/10 failed (1 timeout; closest stop 3.00 m / 0 deg)
+40,sphere,D_far_turn,10,1.000,1.000,12.03,4.55,10,0.000,0.000,0.059,0.0,0.035,
+40,cylinder,A_straight,10,0.500,0.200,34.34,18.45,5,0.100,0.400,0.138,22.3,0.118,"5/10 failed (4 timeout, 1 fell anymal1; closest stop 0.06 m / 52 deg)"
+40,cylinder,B_left,10,0.500,0.400,44.59,13.68,5,0.100,0.400,0.537,12.3,0.502,"5/10 failed (4 timeout, 1 fell anymal2; closest stop 0.06 m / 29 deg)"
+40,cylinder,C_backright,10,0.200,0.100,38.57,8.61,2,0.200,0.600,0.663,27.5,0.606,"8/10 failed (6 timeout, 1 fell anymal2, 1 fell anymal1; closest stop 0.04 m / 31 deg)"
+40,cylinder,D_far_turn,10,0.100,0.000,69.26,–,1,0.200,0.700,0.796,36.5,0.746,"9/10 failed (7 timeout, 2 fell anymal1; closest stop 0.07 m / 10 deg)"
+40,arch,A_straight,10,0.900,0.900,20.26,10.45,9,0.000,0.100,0.085,2.3,0.067,1/10 failed (1 timeout; closest stop 0.25 m / 5 deg)
+40,arch,B_left,10,0.900,0.900,23.88,10.59,9,0.100,0.000,0.128,2.2,0.125,1/10 failed (1 fell anymal1; closest stop 0.78 m / 7 deg)
+40,arch,C_backright,10,0.900,0.600,33.31,15.08,9,0.000,0.100,0.098,2.4,0.081,1/10 failed (1 timeout; closest stop 0.41 m / 1 deg)
+40,arch,D_far_turn,10,1.000,0.800,39.76,11.12,10,0.000,0.000,0.069,1.9,0.045,
+40,dumbbell,A_straight,10,0.900,0.700,29.37,21.51,9,0.000,0.100,0.072,2.4,0.061,1/10 failed (1 timeout; closest stop 0.18 m / 6 deg)
+40,dumbbell,B_left,10,0.700,0.500,45.79,15.00,7,0.000,0.300,0.122,16.3,0.099,3/10 failed (3 timeout; closest stop 0.16 m / 6 deg)
+40,dumbbell,C_backright,10,0.600,0.400,32.19,13.07,6,0.100,0.300,0.208,6.9,0.190,"4/10 failed (3 timeout, 1 fell anymal2; closest stop 0.19 m / 1 deg)"
+40,dumbbell,D_far_turn,10,0.400,0.200,51.80,22.44,4,0.000,0.600,0.626,3.4,0.601,6/10 failed (6 timeout; closest stop 0.12 m / 0 deg)
+40,t_shape,A_straight,10,0.700,0.600,44.08,20.78,7,0.100,0.200,0.073,4.7,0.048,"3/10 failed (2 timeout, 1 fell anymal1; closest stop 0.07 m / 18 deg)"
+40,t_shape,B_left,10,0.500,0.400,27.99,8.83,5,0.000,0.500,0.207,7.9,0.144,5/10 failed (5 timeout; closest stop 0.13 m / 19 deg)
+40,t_shape,C_backright,10,0.700,0.500,36.45,17.01,7,0.000,0.300,0.096,3.2,0.057,3/10 failed (3 timeout; closest stop 0.13 m / 10 deg)
+40,t_shape,D_far_turn,10,0.900,0.700,39.47,11.31,9,0.000,0.100,0.088,3.4,0.051,1/10 failed (1 timeout; closest stop 0.28 m / 12 deg)
+40,beam,A_straight,10,0.700,0.500,23.29,13.41,7,0.100,0.200,0.184,4.2,0.175,"3/10 failed (2 timeout, 1 fell anymal1; closest stop 0.23 m / 8 deg)"
+40,beam,B_left,10,0.500,0.400,40.62,14.64,5,0.000,0.500,0.963,9.8,0.962,5/10 failed (5 timeout; closest stop 1.12 m / 5 deg)
+40,beam,C_backright,10,0.100,0.100,67.48,–,1,0.000,0.900,1.954,40.1,1.948,9/10 failed (9 timeout; closest stop 0.15 m / 4 deg)
+40,beam,D_far_turn,10,0.100,0.000,50.96,–,1,0.200,0.700,0.920,31.9,0.911,"9/10 failed (7 timeout, 2 fell anymal1; closest stop 0.13 m / 51 deg)"
+40,l_shape,A_straight,10,0.800,0.600,40.62,11.53,8,0.000,0.200,0.084,7.4,0.038,2/10 failed (2 timeout; closest stop 0.10 m / 30 deg)
+40,l_shape,B_left,10,0.800,0.500,38.16,13.57,8,0.100,0.100,0.084,5.3,0.046,"2/10 failed (1 timeout, 1 fell anymal1; closest stop 0.12 m / 17 deg)"
+40,l_shape,C_backright,10,0.900,0.600,33.42,13.51,9,0.000,0.100,0.076,4.2,0.054,1/10 failed (1 timeout; closest stop 0.17 m / 7 deg)
+40,l_shape,D_far_turn,10,0.800,0.700,54.97,15.61,8,0.000,0.200,0.134,9.1,0.113,2/10 failed (2 timeout; closest stop 0.15 m / 12 deg)
+40,asym,A_straight,10,0.400,0.400,51.36,14.90,4,0.000,0.600,0.088,17.1,0.053,6/10 failed (6 timeout; closest stop 0.04 m / 5 deg)
+40,asym,B_left,10,0.200,0.000,47.63,3.32,2,0.200,0.600,0.710,16.6,0.709,"8/10 failed (6 timeout, 1 fell anymal1, 1 fell anymal2; closest stop 0.03 m / 32 deg)"
+40,asym,C_backright,10,0.000,0.000,–,–,0,0.300,0.700,1.205,34.9,1.202,"10/10 failed (7 timeout, 2 fell anymal2, 1 fell anymal1; closest stop 0.08 m / 71 deg)"
+40,asym,D_far_turn,10,0.500,0.400,68.29,7.50,5,0.000,0.400,0.847,16.7,0.837,"5/10 failed (4 timeout, 1 tipped; closest stop 0.10 m / 64 deg)"
+40,u_channel,A_straight,10,1.000,0.700,16.91,7.01,10,0.000,0.000,0.062,3.5,0.044,
+40,u_channel,B_left,10,1.000,0.800,31.35,11.48,10,0.000,0.000,0.070,2.6,0.055,
+40,u_channel,C_backright,10,0.300,0.200,34.69,15.15,3,0.000,0.700,1.423,42.4,1.401,7/10 failed (7 timeout; closest stop 0.76 m / 26 deg)
+40,u_channel,D_far_turn,10,0.700,0.400,49.68,13.30,7,0.000,0.300,0.117,9.2,0.102,3/10 failed (3 timeout; closest stop 0.12 m / 0 deg)
+40,plus,A_straight,10,0.400,0.300,48.84,22.25,4,0.100,0.500,0.275,13.8,0.240,"6/10 failed (5 timeout, 1 fell anymal1; closest stop 0.11 m / 23 deg)"
+40,plus,B_left,10,0.900,0.900,28.35,13.26,9,0.000,0.100,0.076,2.1,0.051,1/10 failed (1 timeout; closest stop 0.20 m / 1 deg)
+40,plus,C_backright,10,0.700,0.600,48.87,18.63,7,0.100,0.200,0.347,5.0,0.332,"3/10 failed (2 timeout, 1 fell anymal2; closest stop 0.18 m / 3 deg)"
+40,plus,D_far_turn,10,0.700,0.600,58.32,9.29,7,0.000,0.300,0.301,5.5,0.255,3/10 failed (3 timeout; closest stop 0.12 m / 3 deg)
+60,cube,A_straight,10,0.700,0.700,25.84,20.39,7,0.100,0.200,0.360,5.5,0.358,"3/10 failed (2 timeout, 1 fell anymal1; closest stop 0.22 m / 3 deg)"
+60,cube,B_left,10,0.500,0.500,47.98,21.86,5,0.000,0.500,0.129,4.0,0.124,5/10 failed (5 timeout; closest stop 0.13 m / 3 deg)
+60,cube,C_backright,10,0.600,0.600,44.35,15.70,6,0.000,0.400,0.128,6.3,0.127,4/10 failed (4 timeout; closest stop 0.12 m / 18 deg)
+60,cube,D_far_turn,10,0.800,0.600,44.74,8.53,8,0.000,0.200,0.559,5.7,0.558,2/10 failed (2 timeout; closest stop 2.27 m / 33 deg)
+60,long,A_straight,10,0.700,0.600,47.99,24.32,7,0.000,0.300,0.143,7.4,0.120,3/10 failed (3 timeout; closest stop 0.14 m / 40 deg)
+60,long,B_left,10,0.600,0.600,37.63,16.55,6,0.100,0.300,0.531,11.5,0.519,"4/10 failed (3 timeout, 1 fell anymal1; closest stop 0.04 m / 17 deg)"
+60,long,C_backright,10,0.500,0.100,55.42,16.63,5,0.200,0.300,0.642,16.9,0.613,"5/10 failed (3 timeout, 2 fell anymal2; closest stop 0.13 m / 10 deg)"
+60,long,D_far_turn,10,0.600,0.500,45.37,13.23,6,0.000,0.400,0.089,6.0,0.069,4/10 failed (4 timeout; closest stop 0.03 m / 30 deg)
+60,sphere,A_straight,10,1.000,1.000,7.51,0.67,10,0.000,0.000,0.056,0.0,0.042,
+60,sphere,B_left,10,1.000,1.000,14.63,5.06,10,0.000,0.000,0.056,0.0,0.045,
+60,sphere,C_backright,10,0.900,0.900,31.83,21.50,9,0.000,0.100,0.070,0.0,0.055,1/10 failed (1 timeout; closest stop 0.13 m / 0 deg)
+60,sphere,D_far_turn,10,1.000,1.000,11.39,0.80,10,0.000,0.000,0.049,0.0,0.036,
+60,cylinder,A_straight,10,0.900,0.300,20.60,10.48,9,0.000,0.100,0.068,6.2,0.042,1/10 failed (1 timeout; closest stop 0.04 m / 27 deg)
+60,cylinder,B_left,10,0.300,0.000,56.85,16.67,3,0.000,0.700,0.287,7.0,0.271,7/10 failed (7 timeout; closest stop 0.06 m / 8 deg)
+60,cylinder,C_backright,10,0.100,0.100,29.64,–,1,0.000,0.900,0.552,58.8,0.538,9/10 failed (9 timeout; closest stop 0.04 m / 74 deg)
+60,cylinder,D_far_turn,10,0.000,0.000,–,–,0,0.100,0.900,0.457,46.4,0.434,"10/10 failed (9 timeout, 1 fell anymal1; closest stop 0.02 m / 36 deg)"
+60,arch,A_straight,10,0.800,0.500,29.90,20.02,8,0.000,0.200,0.098,2.8,0.084,2/10 failed (2 timeout; closest stop 0.20 m / 4 deg)
+60,arch,B_left,10,0.800,0.700,31.39,24.79,8,0.000,0.200,0.123,2.3,0.113,2/10 failed (2 timeout; closest stop 0.11 m / 0 deg)
+60,arch,C_backright,10,0.600,0.300,48.98,15.19,6,0.100,0.300,0.415,3.2,0.414,"4/10 failed (3 timeout, 1 fell anymal1; closest stop 0.42 m / 3 deg)"
+60,arch,D_far_turn,10,0.700,0.300,56.47,12.87,7,0.000,0.300,0.292,6.5,0.262,3/10 failed (3 timeout; closest stop 0.14 m / 5 deg)
+60,dumbbell,A_straight,10,0.800,0.800,39.45,15.64,8,0.000,0.200,0.103,2.1,0.099,2/10 failed (2 timeout; closest stop 0.03 m / 8 deg)
+60,dumbbell,B_left,10,1.000,1.000,36.70,11.31,10,0.000,0.000,0.061,1.8,0.053,
+60,dumbbell,C_backright,10,0.500,0.500,50.95,25.36,5,0.000,0.500,0.637,2.6,0.624,5/10 failed (5 timeout; closest stop 0.14 m / 7 deg)
+60,dumbbell,D_far_turn,10,0.300,0.300,40.44,17.62,3,0.100,0.600,1.134,10.4,1.093,"7/10 failed (6 timeout, 1 fell anymal1; closest stop 0.46 m / 6 deg)"
+60,t_shape,A_straight,10,0.900,0.900,50.50,15.94,9,0.000,0.100,0.059,2.7,0.050,1/10 failed (1 timeout; closest stop 0.09 m / 3 deg)
+60,t_shape,B_left,10,0.400,0.200,48.23,21.83,4,0.100,0.500,0.456,12.1,0.444,"6/10 failed (5 timeout, 1 fell anymal1; closest stop 0.14 m / 1 deg)"
+60,t_shape,C_backright,10,0.700,0.500,34.12,10.34,7,0.000,0.300,0.067,4.2,0.049,3/10 failed (3 timeout; closest stop 0.08 m / 8 deg)
+60,t_shape,D_far_turn,10,0.600,0.500,46.49,9.68,6,0.000,0.400,0.158,12.3,0.140,4/10 failed (4 timeout; closest stop 0.15 m / 1 deg)
+60,beam,A_straight,10,0.100,0.000,41.60,–,1,0.400,0.500,0.640,12.7,0.631,"9/10 failed (5 timeout, 2 fell anymal2, 2 fell anymal1; closest stop 0.12 m / 6 deg)"
+60,beam,B_left,10,0.000,0.000,–,–,0,0.300,0.700,2.035,20.9,2.035,"10/10 failed (7 timeout, 3 fell anymal1; closest stop 0.91 m / 29 deg)"
+60,beam,C_backright,10,0.000,0.000,–,–,0,0.200,0.800,2.594,48.2,2.593,"10/10 failed (8 timeout, 1 fell anymal1, 1 fell anymal2; closest stop 1.60 m / 12 deg)"
+60,beam,D_far_turn,10,0.000,0.100,–,–,0,0.400,0.600,1.952,24.2,1.952,"10/10 failed (6 timeout, 3 fell anymal1, 1 fell anymal2; closest stop 0.07 m / 1 deg)"
+60,l_shape,A_straight,10,0.500,0.300,48.32,13.60,5,0.100,0.400,0.206,7.9,0.133,"5/10 failed (4 timeout, 1 fell anymal1; closest stop 0.02 m / 26 deg)"
+60,l_shape,B_left,10,0.400,0.400,34.19,8.39,4,0.100,0.500,0.092,15.6,0.069,"6/10 failed (5 timeout, 1 fell anymal1; closest stop 0.04 m / 6 deg)"
+60,l_shape,C_backright,10,0.800,0.700,38.52,17.37,8,0.100,0.100,0.276,4.7,0.264,"2/10 failed (1 timeout, 1 fell anymal1; closest stop 0.92 m / 8 deg)"
+60,l_shape,D_far_turn,10,0.000,0.100,–,–,0,0.000,1.000,0.840,26.7,0.810,10/10 failed (10 timeout; closest stop 0.10 m / 11 deg)
+60,asym,A_straight,10,0.300,0.300,54.15,3.33,3,0.200,0.500,0.614,21.3,0.609,"7/10 failed (5 timeout, 2 fell anymal1; closest stop 0.06 m / 23 deg)"
+60,asym,B_left,10,0.100,0.000,70.72,–,1,0.200,0.700,0.868,8.3,0.865,"9/10 failed (7 timeout, 1 fell anymal1, 1 fell anymal2; closest stop 0.28 m / 5 deg)"
+60,asym,C_backright,10,0.000,0.000,–,–,0,0.200,0.800,1.333,31.7,1.333,"10/10 failed (8 timeout, 2 fell anymal2; closest stop 0.17 m / 33 deg)"
+60,asym,D_far_turn,10,0.000,0.000,–,–,0,0.400,0.600,1.712,53.9,1.712,"10/10 failed (6 timeout, 3 fell anymal1, 1 fell anymal2; closest stop 0.27 m / 18 deg)"
+60,u_channel,A_straight,10,1.000,0.700,27.71,4.88,10,0.000,0.000,0.069,2.7,0.068,
+60,u_channel,B_left,10,0.500,0.300,40.97,11.16,5,0.000,0.500,0.288,8.1,0.286,5/10 failed (5 timeout; closest stop 0.21 m / 28 deg)
+60,u_channel,C_backright,10,0.300,0.200,37.85,10.09,3,0.000,0.700,0.550,9.7,0.536,7/10 failed (7 timeout; closest stop 0.15 m / 8 deg)
+60,u_channel,D_far_turn,10,0.300,0.300,67.54,8.08,3,0.000,0.700,0.329,14.9,0.313,7/10 failed (7 timeout; closest stop 0.16 m / 17 deg)
+60,plus,A_straight,10,0.300,0.100,64.27,14.57,3,0.000,0.700,0.188,21.7,0.182,7/10 failed (7 timeout; closest stop 0.11 m / 14 deg)
+60,plus,B_left,10,0.500,0.200,42.86,21.80,5,0.100,0.400,0.220,7.9,0.214,"5/10 failed (4 timeout, 1 fell anymal2; closest stop 0.13 m / 10 deg)"
+60,plus,C_backright,10,0.200,0.200,71.26,2.09,2,0.200,0.600,0.710,11.2,0.693,"8/10 failed (6 timeout, 2 fell anymal2; closest stop 0.13 m / 2 deg)"
+60,plus,D_far_turn,10,0.200,0.100,55.92,17.85,2,0.200,0.600,1.417,18.2,1.405,"8/10 failed (6 timeout, 1 fell anymal2, 1 fell anymal1; closest stop 0.13 m / 20 deg)"
+80,cube,A_straight,10,0.200,0.100,38.71,19.59,2,0.300,0.500,0.972,9.7,0.972,"8/10 failed (5 timeout, 3 fell anymal1; closest stop 0.21 m / 0 deg)"
+80,cube,B_left,10,0.100,0.100,69.38,–,1,0.200,0.700,1.117,8.6,1.117,"9/10 failed (7 timeout, 1 fell anymal2, 1 fell anymal1; closest stop 0.04 m / 6 deg)"
+80,cube,C_backright,10,0.200,0.200,56.66,19.97,2,0.100,0.700,0.738,18.1,0.738,"8/10 failed (7 timeout, 1 fell anymal2; closest stop 0.16 m / 5 deg)"
+80,cube,D_far_turn,10,0.000,0.000,–,–,0,0.400,0.600,2.294,21.5,2.294,"10/10 failed (6 timeout, 4 fell anymal1; closest stop 0.12 m / 32 deg)"
+80,long,A_straight,10,0.400,0.300,42.51,15.83,4,0.000,0.600,0.593,12.9,0.593,6/10 failed (6 timeout; closest stop 0.21 m / 0 deg)
+80,long,B_left,10,0.300,0.200,64.05,11.18,3,0.200,0.500,1.083,12.2,1.083,"7/10 failed (5 timeout, 2 fell anymal1; closest stop 0.36 m / 8 deg)"
+80,long,C_backright,10,0.600,0.400,44.03,11.52,6,0.000,0.400,0.902,12.9,0.901,4/10 failed (4 timeout; closest stop 1.71 m / 10 deg)
+80,long,D_far_turn,10,0.500,0.100,42.91,3.90,5,0.100,0.400,0.827,20.6,0.822,"5/10 failed (4 timeout, 1 fell anymal1; closest stop 0.41 m / 47 deg)"
+80,sphere,A_straight,10,1.000,1.000,8.52,0.97,10,0.000,0.000,0.039,0.0,0.035,
+80,sphere,B_left,10,0.900,0.900,13.24,1.80,9,0.100,0.000,0.062,0.0,0.058,1/10 failed (1 fell anymal2; closest stop 0.23 m / 0 deg)
+80,sphere,C_backright,10,0.900,0.900,18.42,10.34,9,0.000,0.100,0.348,0.0,0.324,1/10 failed (1 timeout; closest stop 3.00 m / 0 deg)
+80,sphere,D_far_turn,10,1.000,1.000,12.57,0.83,10,0.000,0.000,0.045,0.0,0.042,
+80,cylinder,A_straight,10,0.900,0.400,31.64,23.15,9,0.100,0.000,0.161,3.9,0.145,1/10 failed (1 fell anymal1; closest stop 0.97 m / 9 deg)
+80,cylinder,B_left,10,0.200,0.000,77.04,2.38,2,0.000,0.800,0.757,12.8,0.739,8/10 failed (8 timeout; closest stop 0.10 m / 8 deg)
+80,cylinder,C_backright,10,0.000,0.000,–,–,0,0.400,0.600,1.235,60.2,1.211,"10/10 failed (6 timeout, 4 fell anymal1; closest stop 0.05 m / 86 deg)"
+80,cylinder,D_far_turn,10,0.000,0.000,–,–,0,0.300,0.700,0.747,56.3,0.738,"10/10 failed (7 timeout, 2 fell anymal2, 1 fell anymal1; closest stop 0.07 m / 52 deg)"
+80,arch,A_straight,10,0.800,0.700,48.94,20.53,8,0.000,0.200,0.234,5.5,0.231,2/10 failed (2 timeout; closest stop 0.78 m / 6 deg)
+80,arch,B_left,10,0.600,0.300,45.15,17.82,6,0.100,0.300,0.267,5.8,0.267,"4/10 failed (3 timeout, 1 fell anymal1; closest stop 0.17 m / 0 deg)"
+80,arch,C_backright,10,0.400,0.200,67.53,7.81,4,0.200,0.400,0.487,7.5,0.483,"6/10 failed (4 timeout, 1 fell anymal1, 1 fell anymal2; closest stop 0.15 m / 1 deg)"
+80,arch,D_far_turn,10,0.200,0.200,73.81,5.44,2,0.100,0.700,0.897,15.1,0.896,"8/10 failed (7 timeout, 1 fell anymal1; closest stop 0.16 m / 0 deg)"
+80,dumbbell,A_straight,10,0.500,0.400,44.08,18.78,5,0.100,0.400,0.282,3.3,0.277,"5/10 failed (4 timeout, 1 fell anymal1; closest stop 0.21 m / 4 deg)"
+80,dumbbell,B_left,10,0.200,0.100,59.26,10.95,2,0.300,0.500,0.825,9.4,0.822,"8/10 failed (5 timeout, 3 fell anymal1; closest stop 0.16 m / 10 deg)"
+80,dumbbell,C_backright,10,0.300,0.200,60.45,25.27,3,0.100,0.600,1.254,20.8,1.253,"7/10 failed (6 timeout, 1 fell anymal2; closest stop 0.75 m / 1 deg)"
+80,dumbbell,D_far_turn,10,0.200,0.100,46.69,16.87,2,0.200,0.600,1.063,33.3,1.047,"8/10 failed (6 timeout, 2 fell anymal1; closest stop 0.15 m / 8 deg)"
+80,t_shape,A_straight,10,0.400,0.100,56.11,17.32,4,0.000,0.600,0.288,7.1,0.275,6/10 failed (6 timeout; closest stop 0.05 m / 6 deg)
+80,t_shape,B_left,10,0.300,0.200,57.23,8.75,3,0.300,0.400,1.006,12.8,0.996,"7/10 failed (4 timeout, 3 fell anymal1; closest stop 0.12 m / 5 deg)"
+80,t_shape,C_backright,10,0.700,0.300,49.65,12.53,7,0.000,0.300,0.343,19.3,0.332,3/10 failed (3 timeout; closest stop 0.15 m / 24 deg)
+80,t_shape,D_far_turn,10,0.000,0.000,–,–,0,0.000,1.000,0.765,40.7,0.765,10/10 failed (10 timeout; closest stop 0.13 m / 11 deg)
+80,beam,A_straight,10,0.000,0.000,–,–,0,0.700,0.300,1.985,13.9,1.985,"10/10 failed (6 fell anymal1, 3 timeout, 1 fell anymal2; closest stop 0.98 m / 15 deg)"
+80,beam,B_left,10,0.000,0.000,–,–,0,0.700,0.300,2.821,26.1,2.821,"10/10 failed (7 fell anymal1, 3 timeout; closest stop 2.26 m / 12 deg)"
+80,beam,C_backright,10,0.000,0.000,–,–,0,0.700,0.300,2.941,57.2,2.941,"10/10 failed (6 fell anymal2, 3 timeout, 1 fell anymal1; closest stop 2.87 m / 57 deg)"
+80,beam,D_far_turn,10,0.000,0.000,–,–,0,0.600,0.400,3.552,42.0,3.551,"10/10 failed (5 fell anymal1, 4 timeout, 1 fell anymal2; closest stop 1.76 m / 11 deg)"
+80,l_shape,A_straight,10,0.000,0.000,–,–,0,0.300,0.700,0.857,33.2,0.851,"10/10 failed (7 timeout, 3 fell anymal1; closest stop 0.03 m / 14 deg)"
+80,l_shape,B_left,10,0.300,0.100,48.93,8.65,3,0.000,0.700,0.278,27.2,0.249,7/10 failed (7 timeout; closest stop 0.12 m / 32 deg)
+80,l_shape,C_backright,10,0.600,0.400,30.40,12.02,6,0.000,0.400,0.629,10.7,0.628,4/10 failed (4 timeout; closest stop 0.48 m / 0 deg)
+80,l_shape,D_far_turn,10,0.100,0.000,65.38,–,1,0.100,0.800,1.278,21.2,1.277,"9/10 failed (8 timeout, 1 fell anymal2; closest stop 0.27 m / 25 deg)"
+80,asym,A_straight,10,0.000,0.000,–,–,0,0.000,1.000,1.555,20.2,1.555,10/10 failed (10 timeout; closest stop 0.83 m / 60 deg)
+80,asym,B_left,10,0.000,0.000,–,–,0,0.600,0.400,1.582,12.8,1.582,"10/10 failed (6 fell anymal1, 4 timeout; closest stop 0.39 m / 10 deg)"
+80,asym,C_backright,10,0.000,0.000,–,–,0,0.300,0.700,2.607,63.1,2.607,"10/10 failed (7 timeout, 3 fell anymal2; closest stop 2.33 m / 69 deg)"
+80,asym,D_far_turn,10,0.000,0.000,–,–,0,0.200,0.800,3.012,30.7,3.012,"10/10 failed (8 timeout, 1 fell anymal2, 1 fell anymal1; closest stop 1.59 m / 45 deg)"
+80,u_channel,A_straight,10,0.900,0.800,45.30,16.44,9,0.000,0.100,0.070,3.3,0.069,1/10 failed (1 timeout; closest stop 0.18 m / 11 deg)
+80,u_channel,B_left,10,0.200,0.200,65.22,4.44,2,0.100,0.700,0.846,15.8,0.846,"8/10 failed (7 timeout, 1 fell anymal2; closest stop 0.29 m / 22 deg)"
+80,u_channel,C_backright,10,0.500,0.200,55.39,10.87,5,0.000,0.500,0.448,10.6,0.448,5/10 failed (5 timeout; closest stop 0.30 m / 32 deg)
+80,u_channel,D_far_turn,10,0.000,0.000,–,–,0,0.000,1.000,0.671,33.9,0.670,10/10 failed (10 timeout; closest stop 0.15 m / 5 deg)
+80,plus,A_straight,10,0.300,0.300,59.50,16.34,3,0.000,0.700,0.208,18.9,0.192,7/10 failed (7 timeout; closest stop 0.06 m / 40 deg)
+80,plus,B_left,10,0.600,0.300,56.19,11.20,6,0.000,0.400,0.339,6.4,0.302,4/10 failed (4 timeout; closest stop 0.14 m / 32 deg)
+80,plus,C_backright,10,0.300,0.200,56.33,8.32,3,0.200,0.500,1.154,14.5,1.152,"7/10 failed (5 timeout, 1 fell anymal2, 1 fell anymal1; closest stop 0.27 m / 1 deg)"
+80,plus,D_far_turn,10,0.300,0.200,68.08,8.48,3,0.100,0.600,1.505,7.0,1.470,"7/10 failed (6 timeout, 1 fell anymal2; closest stop 0.12 m / 3 deg)"

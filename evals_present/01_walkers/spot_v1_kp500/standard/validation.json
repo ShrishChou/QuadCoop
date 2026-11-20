@@ -1,0 +1,50 @@
+{
+  "task": "QuadCoop-Walker-Spot",
+  "checkpoint": "/orcd/home/002/shrishc/quadcoop/logs/evals/walker-spot-v1/model.pt",
+  "gates": {
+    "A_fall_rate_max": 0.02,
+    "A_vx_error_max": 0.15,
+    "B_fall_rate_max": 0.05,
+    "B_vx_kept_min": 0.5,
+    "C_fall_rate_max": 0.05,
+    "C_box_disp_median_min": 2.0
+  },
+  "results": {
+    "A": {
+      "test": "A",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.5,
+      "vx_mean": 0.5394153594970703,
+      "vx_error": 0.03941535949707031,
+      "vx_kept": 1.0788307189941406
+    },
+    "B": {
+      "test": "B",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.15234375,
+      "cmd_vx": 0.5,
+      "vx_mean": 0.1585429161787033,
+      "vx_error": 0.3414570838212967,
+      "vx_kept": 0.3170858323574066,
+      "force_n": 123.45885
+    },
+    "C": {
+      "test": "C",
+      "envs": 256,
+      "seconds": 10.0,
+      "fall_rate": 0.0,
+      "cmd_vx": 0.4,
+      "vx_mean": 0.3685895800590515,
+      "vx_error": 0.03141041994094851,
+      "vx_kept": 0.9214739501476288,
+      "box_mass_kg": 15.0,
+      "object": "obj_cube",
+      "box_disp_median": 3.2080414295196533,
+      "box_disp_mean": 3.1967673301696777
+    }
+  },
+  "passed": false
+}
