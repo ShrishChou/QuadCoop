@@ -106,6 +106,8 @@ class MarlCfg:
     hist_obs: bool = False  # env option (recorded)
     arm_self_cost: float = 0.0  # env option (recorded)
     hand_shaping: float = 0.0  # env option (recorded)
+    tip_penalty: float = 0.0  # env option (recorded)
+    tilt_cost: float = 0.0  # env option (recorded)
     roll_ratio: float = 0.0  # env option (recorded): the planner's rolling-cylinder model
     turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
     # demonstrations (docs/spot_arm_pair.md, "Turn in place"): a file of actor observations and the env action from

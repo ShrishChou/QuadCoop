@@ -224,6 +224,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        action_rate_w: float = 0.05, action_limit_w: float = 0.02,
                        yaw_gate: float = 1.5, yaw_w: float = 0.0, geom_obs: bool = False, hist_obs: bool = False,
                        arm_self_cost: float = 0.0, hand_shaping: float = 0.0,
+                       tip_penalty: float = 0.0, tilt_cost: float = 0.0,
                        oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
@@ -534,6 +535,11 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "box_settle": R(func=hb.box_settle, weight=-1.0),
         "box_runaway": R(func=hb.box_runaway, weight=-3.0),
         "terminated": R(func=m2.failed, weight=-0.5 * BONUS / step_dt, params={"names": fails}),
+        # the object tipping over: an extra one-time cost (on top of the failure), and a per-second cost that rises
+        # from 8 deg of tilt to the 30 deg tip limit (a warning before it goes)
+        **({"object_tipped": R(func=m2.failed, weight=-tip_penalty / step_dt, params={"names": ("box_tipped",)})}
+           if tip_penalty > 0 else {}),
+        **({"object_tilt": R(func=mdp.object_tilt, weight=-tilt_cost)} if tilt_cost > 0 else {}),
         # team (new): keep out of each other's way
         "robots_close": (R(func=mdp.robots_close, weight=-1.0) if reward_set == "r3" else
                          R(func=mdp.robots_gap_exp, weight=-1.0, params={"threshold": 0.15, "rate": 20.0})

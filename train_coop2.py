@@ -386,6 +386,10 @@ def main() -> int:
     ap.add_argument("--hand-shaping", type=float, default=0.0,
                     help="Spot: > 0 = weight of the potential-based pull of the hand to a geometric target on the object "
                          "(mdp.hand_target), plus the hand -> target input")
+    ap.add_argument("--tip-penalty", type=float, default=0.0,
+                    help="extra one-time cost when the object tips over (on top of the failure penalty, 25)")
+    ap.add_argument("--tilt-cost", type=float, default=0.0,
+                    help="cost per second for object tilt, 0 at 8 deg rising to this at the 30 deg tip limit")
     ap.add_argument("--geom-obs", action="store_true",
                     help="pair inputs: explicit contact geometry for self and partner (docs/obs_study.md)")
     ap.add_argument("--hist-obs", action="store_true",
@@ -591,7 +595,7 @@ def main() -> int:
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs, arm_self_cost=a.arm_self_cost, hand_shaping=a.hand_shaping, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
+                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs, arm_self_cost=a.arm_self_cost, hand_shaping=a.hand_shaping, tip_penalty=a.tip_penalty, tilt_cost=a.tilt_cost, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
     if a.swap_starts:
@@ -638,7 +642,7 @@ def main() -> int:
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus,
                   arm_bonus=a.arm_bonus, roll_ratio=a.roll_ratio, action_rate_w=a.action_rate_w,
                   action_limit_w=a.action_limit_w, std_cap=a.std_cap, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs,
-                  arm_self_cost=a.arm_self_cost, hand_shaping=a.hand_shaping,
+                  arm_self_cost=a.arm_self_cost, hand_shaping=a.hand_shaping, tip_penalty=a.tip_penalty, tilt_cost=a.tilt_cost,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
                   solo_agent=a.solo_agent, bc_data=a.bc_data, bc_keep_norm=a.bc_keep_norm, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,

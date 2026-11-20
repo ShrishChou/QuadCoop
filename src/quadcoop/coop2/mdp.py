@@ -3174,6 +3174,21 @@ def hand_approach(env, robot: str, max_rate: float = 2.0) -> torch.Tensor:
     return ((prev - d) / env.step_dt).clamp(-max_rate, max_rate)
 
 
+def object_tilt(env, start_deg: float = 8.0, limit_deg: float = 30.0) -> torch.Tensor:
+    """0 up to start_deg of object tilt, rising linearly to 1 at limit_deg (the tip termination), measured as the tip
+    check measures it: a lying cylinder's axis lifting off the ground, nothing for rollers, else the up axis leaning."""
+    g = _g(env)
+    q = g.box_quat()
+    ez = quat_apply(q, torch.tensor([0.0, 0.0, 1.0], device=env.device).expand_as(q[:, :3]))
+    ey = quat_apply(q, torch.tensor([0.0, 1.0, 0.0], device=env.device).expand_as(q[:, :3]))
+    up = torch.acos(ez[:, 2].clamp(-1.0, 1.0))
+    ax = torch.asin(ey[:, 2].abs().clamp(max=1.0))
+    s = g.shape
+    tilt = torch.where(g.axis_y[s], ax, torch.where(g.roller[s], torch.zeros_like(up), up))
+    a0, a1 = math.radians(start_deg), math.radians(limit_deg)
+    return ((tilt - a0) / (a1 - a0)).clamp(0.0, 1.0)
+
+
 def arm_self_contact(env, robot: str) -> torch.Tensor:
     """1 while this Spot's arm touches its own body or legs (sensor self_<robot>)."""
     return env.scene[f"self_{robot}"].data.found.view(env.num_envs, -1).any(-1).float()

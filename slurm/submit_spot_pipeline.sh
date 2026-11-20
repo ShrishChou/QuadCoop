@@ -54,7 +54,7 @@ HEADING="--yaw-gate 0 --yaw-w 2.0"
 # arm (2026-11-20): a cost while the arm hits its own body / legs, and RAI-style hand shaping: a potential-based pull
 # of the hand toward a geometric target on the object (the side away from the goal, 35% of the object's height) with
 # the hand -> target vector as an input
-ARMX="--arm-self-cost ${SELF_COST:-1.0} --hand-shaping ${HAND_W:-1.0}"
+ARMX="--arm-self-cost ${SELF_COST:-1.0} --hand-shaping ${HAND_W:-1.0} --tip-penalty ${TIP:-0} --tilt-cost ${TILT:-0}"
 SOLO_ITERS=${SOLO_ITERS:-6000}
 PAIR_ITERS=${PAIR_ITERS:-6000}
 TEN=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
@@ -74,7 +74,7 @@ else
   PAIR_LV="$SOLO_OBJ --pilot-level 1.0,1.5,$ROW,20,5 --extra-levels 1.5,2.5,$ROW,30,5;2.0,3.5,$ROW,40,5 \
 --level-mix 0:0.6,0.4,0;1000:0.3,0.4,0.3;2500:0.2,0.3,0.5"
 fi
-PART="-p mit_preemptable --requeue -t 1-00:00:00 --exclude=node4207"
+PART=${PART:-"-p mit_preemptable --requeue -t 1-00:00:00 --exclude=node4207"}
 SOLO=sp_solo20${TAG}_s0
 chk=$(ALGO=ippo SEED=0 RUN_NAME=${SOLO}_check ITERS=2 LOGGER=wandb WANDB_MODE=disabled NUM_ENVS=512 \
       EXTRA="$BASE --init-from $SOLO_INIT --solo-agent 0 $SOLO_LV --check" \
