@@ -163,6 +163,15 @@ def main() -> int:
                     help="also record a 10 Hz contact trace per episode (robot-object contact sensors, logging only: "
                          "policy, observations and outcome rules unchanged) to logs/evals/<name>/pair/recovery_<mass>kg.npz "
                          "for scripts/recovery_analysis.py")
+    ap.add_argument("--subgoal", default="",
+                    help="regret-minimizing subgoal planner above the pair (quadcoop/coop2/subgoal.py): fixed:<arm> "
+                         "(direct, straight, translate, rotate, arc_left, arc_right), exp3 (learn while playing) or frozen "
+                         "(play a loaded state); success is always scored on the true goal")
+    ap.add_argument("--subgoal-load", default=None, help="planner state to start from (subgoal_planner.pt)")
+    ap.add_argument("--subgoal-dt", type=float, default=2.0, help="seconds per decision epoch")
+    ap.add_argument("--subgoal-look", type=float, default=1.5, help="look-ahead of the moving subgoal (m)")
+    ap.add_argument("--subgoal-gamma", type=float, default=0.1, help="Exp3 exploration")
+    ap.add_argument("--subgoal-eta", type=float, default=0.1, help="Exp3 learning rate")
     a = ap.parse_args()
     if not (a.checkpoint or a.frozen_pair or a.solo):
         ap.error("give --checkpoint, --frozen-pair or --solo")
@@ -235,6 +244,7 @@ def main() -> int:
           f"{' x swap' if a.swap else ''} = {n} episodes per mass; masses {masses}", flush=True)
     rows: list[dict] = []
     t_start = time.time()
+    planner = None
 
     for mass in masses:
         cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set,
@@ -291,6 +301,12 @@ def main() -> int:
                               - bearings[k]).abs().max()) for k, ag in enumerate(AGENTS))
         print(f"[{mass:g} kg] start bearings: largest |placed - intended| {math.degrees(berr):.2f} deg", flush=True)
         obs = TensorDict({k: v for k, v in obs.items() if not k.startswith("walker_")}, batch_size=[n])
+        if a.subgoal:
+            from quadcoop.coop2.subgoal import SubgoalPlanner
+            if planner is None:
+                planner = SubgoalPlanner(n, base.device, a.subgoal, dt=a.subgoal_dt, look=a.subgoal_look,
+                                         gamma=a.subgoal_gamma, eta=a.subgoal_eta, seed=a.seed, load=a.subgoal_load)
+            planner.begin(g, mass)
         policy = PairPolicy(obs, device, variant, checkpoint=a.checkpoint,
                             singles=None if a.checkpoint else models["policy"])
         active = [ag for ag in AGENTS if a.solo is None or ag == a.solo]
@@ -376,7 +392,11 @@ def main() -> int:
                 for k, ag in enumerate(AGENTS):
                     if ag not in active:
                         act[:, act_sl[ag]] = 0.0  # stand still (a Spot-arm robot: arm stowed)
+                if planner is not None:
+                    planner.apply(g, i * dt, ~done)
                 o, _, _, _, _ = base.step(act)
+                if planner is not None:
+                    planner.restore(g)  # everything below is scored on the true goal
                 obs = TensorDict({k: v for k, v in o.items() if not k.startswith("walker_")}, batch_size=[n])
                 t = (i + 1) * dt
                 live = ~done
@@ -471,6 +491,8 @@ def main() -> int:
                 for j in succ.nonzero().flatten().tolist():
                     how[j] = "success"
                 ended = f_any | tip | lost | succ
+                if planner is not None:
+                    planner.observe(succ & ~done, (f_any | tip | lost) & ~done)
                 t_end = torch.where(ended & ~done, torch.full_like(t_end, t), t_end)
                 done |= ended
                 if film and (i + 1) % stride == 0:
@@ -505,6 +527,7 @@ def main() -> int:
                    **({f"work_{ag}": round(float(work[j, k]), 1) for k, ag in enumerate(AGENTS)} if a.recovery else {}),
                    **({"work_share_min": (round(float(work[j].min() / work[j].sum()), 3) if float(work[j].sum()) > 1.0 else "")}
                       if a.recovery else {}),
+                   **(planner.row(j) if planner is not None else {}),
                    "video": ""}
             mine.append(row)
         if a.recovery:
@@ -558,6 +581,10 @@ def main() -> int:
         sr = sum(r["success"] for r in mine) / len(mine)
         falls_txt = "  ".join(f"{ag} {sum(r[f'fell_{ag}'] for r in mine) / len(mine):.2f}" for ag in AGENTS)
         print(f"[{mass:g} kg] success {sr:.2f}  falls {falls_txt}  ({time.time() - t_start:.0f} s)", flush=True)
+        if planner is not None:
+            planner.save(out / "subgoal_planner.pt")
+            (out / "subgoal_planner.md").write_text(f"# Subgoal planner ({a.subgoal}) after {mass:g} kg\n\n"
+                                                    + planner.report() + "\n")
         base.close()
         del base
 
