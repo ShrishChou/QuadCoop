@@ -294,6 +294,10 @@ def main() -> int:
                          "auto = as the checkpoint was trained)")
     ap.add_argument("--return-dist", type=float, default=0.5,
                     help="policy executor: hand back to the script when the front is this far from the contact (0 = never)")
+    ap.add_argument("--regret-picks", default=None,
+                    help="rule regret: the contact pair per task (object|scenario|mass) chosen by the regret learners "
+                         "(scripts/contact_game.py picks.json); contacts fixed for the episode, as allpairs")
+    ap.add_argument("--regret-learner", default="rm_plus", help="rule regret: whose picks (regret_matching, rm_plus, hedge, exp3)")
     ap.add_argument("--start", choices=("contact", "behind"), default="contact",
                     help="stage4: robots start at their contacts, or at scripts/eval_coop2.py's placements behind the "
                          "object and walk to their contacts first (tests reaching)")
@@ -491,7 +495,11 @@ def main() -> int:
     if ("wrench" in rules or "expert" in rules) and not stage4:
         raise SystemExit("the wrench and expert rules are Stage 4 contact rules: --executor stage4")
     min_dist = float(ck_cfg.get("reselect_min_dist", 0.15)) if a.reselect_min_dist == "auto" else float(a.reselect_min_dist)
-    if "allpairs" in rules:
+    if "regret" in rules:
+        if not (stage4 and a.regret_picks):
+            raise SystemExit("rule regret needs --executor stage4 and --regret-picks")
+        regret_picks = {k: v[a.regret_learner] for k, v in json.load(open(a.regret_picks)).items() if a.regret_learner in v}
+    if "allpairs" in rules or "regret" in rules:
         if not stage4:
             raise SystemExit("rule allpairs needs --executor stage4")
         if reselect_s[1] > 0:
@@ -608,7 +616,12 @@ def main() -> int:
               "goal_yaw": wrap(turn), "bearings": bearings, "gaps": [gap[:, 0], gap[:, 1]], "yaw_noise": [z, z],
               "park": park}
         if stage4:  # the env picks each env's pair with its own (training) rule code and places the robots there
-            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0, "wrench": 3, "expert": 4}
+            rule_id = {"spread": 0, "adjacent": 1, "random": 2, "allpairs": 0, "regret": 0, "wrench": 3, "expert": 4}
+            if "regret" in rules:  # the learners' pair for this task at this mass; no pick -> the spread rule
+                for j, (rule, o, s, _, _) in enumerate(cases):
+                    if rule == "regret":
+                        pk = regret_picks.get(f"{o}|{SCENARIOS[s][0]}|{mass:g}")
+                        pair_of[j] = tuple(pk) if pk else None
             sc["contact_rule"] = torch.tensor([rule_id[rule] for rule, *_ in cases], dtype=torch.long, device=dev)
             sc["contact_idx"] = torch.tensor([pr if pr is not None else (-1, -1) for pr in pair_of], dtype=torch.long, device=dev)
             if a.start == "behind":

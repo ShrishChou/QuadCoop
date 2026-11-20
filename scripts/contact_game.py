@@ -277,6 +277,7 @@ def main() -> int:
             choosers[obj] = ridge_fit(X, y)
 
     rows, curves = [], {al: [] for al in ALGOS}
+    picks: dict[str, dict] = {}  # per task, per learner: the pair (contact indices) most runs end on
     examples = {}
     for key in sorted(tasks):
         obj, scen, mass = key
@@ -329,19 +330,23 @@ def main() -> int:
                         "h_best": round(float(Mh[feas_h].max()), 3) if Mh is not None and feas_h.any() else None,
                         "h_learned": None if li is None else hv(li, lj)})
         for al in ALGOS:
-            fin, hit, hpick = [], [], []
+            fin, hit, hpick, lasts = [], [], [], []
             for sd in range(a.seeds):
                 rng = np.random.default_rng(1000 * sd + zlib.crc32(repr(key).encode()) % 997)  # stable across runs
                 curve, counts = learn(M, feas, samples, al, a.rounds, rng)
                 curves[al].append(curve / max(opt, 1e-6))
                 fin.append(float(curve[-100:].mean()))
                 last = np.unravel_index(counts.argmax(), counts.shape)
+                lasts.append((int(acts[last[0]]), int(acts[last[1]])))
                 hit.append(float(M[last] >= opt - 1e-9))
                 if hold:
                     v = hv(*last)
                     if v is not None:
                         hpick.append(v)
             row[f"{al}_final"] = round(float(np.mean(fin)), 3)
+            if lasts:
+                top = max(set(lasts), key=lasts.count)
+                picks.setdefault(f"{obj}|{scen}|{float(mass):g}", {})[al] = list(top)
             row[f"{al}_found_optimum"] = round(float(np.mean(hit)), 2)
             if hold:
                 row[f"h_{al}_pick"] = round(float(np.mean(hpick)), 3) if hpick else None
@@ -372,6 +377,7 @@ def main() -> int:
     summary = {"sweep": [str(s) for s in sweep], "holdout": [str(h) for h in hold_dirs], "symmetric": sym,
                "payoff": a.payoff, "rounds": a.rounds, "seeds": a.seeds, "aggregate": agg, "tasks": rows}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))
+    (out / "picks.json").write_text(json.dumps(picks, indent=1))  # contact_test.py --rules regret
 
     # plots: learning curves, example payoff matrices
     try:
@@ -443,6 +449,7 @@ def main() -> int:
         rel = lambda k: B / (B + W / k) if B + W / k > 0 else 0.0  # noqa: E731
         summary["noise"] = {"episode_sd": W ** 0.5, "pair_sd": B ** 0.5, "episodes_per_pair": K, "reliability": rel(K)}
         (out / "summary.json").write_text(json.dumps(summary, indent=1))
+        (out / "picks.json").write_text(json.dumps(picks, indent=1))  # contact_test.py --rules regret
         md += ["## how much the pair matters vs noise", "",
                f"Within a task, the true payoffs of different pairs spread by about {B ** 0.5:.2f} (sd), while one episode "
                f"of the same pair varies by {W ** 0.5:.2f}. With {K:.0f} episodes per pair a pair's estimate has reliability "
