@@ -354,12 +354,16 @@ def main() -> int:
     ap.add_argument("--recipe-finish", choices=("recipe", "exec", "precise"), default="recipe",
                     help="--recipe near the goal: recipe = zero command inside the success tolerance (10 cm / 6 deg, as e1s-R); "
                          "exec = the executor commands within 30 cm / 15 deg; precise = zero only inside 10 cm / 3 deg")
-    ap.add_argument("--coordinator", choices=("none", "teacher", "parity", "random", "learned", "external"), default="none",
+    ap.add_argument("--coordinator", choices=("none", "teacher", "parity", "random", "learned", "external", "regret"), default="none",
                     help="stage4, expert rule: route assignment decisions through src/quadcoop/coop2/coord.py (teacher = "
                          "the expert's own choice via the coordinator path; random = uniform over valid joint choices, "
                          "keep half the time; parity = at every decision run the expert path and the coordinator path on the same "
                          "snapshot of the env state and count differing state tensors). Writes decisions_<mass>kg.csv.gz")
     ap.add_argument("--coord-ckpt", default=None, help="--coordinator learned: a scripts/coord_train.py policy")
+    ap.add_argument("--regret-mode", choices=("exp3", "frozen"), default="exp3",
+                    help="--coordinator regret: learn while planning, or play a loaded state (--regret-state) without exploring")
+    ap.add_argument("--regret-state", default=None, help="--coordinator regret: state to start from (regret_coord.pt)")
+    ap.add_argument("--regret-save", default=None, help="--coordinator regret: save the state (+ .md report) here after each mass")
     ap.add_argument("--coord-mode", choices=("greedy", "sample", "teacher"), default="greedy",
                     help="--coordinator learned: the most likely pair (evaluation) or a sample. --coordinator external: "
                          "recorded in the summary only (set by scripts/coord_train.py)")
@@ -549,6 +553,7 @@ def main() -> int:
     rows = {rule: [] for rule in rules}
     t_start = time.time()
 
+    regret_state = torch.load(a.regret_state, map_location="cpu", weights_only=False) if a.regret_state else None
     for mass in masses:
         cfg = make_coop2_env_cfg("b", play=True) if not stage4 else make_coop2_env_cfg(
             "b", play=True, partner_map=bool(ck_cfg.get("partner_map", False)), reward_set=ck_cfg.get("reward_set", "r7"),
@@ -661,7 +666,9 @@ def main() -> int:
                                                                       None, cl_mod.RewardCfg(), base.step_dt, seed=a.seed),
                          "external": lambda: EXTERNAL_COORD(n, dev, cases, mass, base.step_dt),
                          "parity": lambda: coord_mod.ParityCoordinator(n, dev),
-                         "random": lambda: coord_mod.RandomCoordinator(n, dev, seed=a.seed)}[a.coordinator]()
+                         "random": lambda: coord_mod.RandomCoordinator(n, dev, seed=a.seed),
+                         "regret": lambda: coord_mod.RegretCoordinator(n, dev, len(SHAPE_NAMES2), mass, mode=a.regret_mode,
+                                                                       seed=a.seed, state=regret_state)}[a.coordinator]()
                 g.coordinator = coord
         active = [x.clone() for x in present]  # has a contact to work on
         ctrl = [ContactController(n, dev, reach=SPECS[ag].half_length) for ag in AGENTS]
@@ -1502,6 +1509,17 @@ def main() -> int:
                   + (f"  both pushing {sum(x['copush_frac'] for x in mine) / len(mine):.2f}" if rule != "centre" else "")
                   + f"  ({time.time() - t_start:.0f} s)",
                   flush=True)
+        if stage4 and a.coordinator == "regret" and coord is not None:
+            regret_state = coord.state()
+            ac = coord.arm_count.sum(0)
+            print(f"[{mass:g} kg] regret re-planning: options chosen " + ", ".join(
+                f"{nm} {float(x / ac.sum().clamp(min=1)):.2f}" for nm, x in zip(coord.ARMS, ac))
+                + f"; decisions differing from the expert {float(coord.differs.sum() / ac.sum().clamp(min=1)):.2f}", flush=True)
+            if a.regret_save:
+                Path(a.regret_save).parent.mkdir(parents=True, exist_ok=True)
+                torch.save(regret_state, a.regret_save)
+                Path(a.regret_save).with_suffix(".md").write_text(
+                    f"# Regret re-planning ({a.regret_mode}) after {mass:g} kg\n\n" + coord.report(list(SHAPE_NAMES2)) + "\n")
         base.close()
         del base
         for rule in rules:  # saved after every mass (merged with other masses already saved for this name)
