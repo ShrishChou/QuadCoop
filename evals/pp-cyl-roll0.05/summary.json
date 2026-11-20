@@ -1,0 +1,340 @@
+{
+ "fmax": [
+  150.0,
+  250.0
+ ],
+ "masses": [
+  20.0,
+  40.0,
+  60.0,
+  80.0
+ ],
+ "motions": [
+  "turn",
+  "move_x",
+  "move_y",
+  "move_turn"
+ ],
+ "objects": [
+  "cylinder"
+ ],
+ "control_max_motion_m": 0.0,
+ "150": {
+  "model_ok": 0.6,
+  "model": {
+   "turn / 20": 1.0,
+   "turn / 40": 1.0,
+   "turn / 60": 0.0,
+   "turn / 80": 0.0,
+   "turn": 0.5,
+   "move_x / 20": 1.0,
+   "move_x / 40": 1.0,
+   "move_x / 60": 1.0,
+   "move_x / 80": 1.0,
+   "move_x": 1.0,
+   "move_y / 20": 1.0,
+   "move_y / 40": 1.0,
+   "move_y / 60": 1.0,
+   "move_y / 80": null,
+   "move_y": 1.0,
+   "move_turn / 20": 0.0,
+   "move_turn / 40": 0.0,
+   "move_turn / 60": 0.0,
+   "move_turn / 80": 0.0,
+   "move_turn": 0.0
+  },
+  "too_weak_n": 1,
+  "too_weak_but_ok": 0,
+  "weight": {
+   "20": {
+    "agree_can": 2,
+    "agree_cannot": 1,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   },
+   "40": {
+    "agree_can": 1,
+    "agree_cannot": 2,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   },
+   "60": {
+    "agree_can": 1,
+    "agree_cannot": 2,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   },
+   "80": {
+    "agree_can": 1,
+    "agree_cannot": 2,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   }
+  },
+  "turning": [
+   {
+    "object": "cylinder",
+    "mass": 20.0,
+    "single": 0.232,
+    "same": 0.224,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 40.0,
+    "single": 0.406,
+    "same": 0.406,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 60.0,
+    "single": 0.09,
+    "same": 0.225,
+    "opp": 0.09,
+    "pair": 0.564,
+    "planner": 0.0,
+    "equal": 0.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 80.0,
+    "single": 0.09,
+    "same": 0.053,
+    "opp": 0.09,
+    "pair": 0.09,
+    "planner": 0.0,
+    "equal": 0.0
+   }
+  ],
+  "split": {
+   "turn": {
+    "planner_ok": 0.5,
+    "equal_ok": 0.5,
+    "planner_cos": 0.5,
+    "equal_cos": 0.5,
+    "lost": 0,
+    "n": 4
+   },
+   "move_x": {
+    "planner_ok": 1.0,
+    "equal_ok": 1.0,
+    "planner_cos": 1.0,
+    "equal_cos": 1.0,
+    "lost": 0,
+    "n": 4
+   },
+   "move_y": {
+    "planner_ok": 0.75,
+    "equal_ok": 0.25,
+    "planner_cos": 0.7777499999999999,
+    "equal_cos": 0.3565,
+    "lost": 2,
+    "n": 4
+   },
+   "move_turn": {
+    "planner_ok": 0.0,
+    "equal_ok": 0.0,
+    "planner_cos": 0.354,
+    "equal_cos": 0.22425,
+    "lost": 0,
+    "n": 4
+   }
+  },
+  "pick": {
+   "turn": {
+    "planner_cos": 0.5,
+    "best_cos": 0.6635,
+    "near": 0.75,
+    "best_ok": 0.5
+   },
+   "move_x": {
+    "planner_cos": 1.0,
+    "best_cos": 1.0,
+    "near": 1.0,
+    "best_ok": 1.0
+   },
+   "move_y": {
+    "planner_cos": 0.7777499999999999,
+    "best_cos": 0.78875,
+    "near": 1.0,
+    "best_ok": 0.75
+   },
+   "move_turn": {
+    "planner_cos": 0.354,
+    "best_cos": 0.94225,
+    "near": 0.0,
+    "best_ok": 1.0
+   }
+  }
+ },
+ "250": {
+  "model_ok": 0.75,
+  "model": {
+   "turn / 20": 1.0,
+   "turn / 40": 1.0,
+   "turn / 60": 1.0,
+   "turn / 80": 1.0,
+   "turn": 1.0,
+   "move_x / 20": 1.0,
+   "move_x / 40": 1.0,
+   "move_x / 60": 1.0,
+   "move_x / 80": 1.0,
+   "move_x": 1.0,
+   "move_y / 20": 1.0,
+   "move_y / 40": 1.0,
+   "move_y / 60": 1.0,
+   "move_y / 80": 1.0,
+   "move_y": 1.0,
+   "move_turn / 20": 0.0,
+   "move_turn / 40": 0.0,
+   "move_turn / 60": 0.0,
+   "move_turn / 80": 0.0,
+   "move_turn": 0.0
+  },
+  "too_weak_n": 0,
+  "too_weak_but_ok": 0,
+  "weight": {
+   "20": {
+    "agree_can": 2,
+    "agree_cannot": 1,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   },
+   "40": {
+    "agree_can": 2,
+    "agree_cannot": 1,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   },
+   "60": {
+    "agree_can": 1,
+    "agree_cannot": 1,
+    "optimistic": 0,
+    "cautious": 2,
+    "agreement": 0.5
+   },
+   "80": {
+    "agree_can": 1,
+    "agree_cannot": 2,
+    "optimistic": 0,
+    "cautious": 1,
+    "agreement": 0.75
+   }
+  },
+  "turning": [
+   {
+    "object": "cylinder",
+    "mass": 20.0,
+    "single": 0.174,
+    "same": 0.176,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 40.0,
+    "single": 0.228,
+    "same": 0.23,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 60.0,
+    "single": 0.307,
+    "same": 0.308,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   },
+   {
+    "object": "cylinder",
+    "mass": 80.0,
+    "single": 0.083,
+    "same": 0.131,
+    "opp": 1.0,
+    "pair": 1.0,
+    "planner": 1.0,
+    "equal": 1.0
+   }
+  ],
+  "split": {
+   "turn": {
+    "planner_ok": 1.0,
+    "equal_ok": 1.0,
+    "planner_cos": 1.0,
+    "equal_cos": 1.0,
+    "lost": 0,
+    "n": 4
+   },
+   "move_x": {
+    "planner_ok": 1.0,
+    "equal_ok": 1.0,
+    "planner_cos": 1.0,
+    "equal_cos": 1.0,
+    "lost": 0,
+    "n": 4
+   },
+   "move_y": {
+    "planner_ok": 1.0,
+    "equal_ok": 0.0,
+    "planner_cos": 0.97775,
+    "equal_cos": 0.1805,
+    "lost": 4,
+    "n": 4
+   },
+   "move_turn": {
+    "planner_ok": 0.0,
+    "equal_ok": 0.0,
+    "planner_cos": 0.72125,
+    "equal_cos": 0.45,
+    "lost": 0,
+    "n": 4
+   }
+  },
+  "pick": {
+   "turn": {
+    "planner_cos": 1.0,
+    "best_cos": 1.0,
+    "near": 1.0,
+    "best_ok": 1.0
+   },
+   "move_x": {
+    "planner_cos": 1.0,
+    "best_cos": 1.0,
+    "near": 1.0,
+    "best_ok": 1.0
+   },
+   "move_y": {
+    "planner_cos": 0.97775,
+    "best_cos": 1.0,
+    "near": 1.0,
+    "best_ok": 1.0
+   },
+   "move_turn": {
+    "planner_cos": 0.72125,
+    "best_cos": 0.96075,
+    "near": 0.0,
+    "best_ok": 1.0
+   }
+  }
+ }
+}

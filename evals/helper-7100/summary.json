@@ -1,0 +1,135 @@
+{
+ "arms": [
+  "pair250",
+  "pair160",
+  "helper"
+ ],
+ "masses": [
+  60.0,
+  80.0,
+  100.0
+ ],
+ "seed": 7100,
+ "diff": {
+  "helper-pair160@60.0": [
+   -7.5,
+   -18.333333333333332,
+   3.3333333333333335
+  ],
+  "helper-pair160@80.0": [
+   7.5,
+   -2.5,
+   17.5
+  ],
+  "helper-pair160@100.0": [
+   7.5,
+   1.6666666666666667,
+   13.333333333333334
+  ],
+  "helper-pair160@all": [
+   2.5,
+   -3.0555555555555554,
+   7.784722222222184
+  ],
+  "helper-pair250@60.0": [
+   10.0,
+   -1.6666666666666667,
+   21.666666666666668
+  ],
+  "helper-pair250@80.0": [
+   0.8333333333333334,
+   -10.0,
+   11.666666666666666
+  ],
+  "helper-pair250@100.0": [
+   -2.5,
+   -10.0,
+   5.833333333333333
+  ],
+  "helper-pair250@all": [
+   2.7777777777777777,
+   -3.3333333333333335,
+   9.166666666666666
+  ],
+  "pair160-pair250@60.0": [
+   17.5,
+   5.833333333333333,
+   28.333333333333332
+  ],
+  "pair160-pair250@80.0": [
+   -6.666666666666667,
+   -18.333333333333332,
+   5.0
+  ],
+  "pair160-pair250@100.0": [
+   -10.0,
+   -15.833333333333332,
+   -4.166666666666666
+  ],
+  "pair160-pair250@all": [
+   0.2777777777777778,
+   -5.277777777777778,
+   6.111111111111111
+  ]
+ },
+ "outcomes": {
+  "pair250 60": {
+   "success": 60,
+   "horizon": 44,
+   "fell_anymal1": 9,
+   "fell_anymal2": 6,
+   "tipped": 1
+  },
+  "pair160 60": {
+   "success": 81,
+   "fell_anymal2": 10,
+   "horizon": 24,
+   "fell_anymal1": 5
+  },
+  "helper 60": {
+   "success": 72,
+   "fell_anymal1": 16,
+   "fell_anymal3": 4,
+   "horizon": 23,
+   "fell_anymal2": 5
+  },
+  "pair250 80": {
+   "fell_anymal1": 9,
+   "horizon": 62,
+   "success": 46,
+   "fell_anymal2": 3
+  },
+  "pair160 80": {
+   "horizon": 72,
+   "success": 38,
+   "fell_anymal1": 7,
+   "fell_anymal2": 3
+  },
+  "helper 80": {
+   "horizon": 42,
+   "fell_anymal1": 16,
+   "success": 47,
+   "fell_anymal2": 7,
+   "fell_anymal3": 8
+  },
+  "pair250 100": {
+   "horizon": 83,
+   "success": 24,
+   "fell_anymal1": 10,
+   "fell_anymal2": 3
+  },
+  "pair160 100": {
+   "horizon": 102,
+   "success": 12,
+   "fell_anymal2": 2,
+   "fell_anymal1": 4
+  },
+  "helper 100": {
+   "horizon": 69,
+   "fell_anymal1": 17,
+   "fell_anymal2": 8,
+   "success": 21,
+   "fell_anymal3": 5
+  }
+ }
+}

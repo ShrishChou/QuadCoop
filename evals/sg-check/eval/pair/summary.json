@@ -1,0 +1,181 @@
+{
+ "policy": "checkpoint logs/marl2/nwB_mappo_uniform_s0/model_5000.pt (iteration 5000, mappo, pair anymal)",
+ "name": "sg-check",
+ "agents": [
+  "anymal1",
+  "anymal2"
+ ],
+ "masses": [
+  40.0
+ ],
+ "reps": 1,
+ "horizon_s": 30.0,
+ "overall": {
+  "n": 8,
+  "success": 0.625,
+  "precise": 0.75,
+  "fell_anymal1": 0.125,
+  "fell_anymal2": 0.0,
+  "t_success": 18.852,
+  "touch_frac": 0.108375,
+  "push_frac_anymal1": 0.681,
+  "push_frac_anymal2": 0.493375,
+  "copush_frac": 0.32487499999999997,
+  "copush_share": 0.43916863805339634,
+  "copush_spread": 0.6537499999999999
+ },
+ "by_mass": {
+  "40": {
+   "n": 8,
+   "success": 0.625,
+   "precise": 0.75,
+   "fell_anymal1": 0.125,
+   "fell_anymal2": 0.0,
+   "t_success": 18.852,
+   "touch_frac": 0.108375,
+   "push_frac_anymal1": 0.681,
+   "push_frac_anymal2": 0.493375,
+   "copush_frac": 0.32487499999999997,
+   "copush_share": 0.43916863805339634,
+   "copush_spread": 0.6537499999999999
+  }
+ },
+ "by_group_mass": {
+  "seen / 40 kg": {
+   "n": 4,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 19.165,
+   "touch_frac": 0.169,
+   "push_frac_anymal1": 0.727,
+   "push_frac_anymal2": 0.43,
+   "copush_frac": 0.24975,
+   "copush_share": 0.3274336283185841,
+   "copush_spread": 0.5725
+  },
+  "unseen / 40 kg": {
+   "n": 4,
+   "success": 0.25,
+   "precise": 0.5,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.0,
+   "t_success": 17.6,
+   "touch_frac": 0.04775,
+   "push_frac_anymal1": 0.635,
+   "push_frac_anymal2": 0.55675,
+   "copush_frac": 0.39999999999999997,
+   "copush_share": 0.5580746424834321,
+   "copush_spread": 0.735
+  }
+ },
+ "by_object_mass": {
+  "cube / 40 kg": {
+   "n": 4,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 19.165,
+   "touch_frac": 0.169,
+   "push_frac_anymal1": 0.727,
+   "push_frac_anymal2": 0.43,
+   "copush_frac": 0.24975,
+   "copush_share": 0.3274336283185841,
+   "copush_spread": 0.5725
+  },
+  "beam / 40 kg": {
+   "n": 4,
+   "success": 0.25,
+   "precise": 0.5,
+   "fell_anymal1": 0.25,
+   "fell_anymal2": 0.0,
+   "t_success": 17.6,
+   "touch_frac": 0.04775,
+   "push_frac_anymal1": 0.635,
+   "push_frac_anymal2": 0.55675,
+   "copush_frac": 0.39999999999999997,
+   "copush_share": 0.5580746424834321,
+   "copush_spread": 0.735
+  }
+ },
+ "by_scenario_mass": {
+  "A_straight / 40 kg": {
+   "n": 2,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 13.88,
+   "touch_frac": 0.1545,
+   "push_frac_anymal1": 0.7965,
+   "push_frac_anymal2": 0.7725,
+   "copush_frac": 0.6539999999999999,
+   "copush_share": 0.8059149722735673,
+   "copush_spread": 0.675
+  },
+  "B_left / 40 kg": {
+   "n": 2,
+   "success": 0.5,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 20.24,
+   "touch_frac": 0.14200000000000002,
+   "push_frac_anymal1": 0.531,
+   "push_frac_anymal2": 0.29400000000000004,
+   "copush_frac": 0.092,
+   "copush_share": 0.13539367181751288,
+   "copush_spread": 0.675
+  },
+  "C_backright / 40 kg": {
+   "n": 2,
+   "success": 0.5,
+   "precise": 0.5,
+   "fell_anymal1": 0.5,
+   "fell_anymal2": 0.0,
+   "t_success": 17.34,
+   "touch_frac": 0.0555,
+   "push_frac_anymal1": 0.7805,
+   "push_frac_anymal2": 0.2675,
+   "copush_frac": 0.202,
+   "copush_share": 0.2588084561178732,
+   "copush_spread": 0.585
+  },
+  "D_far_turn / 40 kg": {
+   "n": 2,
+   "success": 0.5,
+   "precise": 0.5,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 28.92,
+   "touch_frac": 0.0815,
+   "push_frac_anymal1": 0.616,
+   "push_frac_anymal2": 0.6395,
+   "copush_frac": 0.3515,
+   "copush_share": 0.5112727272727272,
+   "copush_spread": 0.6799999999999999
+  }
+ },
+ "formations": [
+  "standard"
+ ],
+ "swap": false,
+ "by_formation_mass": {
+  "standard / 40 kg": {
+   "n": 8,
+   "success": 0.625,
+   "precise": 0.75,
+   "fell_anymal1": 0.125,
+   "fell_anymal2": 0.0,
+   "t_success": 18.852,
+   "touch_frac": 0.108375,
+   "push_frac_anymal1": 0.681,
+   "push_frac_anymal2": 0.493375,
+   "copush_frac": 0.32487499999999997,
+   "copush_share": 0.43916863805339634,
+   "copush_spread": 0.6537499999999999
+  }
+ }
+}

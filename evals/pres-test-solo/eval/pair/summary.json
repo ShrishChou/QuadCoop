@@ -1,0 +1,168 @@
+{
+ "policy": "anymal1 alone (s2b-anymal-term80)",
+ "name": "pres-test-solo",
+ "agents": [
+  "anymal1",
+  "anymal2"
+ ],
+ "masses": [
+  40.0
+ ],
+ "reps": 2,
+ "horizon_s": 80.0,
+ "overall": {
+  "n": 16,
+  "success": 0.9375,
+  "precise": 0.875,
+  "fell_anymal1": 0.0,
+  "fell_anymal2": 0.0,
+  "t_success": 28.436,
+  "touch_frac": null,
+  "push_frac_anymal1": null,
+  "push_frac_anymal2": null,
+  "copush_frac": null,
+  "copush_share": null,
+  "copush_spread": null
+ },
+ "by_mass": {
+  "40": {
+   "n": 16,
+   "success": 0.9375,
+   "precise": 0.875,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 28.436,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  }
+ },
+ "by_group_mass": {
+  "seen / 40 kg": {
+   "n": 16,
+   "success": 0.9375,
+   "precise": 0.875,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 28.436,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  },
+  "unseen / 40 kg": null
+ },
+ "by_object_mass": {
+  "cube / 40 kg": {
+   "n": 8,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 20.4425,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  },
+  "long / 40 kg": {
+   "n": 8,
+   "success": 0.875,
+   "precise": 0.75,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 37.57142857142857,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  }
+ },
+ "by_scenario_mass": {
+  "A_straight / 40 kg": {
+   "n": 4,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 30.3,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  },
+  "B_left / 40 kg": {
+   "n": 4,
+   "success": 1.0,
+   "precise": 1.0,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 20.990000000000002,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  },
+  "C_backright / 40 kg": {
+   "n": 4,
+   "success": 1.0,
+   "precise": 0.75,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 23.425,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  },
+  "D_far_turn / 40 kg": {
+   "n": 4,
+   "success": 0.75,
+   "precise": 0.75,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 42.56,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  }
+ },
+ "formations": [
+  "standard"
+ ],
+ "swap": false,
+ "by_formation_mass": {
+  "standard / 40 kg": {
+   "n": 16,
+   "success": 0.9375,
+   "precise": 0.875,
+   "fell_anymal1": 0.0,
+   "fell_anymal2": 0.0,
+   "t_success": 28.436,
+   "touch_frac": null,
+   "push_frac_anymal1": null,
+   "push_frac_anymal2": null,
+   "copush_frac": null,
+   "copush_share": null,
+   "copush_spread": null
+  }
+ }
+}

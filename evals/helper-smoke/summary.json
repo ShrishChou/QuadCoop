@@ -1,0 +1,54 @@
+{
+ "arms": [
+  "pair250",
+  "pair160",
+  "helper"
+ ],
+ "masses": [
+  80.0
+ ],
+ "seed": 7100,
+ "diff": {
+  "helper-pair160@80.0": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "helper-pair160@all": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "helper-pair250@80.0": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "helper-pair250@all": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "pair160-pair250@80.0": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "pair160-pair250@all": [
+   0.0,
+   0.0,
+   0.0
+  ]
+ },
+ "outcomes": {
+  "pair250 80": {
+   "horizon": 8
+  },
+  "pair160 80": {
+   "horizon": 8
+  },
+  "helper 80": {
+   "horizon": 8
+  }
+ }
+}
