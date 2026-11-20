@@ -110,7 +110,13 @@ def clone_envs(base, obs, src, dst) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", required=True, help="output: logs/evals/<name>/ (branches.csv, summary.md/json)")
-    ap.add_argument("--checkpoint", default="logs/marl2/ippo_aa_kl_ten_s0/model_4000.pt", help="the pair policy")
+    ap.add_argument("--checkpoint", default="logs/marl2/ippo_aa_kl_ten_s0/model_4000.pt",
+                    help="the policy after help arrives: the pair (1 -> 2) or the trio (2 -> 3)")
+    ap.add_argument("--from-team", type=int, default=1, choices=(1, 2),
+                    help="robots pushing in the probe: 1 (the solo parent; help makes a pair) or 2 (--probe-checkpoint, "
+                         "a pair; help makes a trio, --pair anymal3)")
+    ap.add_argument("--probe-checkpoint", default=None, help="--from-team 2: the pair policy that pushes in the probe")
+    ap.add_argument("--pair", default="anymal", choices=("anymal", "anymal3"), help="env team (anymal3 for 2 -> 3)")
     ap.add_argument("--objects", default=OBJ12)
     ap.add_argument("--masses", default="20,40,60,80")
     ap.add_argument("--reps", type=int, default=5)
@@ -122,7 +128,10 @@ def main() -> int:
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
 
-    ns = argparse.Namespace(checkpoint=a.checkpoint, solo=None, pair="anymal", variant="b", frozen_pair=False)
+    K = a.from_team
+    if K == 2 and (a.pair != "anymal3" or not a.probe_checkpoint):
+        raise SystemExit("--from-team 2 needs --pair anymal3 and --probe-checkpoint (the pair)")
+    ns = argparse.Namespace(checkpoint=a.checkpoint, solo=None, pair=a.pair, variant="b", frozen_pair=False)
     from train_coop2 import set_env
     models, what = models_for(ns)
     set_env(models)
@@ -162,7 +171,8 @@ def main() -> int:
           f"staging {a.stage_dist} m, horizon {a.horizon} s", flush=True)
     rows = []
     t0 = time.time()
-    k1, k2 = AGENTS[0], AGENTS[1]
+    active0 = list(AGENTS[:K])  # pushing from the start
+    k1, k2 = AGENTS[0], AGENTS[K]  # k2: the helper
     for mass in masses:
         cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set)
         cfg.scene.num_envs = n
@@ -180,8 +190,8 @@ def main() -> int:
             m2.apply_geometry(base, ids, k, torch.ones(n, 3, device=dev))
         # placements exactly as scripts/eval_coop2.py (same rng stream -> the same tasks as Benchmark B)
         rng = random.Random(f"{a.seed}-coop2")
-        jit0 = [[rng.uniform(-10, 10) for _ in AGENTS] for _ in base_cases]
-        gap0 = [[rng.uniform(0.3, 0.6) for _ in AGENTS] for _ in base_cases]
+        jit0 = [[rng.uniform(-10, 10) for _ in range(2)] for _ in base_cases]  # the pair benchmark's draws, also
+        gap0 = [[rng.uniform(0.3, 0.6) for _ in range(2)] for _ in base_cases]  # for a trio env (robot 3 parked)
         cases = base_cases + base_cases
         obj_idx = torch.tensor([SHAPE_NAMES2.index(c[0]) for c in cases], device=dev)
         dist = torch.tensor([SCENARIOS[c[1]][1] for c in cases], device=dev)
@@ -192,9 +202,11 @@ def main() -> int:
         turn = torch.sign(turn) * torch.minimum(turn.abs(), cap)
         jit = torch.tensor([jit0[j % N] for j in range(n)], device=dev)
         gap = torch.tensor([gap0[j % N] for j in range(n)], device=dev)
-        offs = torch.tensor([FORMATIONS["standard"][0]] * n, device=dev)
-        bearings = [math.pi + torch.deg2rad(offs[:, k] + jit[:, k]) for k in range(len(AGENTS))]
-        park = [torch.zeros(n, dtype=torch.bool, device=dev), torch.ones(n, dtype=torch.bool, device=dev)]
+        off_ = list(FORMATIONS["standard"][0]) + [0.0] * (len(AGENTS) - 2)
+        jit = torch.cat([jit, torch.zeros(n, len(AGENTS) - jit.shape[1], device=dev)], 1)
+        gap = torch.cat([gap, torch.full((n, len(AGENTS) - gap.shape[1]), 0.45, device=dev)], 1)
+        bearings = [math.pi + torch.deg2rad(off_[k] + jit[:, k]) for k in range(len(AGENTS))]
+        park = [torch.full((n,), k >= K, dtype=torch.bool, device=dev) for k in range(len(AGENTS))]
         z = torch.zeros(n, device=dev)
         sc = {"shape": obj_idx, "obj_xy_rel": torch.zeros(n, 2, device=dev), "obj_heading": z.clone(),
               "goal_xy_rel": dist.unsqueeze(-1) * torch.stack([torch.cos(gdir), torch.sin(gdir)], -1),
@@ -205,8 +217,11 @@ def main() -> int:
         obs, _ = base.reset()
         g.scenario = None
         obs = TensorDict({k: v for k, v in obs.items() if not k.startswith("walker_")}, batch_size=[n])
-        solo = PairPolicy(obs, device, variant, singles=models["policy"])  # the parent in both slots
-        pair = PairPolicy(obs, device, variant, checkpoint=a.checkpoint)
+        if K == 1:
+            solo = PairPolicy(obs, device, variant, singles=models["policy"])  # the parent in every slot
+        else:
+            solo = PairPolicy(obs, device, variant, checkpoint=a.probe_checkpoint)  # the pair (robot 3 parked)
+        pair = PairPolicy(obs, device, variant, checkpoint=a.checkpoint)  # the team after help arrives
         sl = action_slices(base)
         dt = base.step_dt
         steps = int(a.horizon / dt)
@@ -253,7 +268,7 @@ def main() -> int:
                         u = g.goal_xy[H] - bp
                         u = u / torch.linalg.norm(u, dim=-1, keepdim=True).clamp(min=1e-6)
                         lat = torch.stack([-u[:, 1], u[:, 0]], -1)
-                        r1 = base.scene[k1].data.root_link_pos_w[H, :2] - bp
+                        r1 = torch.stack([base.scene[x].data.root_link_pos_w[H, :2] for x in active0]).mean(0) - bp
                         side = torch.where((r1 * lat).sum(-1) >= 0, -1.0, 1.0).unsqueeze(-1)
                         pos = bp - a.stage_dist * u + 0.8 * side * lat
                         yaw = torch.atan2(bp[:, 1] - pos[:, 1], bp[:, 0] - pos[:, 0])
@@ -265,15 +280,20 @@ def main() -> int:
                         st[:, 3:7] = quat_from_euler_xyz(zz, zz, yaw)
                         rob.write_root_state_to_sim(st, H)
                 act = solo(obs, env=base)
-                act[:, sl[k2]] = 0.0  # parked partner stands still
+                for x in AGENTS[K:]:
+                    act[:, sl[x]] = 0.0  # parked robots stand still
                 if bool(is_help.any()):
                     act_p = pair(obs, env=base)
+                    for x in AGENTS[K + 1:]:
+                        act_p[:, sl[x]] = 0.0
                     act = torch.where(is_help.unsqueeze(-1), act_p, act)
                 o, _, _, _, _ = base.step(act)
                 obs = TensorDict({k: v for k, v in o.items() if not k.startswith("walker_")}, batch_size=[n])
                 tt = (i + 1) * dt
                 live = ~done
-                f_any = falls.fallen(base, asset_name=k1, nominal_height=SPECS[k1].nominal_height) & live
+                f_any = torch.zeros(n, dtype=torch.bool, device=dev)
+                for x in active0:
+                    f_any |= falls.fallen(base, asset_name=x, nominal_height=SPECS[x].nominal_height) & live
                 f_any |= falls.fallen(base, asset_name=k2, nominal_height=SPECS[k2].nominal_height) & live & is_help
                 tip = hb.box_tipped(base) & live & ~f_any
                 lost = cm.box_lost(base) & live & ~f_any & ~tip
@@ -284,7 +304,7 @@ def main() -> int:
                 succ = ok & (hold >= 1.0)
                 t_succ = torch.where(succ, torch.full_like(t_succ, tt), t_succ)
                 if i < n_probe:
-                    touch1 += (pushing(k1) & live).float()
+                    touch1 += (sum(pushing(x).float() for x in active0).clamp(max=1.0) * live.float())
                 if bool(is_help.any()):
                     arr = is_help & torch.isnan(t_arrive) & pushing(k2)
                     t_arrive = torch.where(arr, torch.full_like(t_arrive, tt), t_arrive)
@@ -316,7 +336,8 @@ def main() -> int:
             continue
         for j, (o, s, r) in enumerate(base_cases):
             jh = N + j
-            rows.append({"object": o, "mass": mass, "scenario": SCENARIOS[s][0], "rep": r, "probe_s": a.probe_s,
+            rows.append({"object": o, "mass": mass, "scenario": SCENARIOS[s][0], "rep": r, "seed": a.seed,
+                         "team_from": K, "team_to": K + 1, "probe_s": a.probe_s,
                          "ended_in_probe": int(bool(feats["done_probe"][j])), "outcome_solo": how[j],
                          "outcome_help": how[jh], "success_solo": int(how[j] == "success"),
                          "success_help": int(how[jh] == "success"),
