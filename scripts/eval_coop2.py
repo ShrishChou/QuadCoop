@@ -190,10 +190,11 @@ def main() -> int:
 
     device = a.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
     variant, partner_map, reward_set = a.variant, a.partner_map, "r3"
-    arm_mode, hand_obs = "stowed", False
+    arm_mode, hand_obs, geom_obs, hist_obs = "stowed", False, False, False
     if a.checkpoint:
         _rc = torch.load(a.checkpoint, map_location="cpu", weights_only=False).get("cfg", {})
         arm_mode, hand_obs = _rc.get("arm") or "stowed", bool(_rc.get("hand_obs"))
+        geom_obs, hist_obs = bool(_rc.get("geom_obs")), bool(_rc.get("hist_obs"))  # observation study inputs
     if models.get("pair") in _pairs().ARM_PAIRS and not a.checkpoint:
         raise SystemExit("Spot-arm pairs have no Stage 2 policies: give --checkpoint")
     if a.checkpoint:
@@ -233,7 +234,8 @@ def main() -> int:
 
     for mass in masses:
         cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set,
-                                 push_sensors=a.recovery, arm=arm_mode, hand_obs=hand_obs)
+                                 push_sensors=a.recovery, arm=arm_mode, hand_obs=hand_obs,
+                                 geom_obs=geom_obs, hist_obs=hist_obs)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}

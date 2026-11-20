@@ -149,6 +149,43 @@ def parse_contact_mix(txt: str) -> tuple[float, ...]:
     return out
 
 
+def _obs_study_selfcheck(env, trainer) -> None:
+    """--check with --geom-obs / --hist-obs (docs/obs_study.md): the nearest surface point lies on the true shape
+    (its signed distance ~0), the normal is a unit vector pointing away from the object, the new inputs are finite,
+    and the history fills at 10 Hz with its validity mask; then 12 steps of zero action."""
+    import torch
+    from quadcoop.coop2 import mdp
+    from quadcoop.stage2 import profiles as pf
+    g = env.command_manager.get_term("goal")
+    parts, kinds, rest = g.active()
+    for r in mdp.AGENTS:
+        dist, s_w, n_w, s_o, p_w = g.surface_geometry(r)
+        on = pf.point_distance(parts, kinds, rest, s_o).abs()
+        near = dist < 1.5
+        out = ((p_w - s_w) * n_w).sum(-1) * dist.sign()  # bumper on the outward side when outside (>= 0)
+        print(f"[obs-check] {r}: |sd(nearest point)| median {on[near].median():.4f} m, p95 {on[near].quantile(0.95):.4f} "
+              f"(n {int(near.sum())}); |normal| {torch.linalg.norm(n_w, dim=-1).min():.3f}-"
+              f"{torch.linalg.norm(n_w, dim=-1).max():.3f}; outward frac {(out >= -1e-3).float().mean():.3f}; "
+              f"distance {dist.min():.2f}..{dist.max():.2f} m", flush=True)
+    n = env.num_envs
+    act = torch.zeros(n, env.action_manager.total_action_dim, device=env.device)
+    for _ in range(12):
+        env.step(act)
+    ob = env.observation_manager.compute()
+    for k_, v in ob.items():
+        if k_.startswith(("actor_", "state_")):
+            print(f"[obs-check] {k_}: {tuple(v.shape)} finite {bool(torch.isfinite(v).all())}", flush=True)
+    if g.cfg.hist_obs:
+        vm = g.ihist_valid.mean(0)
+        print(f"[obs-check] history valid fraction per slot (newest first): {[round(float(x), 2) for x in vm]}", flush=True)
+        h = mdp.interaction_history_obs(env, mdp.AGENTS[0])
+        print(f"[obs-check] history input {tuple(h.shape)}, |max| {h.abs().max():.2f}", flush=True)
+    if g.cfg.hist_obs or True:
+        c = mdp.contact_geom_obs(env, mdp.AGENTS[0]) if "contact_geom" in env.observation_manager.active_terms[f"actor_{mdp.AGENTS[0]}"] else None
+        if c is not None:
+            print(f"[obs-check] contact geometry input {tuple(c.shape)}, first env {[round(float(x), 2) for x in c[0]]}", flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--algo", choices=("ippo", "mappo"), required=True)
@@ -342,6 +379,10 @@ def main() -> int:
                     help="action noise may not rise above this x its warm-start value")
     ap.add_argument("--std-cap", type=float, default=0.0,
                     help="> 0: action noise never above this (applied after any warm start / init, current noise clamped)")
+    ap.add_argument("--geom-obs", action="store_true",
+                    help="pair inputs: explicit contact geometry for self and partner (docs/obs_study.md)")
+    ap.add_argument("--hist-obs", action="store_true",
+                    help="pair inputs: 1 s of interaction history at 10 Hz with a validity mask (docs/obs_study.md)")
     ap.add_argument("--yaw-gate", type=float, default=1.5,
                     help="yaw_progress (signed heading progress) only within this many m of the goal; 0 = everywhere")
     ap.add_argument("--yaw-w", type=float, default=0.0, help="> 0: yaw_progress weight (default 1 for r5/r7/r8, else 0.5)")
@@ -543,7 +584,7 @@ def main() -> int:
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
+                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
     if a.swap_starts:
@@ -589,7 +630,7 @@ def main() -> int:
                   arm=a.arm if a.pair in _pairs().ARM_PAIRS else "", pilot_level=pilot_level,
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus,
                   arm_bonus=a.arm_bonus, roll_ratio=a.roll_ratio, action_rate_w=a.action_rate_w,
-                  action_limit_w=a.action_limit_w, std_cap=a.std_cap, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w,
+                  action_limit_w=a.action_limit_w, std_cap=a.std_cap, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, geom_obs=a.geom_obs, hist_obs=a.hist_obs,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
                   solo_agent=a.solo_agent, bc_data=a.bc_data, bc_keep_norm=a.bc_keep_norm, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,
@@ -622,6 +663,8 @@ def main() -> int:
         else:
             trainer.warm_start(models["policy"])
     trainer.apply_std_cap()
+    if a.check and (a.geom_obs or a.hist_obs):
+        _obs_study_selfcheck(env, trainer)
     if a.check and trainer.it > 0:  # a check from a later checkpoint (--init-from / --resume): 2 more iterations
         trainer.cfg.max_iterations = trainer.it + 2
     if a.fixed_difficulty:  # re-apply the declared settings after any warm start / resume, and check the

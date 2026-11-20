@@ -102,6 +102,8 @@ class MarlCfg:
     std_cap: float = 0.0  # > 0: hard cap on the action noise, applied after initialisation
     yaw_gate: float = 1.5  # env option (recorded)
     yaw_w: float = 0.0  # env option (recorded)
+    geom_obs: bool = False  # env option (recorded)
+    hist_obs: bool = False  # env option (recorded)
     roll_ratio: float = 0.0  # env option (recorded): the planner's rolling-cylinder model
     turn_signs: bool = False  # env option (recorded): goal heading change in {-1, +1} x the level's value
     # demonstrations (docs/spot_arm_pair.md, "Turn in place"): a file of actor observations and the env action from

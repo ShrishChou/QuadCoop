@@ -128,6 +128,10 @@ class CoopPush2Command(Push2Command):
         n, dev = self.num_envs, self.device
         self.robots = {a: env.scene[a] for a in AGENTS}
         self.robot = self.robots[AGENTS[0]]  # for inherited code that needs "a" robot (not used for obs)
+        # interaction history (pair policy inputs, docs/obs_study.md): 10 Hz samples, newest first, world frame
+        self.ihist = torch.zeros(n, IH, IHF, device=dev)
+        self.ihist_valid = torch.zeros(n, IH, device=dev)
+        self.ihist_t = torch.full((n,), 0.1, device=dev)
         self.reach = dict(zip(AGENTS, cfg.reach, strict=True))
         self.objs = [env.scene[name] for name in OBJ_NAMES2]
         self.goals = [env.scene[name] for name in GOAL_NAMES2]
@@ -1266,6 +1270,57 @@ class CoopPush2Command(Push2Command):
             out.append(torch.stack([fa[:, k] / 200.0, fa[:, 1 - k] / 200.0, sp / 0.5, on[:, k]], -1))
         return torch.stack(out, 1)
 
+    def _ihist_sample(self) -> torch.Tensor:
+        """One interaction-history sample (n, IHF), world frame where directional: object velocity (2) and yaw
+        rate; then per robot (AGENTS order) its velocity relative to the object (2), yaw rate, executed base
+        command (3, its own frame, normalized), bumper-to-surface distance and touching (> 5 N, contact sensor)."""
+        env = self._env
+        v_o = self.box_vel()[:, :2]
+        cols = [v_o, self.box_ang_vel()[:, 2:3]]
+        for a in AGENTS[:2]:
+            d = env.scene[a].data
+            cols += [d.root_link_lin_vel_w[:, :2] - v_o, d.root_link_ang_vel_w[:, 2:3], executed_command(env, a),
+                     self.surface_distance(a).clamp(-0.5, 3.0).unsqueeze(-1),
+                     (torch.linalg.norm(object_force_from(env, a), dim=-1) > 5.0).float().unsqueeze(-1)]
+        return torch.cat(cols, -1)
+
+    def _update_ihist(self, dt: float) -> None:
+        """Every 0.1 s, push the newest interaction sample (and its validity)."""
+        self.ihist_t += dt
+        due = self.ihist_t >= 0.1 - 1e-6
+        if bool(due.any()):
+            new = self._ihist_sample()
+            sh = torch.cat([new.unsqueeze(1), self.ihist[:, :-1]], 1)
+            self.ihist[:] = torch.where(due[:, None, None], sh, self.ihist)
+            shv = torch.cat([torch.ones_like(self.ihist_valid[:, :1]), self.ihist_valid[:, :-1]], 1)
+            self.ihist_valid[:] = torch.where(due[:, None], shv, self.ihist_valid)
+            self.ihist_t[:] = torch.where(due, torch.zeros_like(self.ihist_t), self.ihist_t)
+
+    def surface_geometry(self, robot: str):
+        """Robot's bumper against the object's true body-height slice (compound parts, not a bounding box):
+        signed distance (n,), nearest surface point (world, (n, 2)), outward normal there (world, (n, 2)), that point
+        in the object frame ((n, 2)) and the bumper point (world, (n, 2)). Normal from the distance field's
+        central difference (1 cm); nearest point = bumper - distance x normal."""
+        parts, kinds, rest = self.active()
+        p_w = self.front_point(robot)
+        obj = self.box_pos()[:, :2]
+        h = self.heading()
+        cs, sn = torch.cos(h), torch.sin(h)
+        d = p_w - obj
+        p = torch.stack([cs * d[:, 0] + sn * d[:, 1], -sn * d[:, 0] + cs * d[:, 1]], -1)
+        sd = lambda q: pf.point_distance(parts, kinds, rest, q)  # noqa: E731
+        e = 0.01
+        ex = torch.tensor([e, 0.0], device=p.device)
+        ey = torch.tensor([0.0, e], device=p.device)
+        dist = sd(p)
+        grad = torch.stack([sd(p + ex) - sd(p - ex), sd(p + ey) - sd(p - ey)], -1)
+        gn = torch.linalg.norm(grad, dim=-1, keepdim=True)
+        fallback = p / torch.linalg.norm(p, dim=-1, keepdim=True).clamp(min=1e-6)
+        n_o = torch.where(gn > 1e-6, grad / gn.clamp(min=1e-9), fallback)
+        s_o = p - dist.unsqueeze(-1) * n_o
+        to_w = lambda v: torch.stack([cs * v[:, 0] - sn * v[:, 1], sn * v[:, 0] + cs * v[:, 1]], -1)  # noqa: E731
+        return dist, obj + to_w(s_o), to_w(n_o), s_o, p_w
+
     def _update_resid_hist(self, dt: float) -> None:
         """Every 0.1 s, push the newest sample (residual-pilot inputs)."""
         self.c_rhist_t += dt
@@ -1661,6 +1716,8 @@ class CoopPush2Command(Push2Command):
 
     def _update_command(self) -> None:
         super()._update_command()  # Stage 2: progress bookkeeping, precise potential, map refresh
+        if self.cfg.hist_obs:
+            self._update_ihist(self._env.step_dt)
         if self.cfg.track_approach:  # after the rewards and resets of this step: next step's baseline
             for a in AGENTS:
                 self.prev_near[a][:] = self.near_value(a)
@@ -1864,6 +1921,9 @@ class CoopPush2Command(Push2Command):
         self.metrics["success"][env_ids] = 0.0
         self.in_goal_time[env_ids] = 0.0
         self.success_flag[env_ids] = False
+        self.ihist[env_ids] = 0.0  # interaction history: empty, first sample at the next update
+        self.ihist_valid[env_ids] = 0.0
+        self.ihist_t[env_ids] = 0.1
         if self.tol_table is not None:
             self.env_tol_level[env_ids] = self.tol_level
             self.tol_pos[env_ids] = self.tol_table[self.tol_level, 0]
@@ -2242,6 +2302,7 @@ class CoopPush2Command(Push2Command):
 @dataclass(kw_only=True)
 class CoopPush2CommandCfg(Push2CommandCfg):
     variant: str = "b"
+    hist_obs: bool = False  # keep the interaction history (interaction_history_obs)
     success_mode: str = "terminate"
     reach: tuple[float, float] = (0.55, 0.55)  # body half-length (anymal, spot)
     gap: tuple[float, float] = (0.3, 0.9)  # clear space body -> object at the start
@@ -3032,7 +3093,51 @@ def object_force_from(env, robot: str) -> torch.Tensor:
     return -FORCE_SIGN * f.sum(1)[:, :2]
 
 
+IH, IHF = 10, 19  # interaction history (pair inputs): 1 s at 10 Hz, features per sample (3 + 2 x 8)
 RESID_H, RESID_HF = 4, 4  # residual pilot: history length (10 Hz) and features per sample
+
+
+def executed_command(env, robot: str) -> torch.Tensor:
+    """(n, 3): the base command this robot's walker actually gets (applied, limited; normalized), as partner_obs."""
+    term = env.action_manager.get_term(f"walker_{robot}")
+    cmd = term.applied_norm if getattr(term.cfg, "interface", "raw") != "raw" else term.raw_action.clamp(-1.0, 1.0)
+    return cmd[:, :3]
+
+
+def contact_geom_obs(env, robot: str) -> torch.Tensor:
+    """Explicit contact geometry (14), for this robot then its partner, directions in this robot's frame:
+    bumper-to-surface distance (signed, -0.5..3 m), vector bumper -> nearest surface point (length capped at 3 m),
+    outward surface normal there, and that surface point relative to the object centre (object frame). Geometric
+    nearest point on the true shape, not measured contact (proximity is not force)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    yaw = g.robot_yaw(k)
+    c, s = torch.cos(yaw), torch.sin(yaw)
+    rf = lambda v: torch.stack([c * v[:, 0] + s * v[:, 1], -s * v[:, 0] + c * v[:, 1]], -1)  # noqa: E731
+    out = []
+    for j in (k, 1 - k):
+        dist, s_w, n_w, s_o, p_w = g.surface_geometry(AGENTS[j])
+        vec = s_w - p_w
+        ln = torch.linalg.norm(vec, dim=-1, keepdim=True)
+        vec = vec * (ln.clamp(max=3.0) / ln.clamp(min=1e-6))
+        out += [dist.clamp(-0.5, 3.0).unsqueeze(-1), rf(vec), rf(n_w), s_o]
+    return torch.cat(out, -1)
+
+
+def interaction_history_obs(env, robot: str) -> torch.Tensor:
+    """Interaction history (IH x IHF + IH = 200): the last 1 s at 10 Hz, newest first, each sample rotated into this
+    robot's CURRENT frame (so its own turning does not look like object motion): object velocity (2) and yaw rate,
+    then this robot's and its partner's (8 each) velocity relative to the object (2), yaw rate, executed command (3),
+    surface distance, touching; samples before the episode started are zero, then the validity mask (IH)."""
+    g = _g(env)
+    k = AGENTS.index(robot)
+    yaw = g.robot_yaw(k)
+    c, s = torch.cos(yaw)[:, None], torch.sin(yaw)[:, None]
+    rf = lambda v: torch.stack([c * v[..., 0] + s * v[..., 1], -s * v[..., 0] + c * v[..., 1]], -1)  # noqa: E731
+    h = g.ihist
+    rob = lambda j: torch.cat([rf(h[..., 3 + 8 * j:5 + 8 * j]), h[..., 5 + 8 * j:11 + 8 * j]], -1)  # noqa: E731
+    out = torch.cat([rf(h[..., 0:2]), h[..., 2:3], rob(k), rob(1 - k)], -1) * g.ihist_valid.unsqueeze(-1)
+    return torch.cat([out.reshape(g.num_envs, -1), g.ihist_valid], -1)
 
 
 def resid_obs(env, robot: str) -> torch.Tensor:

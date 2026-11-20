@@ -222,7 +222,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False,
                        goal_credit: bool = False, align_bonus: float = 1.0, arm_bonus: float = 0.0,
                        action_rate_w: float = 0.05, action_limit_w: float = 0.02,
-                       yaw_gate: float = 1.5, yaw_w: float = 0.0,
+                       yaw_gate: float = 1.5, yaw_w: float = 0.0, geom_obs: bool = False, hist_obs: bool = False,
                        oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
@@ -329,7 +329,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
         "effort (force_track) builds on Stage 4e (push_cmd) with the minimal reward (rmin)"
     expert = contacts and (expert or (len(contact_mix) > 4 and contact_mix[4] > 0))
     wrench = contacts and (wrench or push_cmd or expert or (len(contact_mix) > 3 and contact_mix[3] > 0))
-    if (reward_set == "r8" or guide or push_sensors or goal_credit or resid or "compliant" in kinds.values() or any(ARM.values())
+    if (reward_set == "r8" or guide or push_sensors or goal_credit or hist_obs or resid or "compliant" in kinds.values() or any(ARM.values())
             or oppose_cost > 0 or cancel_cost > 0):
         # contact between each robot and the object (work_credit, bump cost; a compliant walker's force input)
         cfg.scene.sensors += tuple(ContactSensorCfg(
@@ -403,6 +403,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             cfg.episode_length_s = float(pilot_episode_s)
     assert not extra_levels or pilot_level, "extra_levels extend --pilot-level"
     cfg.commands["goal"].level_mix = tuple((int(s), tuple(float(x) for x in w)) for s, w in level_mix)
+    cfg.commands["goal"].hist_obs = bool(hist_obs)
     cfg.commands["goal"].solo_agent = int(solo_agent)
     if short_tasks:  # request-tracking pilot: one level of short segments (docs/request_tracking.md)
         cfg.commands["goal"].levels = (SHORT_LEVEL,)
@@ -429,6 +430,16 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
             for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.01, n_max=0.01)), (f"state_{a}", None)):
                 obs[grp].terms["torso_state"] = T(func=sat.torso_state, params={"robot": a, "action_name": f"walker_{a}"},
                                                   noise=nz)
+        # observation study (docs/obs_study.md), last so init_from widens at the end: explicit contact geometry,
+        # interaction history (pairs only)
+        if geom_obs or hist_obs:
+            assert len(AGENTS) == 2 and not contacts, "contact geometry / history inputs: the ordinary pair policy"
+        if geom_obs:
+            for grp, nz in ((f"actor_{a}", Unoise(n_min=-0.02, n_max=0.02)), (f"state_{a}", None)):
+                obs[grp].terms["contact_geom"] = T(func=mdp.contact_geom_obs, params={"robot": a}, noise=nz)
+        if hist_obs:
+            for grp in (f"actor_{a}", f"state_{a}"):
+                obs[grp].terms["interaction_hist"] = T(func=mdp.interaction_history_obs, params={"robot": a})
         if variant == "b":
             obs[f"top_{a}"] = ObservationGroupCfg(terms={"top": T(func=mdp.top_map, params={"robot": a})},
                                                   concatenate_terms=True, enable_corruption=False)
