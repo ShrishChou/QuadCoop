@@ -222,6 +222,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                        dyaw_choices: bool = False, hand_obs: bool = False, torso: bool = False,
                        goal_credit: bool = False, align_bonus: float = 1.0, arm_bonus: float = 0.0,
                        action_rate_w: float = 0.05, action_limit_w: float = 0.02,
+                       yaw_gate: float = 1.5, yaw_w: float = 0.0,
                        oppose_cost: float = 0.0, cancel_cost: float = 0.0, turn_signs: bool = False,
                        arm_hold_steps: int = 0, extra_levels: tuple = (), level_mix: tuple = (),
                        solo_agent: int = -1) -> ManagerBasedRlEnvCfg:
@@ -503,7 +504,9 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     rewards = {
         # team (Stage 2, terminate rule)
         "box_progress": R(func=hb.box_progress, weight=3.0),
-        "yaw_progress": R(func=hb.yaw_progress, weight=1.0 if reward_set in ("r5", "r7", "r8") else 0.5),
+        # heading progress, signed; paid / charged only within yaw_gate m of the goal (yaw_gate <= 0: everywhere)
+        "yaw_progress": R(func=hb.yaw_progress, weight=yaw_w if yaw_w > 0 else 1.0 if reward_set in ("r5", "r7", "r8") else 0.5,
+                          params={"gate_dist": yaw_gate if yaw_gate > 0 else float("inf")}),
         "precise_progress": R(func=m2.precise_progress, weight=4.0),
         "goal_bonus": R(func=m2.goal_bonus, weight=BONUS / step_dt, params={"horizon_s": EPISODE_S}),
         "box_settle": R(func=hb.box_settle, weight=-1.0),

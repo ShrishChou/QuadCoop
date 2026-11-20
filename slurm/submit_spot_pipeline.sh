@@ -26,6 +26,8 @@
 # now starts from the ten-object Spot solo (sp_solo_s0, model_3800, ~73%) with --init-from (iteration count carried,
 # so it runs to 3800 + SOLO_ITERS), on the 20 objects drawn evenly (LOWTALL_BIAS=1.0, raise later), with smoother
 # actions: --action-rate-w 0.2 (was 0.05), --action-limit-w 0.1 (was 0.02), noise capped at --std-cap 0.4 (was 0.6).
+# Heading (same day): --yaw-gate 0 --yaw-w 2.0: the signed heading progress is paid and charged at every distance,
+# not only within 1.5 m of the goal, at twice the weight.
 # With ARM=hand_rate only the base outputs load (the arm interface differs); the arm outputs start fresh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -47,12 +49,14 @@ SOLO_INIT=${SOLO_INIT:-logs/marl2/sp_solo_s0/model_3800.pt}
 [[ -s "$SOLO_INIT" ]] || { echo "missing $SOLO_INIT" >&2; exit 1; }
 SOLO_START=$(basename "$SOLO_INIT" .pt); SOLO_START=${SOLO_START#model_}
 SMOOTH="--action-rate-w ${RATE_W:-0.2} --action-limit-w ${LIMIT_W:-0.1} --std-cap ${STD_CAP:-0.4}"
+# heading paid and charged the whole way (was only within 1.5 m of the goal), a radian worth 2/3 m of travel (was 1/3)
+HEADING="--yaw-gate 0 --yaw-w 2.0"
 SOLO_ITERS=${SOLO_ITERS:-6000}
 PAIR_ITERS=${PAIR_ITERS:-6000}
 TEN=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 ROW="25,0,10,60,0.10,6,1.0"   # spread, behind offset, start yaw, goal turn (deg), tol 0.10 m / 6 deg, hold 1 s
 BASE="--pair spot_arm --arm $ARM --hand-obs --partner-map --reward r7 $CREDIT --mean-clip 1.1 --bound-coef 0.01 \
-$SMOOTH --entropy-coef 0.003 --fixed-difficulty --fixed-level 0 --dyaw-choices --pilot-episode-s 40"
+$SMOOTH $HEADING --entropy-coef 0.003 --fixed-difficulty --fixed-level 0 --dyaw-choices --pilot-episode-s 40"
 # columns: d_lo, d_hi, ROW, max mass, min mass
 SOLO_LV="--pilot-level 1.0,1.5,$ROW,20,5 --extra-levels 1.5,2.5,$ROW,30,5;2.0,3.5,$ROW,40,5 \
 --level-mix 0:0.6,0.4,0;1000:0.3,0.4,0.3;2500:0.2,0.3,0.5"

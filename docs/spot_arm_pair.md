@@ -531,3 +531,9 @@ Restart (`slurm/submit_spot_pipeline.sh`, TAG _ft):
 `ARM=hand_rate` (`sp_solo20_hr_ft_s0`, `SOLO_ONLY=1`): only the 3 base outputs load from the joint-arm checkpoint
 (`expand_state` keeps the base rows when the output shrinks); the 4 arm outputs start at 0 with noise 0.6, capped at
 0.4. The pairs (`sp_pair_{mappo,ippo}_ft_s0`) start from the joint-arm solo.
+
+Heading the whole way (same day, before the restart ran): `--yaw-gate 0 --yaw-w 2.0`. `yaw_progress` (signed: paid
+for turning the object toward its goal heading, charged for turning it away) used to apply only within 1.5 m of the
+goal, at weight 1 (a radian worth 1/3 m of travel); in `sp_solo20_gc_s0` it was ~4% of the progress reward. It now
+applies at every distance at weight 2. Only the joint-arm pipeline runs (one GPU for Spot); the hand_rate solo is
+not queued. Jobs: check 29717633 (passed), solo 29717634, init 29717635, MAPPO 29717636, IPPO 29717637.

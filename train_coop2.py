@@ -342,6 +342,9 @@ def main() -> int:
                     help="action noise may not rise above this x its warm-start value")
     ap.add_argument("--std-cap", type=float, default=0.0,
                     help="> 0: action noise never above this (applied after any warm start / init, current noise clamped)")
+    ap.add_argument("--yaw-gate", type=float, default=1.5,
+                    help="yaw_progress (signed heading progress) only within this many m of the goal; 0 = everywhere")
+    ap.add_argument("--yaw-w", type=float, default=0.0, help="> 0: yaw_progress weight (default 1 for r5/r7/r8, else 0.5)")
     ap.add_argument("--action-rate-w", type=float, default=0.05, help="penalty weight on the change of each robot's actions")
     ap.add_argument("--action-limit-w", type=float, default=0.02, help="penalty weight on actions past their range")
     ap.add_argument("--mean-clip", type=float, default=0.0,
@@ -540,7 +543,7 @@ def main() -> int:
                                  short_tasks=a.short_tasks, arm=a.arm, pilot_level=pilot_level,
                                  oppose_cost=a.oppose_cost, cancel_cost=a.cancel_cost,
                                  pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices,
-                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
+                                 hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus, arm_bonus=a.arm_bonus, action_rate_w=a.action_rate_w, action_limit_w=a.action_limit_w, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w, turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps,
                                  extra_levels=extra_levels, level_mix=level_mix, solo_agent=a.solo_agent)
     env_cfg.scene.num_envs = a.num_envs
     if a.swap_starts:
@@ -586,7 +589,7 @@ def main() -> int:
                   arm=a.arm if a.pair in _pairs().ARM_PAIRS else "", pilot_level=pilot_level,
                   pilot_episode_s=a.pilot_episode_s, dyaw_choices=a.dyaw_choices, hand_obs=a.hand_obs, goal_credit=a.goal_credit, align_bonus=a.align_bonus,
                   arm_bonus=a.arm_bonus, roll_ratio=a.roll_ratio, action_rate_w=a.action_rate_w,
-                  action_limit_w=a.action_limit_w, std_cap=a.std_cap,
+                  action_limit_w=a.action_limit_w, std_cap=a.std_cap, yaw_gate=a.yaw_gate, yaw_w=a.yaw_w,
                   turn_signs=a.turn_signs, arm_hold_steps=a.arm_hold_steps, extra_levels=extra_levels, level_mix=level_mix,
                   solo_agent=a.solo_agent, bc_data=a.bc_data, bc_keep_norm=a.bc_keep_norm, bc_coef=a.bc_coef,
                   bc_iters=a.bc_iters, bc_pretrain_steps=a.bc_pretrain_steps,
