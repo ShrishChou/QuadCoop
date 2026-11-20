@@ -82,6 +82,14 @@ def clone_envs(base, obs, src, dst) -> int:
                         pass
             elif isinstance(v, dict):
                 copy_obj(v, depth + 1)
+            elif isinstance(v, (list, tuple)):
+                for v2 in v:
+                    if isinstance(v2, torch.Tensor) and v2.dim() >= 1 and v2.shape[0] == n:
+                        try:
+                            v2[dst] = v2[src]
+                            cnt += 1
+                        except RuntimeError:
+                            pass
             elif hasattr(v, "__dict__") and type(v).__module__.startswith("mjlab.utils.buffers"):
                 for v2 in vars(v).values():  # circular / delay buffers: (history, env, ...)
                     if isinstance(v2, torch.Tensor) and v2.dim() >= 2 and v2.shape[1] == n and v2.shape[0] != n:
@@ -90,11 +98,10 @@ def clone_envs(base, obs, src, dst) -> int:
                     elif isinstance(v2, torch.Tensor) and v2.dim() >= 1 and v2.shape[0] == n:
                         v2[dst] = v2[src]
                         cnt += 1
-    for mgr in (base.command_manager, base.action_manager, base.observation_manager):
+    for mgr in (base.command_manager, base.action_manager, base.observation_manager, base.event_manager):
         for term in (mgr._terms.values() if hasattr(mgr, "_terms") else []):
             copy_obj(term)
-        if mgr is base.observation_manager:
-            copy_obj(mgr)
+        copy_obj(mgr)  # the manager's own buffers (action history, command timers, event timers)
     for ent in list(base.scene.entities.values()) if hasattr(base.scene, "entities") else []:
         copy_obj(ent.data)
     for s in (base.scene.sensors.values() if hasattr(base.scene, "sensors") else []):
@@ -125,6 +132,8 @@ def main() -> int:
     ap.add_argument("--stage-dist", type=float, default=3.0, help="helper staging distance behind the object (m)")
     ap.add_argument("--horizon", type=float, default=80.0)
     ap.add_argument("--check", action="store_true", help="clone check: both twins stay solo for 5 s, report divergence")
+    ap.add_argument("--same-actions", action="store_true",
+                    help="--check: after the copy the twin replays its source's actions (physics-only divergence)")
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
 
@@ -185,6 +194,10 @@ def main() -> int:
         base = ManagerBasedRlEnv(cfg=cfg, device=device)
         g = base.command_manager.get_term("goal")
         dev = base.device
+        if a.check:
+            em = base.event_manager
+            print("event terms by mode:", {m_: list(em.active_terms[m_]) for m_ in em.active_terms}
+                  if hasattr(em, "active_terms") else "?", flush=True)
         ids = torch.arange(n, device=dev)
         for k in range(len(SHAPES2)):
             m2.apply_geometry(base, ids, k, torch.ones(n, 3, device=dev))
@@ -280,6 +293,8 @@ def main() -> int:
                         st[:, 3:7] = quat_from_euler_xyz(zz, zz, yaw)
                         rob.write_root_state_to_sim(st, H)
                 act = solo(obs, env=base)
+                if a.check and a.same_actions and i >= n_probe:
+                    act[H] = act[S]
                 for x in AGENTS[K:]:
                     act[:, sl[x]] = 0.0  # parked robots stand still
                 if bool(is_help.any()):

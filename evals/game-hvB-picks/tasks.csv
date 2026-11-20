@@ -1,0 +1,61 @@
+object,scenario,mass,actions,feasible_pairs,optimum,optimum_pair,pure_nash,worst_nash,mean_feasible,spread,adjacent,learned,learned_pair,regret_matching_final,regret_matching_found_optimum,rm_plus_final,rm_plus_found_optimum,hedge_final,hedge_found_optimum,exp3_final,exp3_found_optimum
+arch,A_straight,40.0,6,20,0.698,part 2 corner -x+y + part 3 -x,4,0.569,0.354,0.4438606172839506,0.4438606172839506,0.592,part 3 corner -x-y + part 2 corner -x+y,0.692,0.95,0.691,1.0,0.698,1.0,0.53,0.75
+arch,A_straight,80.0,6,20,0.486,part 3 corner -x+y + part 2 -x,4,0.391,0.228,0.29172691358024694,0.29172691358024694,0.391,part 3 corner -x-y + part 2 corner -x+y,0.434,0.45,0.461,0.8,0.462,0.75,0.199,0.35
+arch,B_left,40.0,8,44,0.569,part 3 -x + part 2 corner -x-y,6,0.172,0.137,0.02658709876543211,0.02562592592592594,0.172,part 2 corner +x-y + part 2 -x,0.559,0.95,0.564,1.0,0.569,1.0,0.256,0.75
+arch,B_left,80.0,8,44,0.784,part 3 corner -x-y + part 2 corner -x-y,4,0.141,0.102,0.0,0.059064074074074074,0.072,part 2 corner +x-y + part 2 -x,0.752,0.95,0.784,1.0,0.784,1.0,0.524,0.95
+arch,C_backright,40.0,6,22,0.405,part 3 corner +x+y + part 2 +y,2,0.405,0.184,0.0,0.0,0.378,part 3 +x + part 2 +y,0.405,1.0,0.404,1.0,0.403,0.95,0.182,0.0
+arch,C_backright,80.0,6,22,0.341,part 3 +x + part 2 +y,4,0.214,0.143,0.0,0.0,0.341,part 3 +x + part 2 +y,0.341,1.0,0.339,1.0,0.34,1.0,0.141,0.2
+arch,D_far_turn,40.0,6,20,0.522,part 3 -x + part 2 corner -x+y,2,0.522,0.256,0.23318455555555553,0.23318455555555553,0.36,part 3 corner -x-y + part 2 corner -x+y,0.522,1.0,0.52,1.0,0.522,1.0,0.312,0.8
+arch,D_far_turn,80.0,6,20,0.266,part 3 -x + part 2 corner -x+y,2,0.266,0.122,0.17747077777777778,0.17747077777777778,0.092,part 3 corner -x-y + part 2 corner -x+y,0.266,1.0,0.258,1.0,0.266,1.0,0.089,0.75
+asym,A_straight,80.0,4,6,0.146,part 1 corner -x-y + part 0 -x,4,0.115,0.11,,,0.115,part 1 -x + part 0 corner -x+y,0.13,0.5,0.141,0.85,0.146,1.0,0.044,0.15
+asym,B_left,80.0,5,12,0.044,part 1 corner -x-y + part 1 corner +x-y,4,0.011,0.023,,,0.029,part 1 corner -x-y + part 0 -x,0.044,1.0,0.043,1.0,0.024,0.25,0.012,0.15
+asym,C_backright,80.0,4,6,0.037,part 0 +x + part 0 +y,4,0.03,0.033,,,0.03,part 1 +x + part 0 +y,0.036,0.85,0.036,0.9,0.015,0.0,0.013,0.05
+asym,D_far_turn,80.0,4,6,0.053,part 0 corner -x+y + part 1 -x,2,0.053,0.023,,,0.053,part 1 -x + part 0 corner -x+y,0.053,1.0,0.053,1.0,0.03,0.8,0.011,0.4
+beam,A_straight,80.0,7,30,0.153,part 0 -x seg 2/5 + part 0 -x seg 4/5,4,0.117,0.065,0.11680432098765431,0.04256864197530864,0.065,part 0 corner -x-y + part 0 corner -x+y,0.139,0.6,0.142,0.75,0.152,1.0,0.041,0.2
+beam,B_left,80.0,8,42,0.052,part 0 -x seg 1/5 + part 0 -x seg 4/5,2,0.052,0.02,0.032436296296296296,0.01584771604938271,0.004,part 0 corner +x-y + part 0 -x seg 5/5,0.052,0.7,0.051,0.45,0.032,0.05,0.014,0.15
+beam,C_backright,80.0,7,30,0.018,part 0 +x seg 1/5 + part 0 +y,2,0.018,0.004,0.017875,0.0,0.018,part 0 +x seg 1/5 + part 0 +y,0.018,1.0,0.017,1.0,0.004,0.15,0.002,0.05
+beam,D_far_turn,80.0,7,30,0.091,part 0 -x seg 4/5 + part 0 -x seg 1/5,2,0.091,0.03,0.08129125925925926,0.02148177777777778,0.002,part 0 corner -x-y + part 0 corner -x+y,0.091,1.0,0.089,1.0,0.082,0.95,0.021,0.3
+cube,A_straight,40.0,2,2,0.204,part 0 corner -x-y + part 0 corner -x+y,2,0.204,0.204,,,0.204,part 0 corner -x-y + part 0 corner -x+y,0.204,1.0,0.204,1.0,0.204,1.0,0.107,0.95
+cube,B_left,40.0,4,6,0.607,part 0 -x + part 0 -y,2,0.607,0.37,,,0.165,part 0 corner -x-y + part 0 corner +x-y,0.607,1.0,0.606,1.0,0.607,1.0,0.514,0.95
+cube,C_backright,40.0,2,2,0.697,part 0 +x + part 0 +y,2,0.697,0.697,,,0.697,part 0 +x + part 0 +y,0.697,1.0,0.697,1.0,0.697,1.0,0.681,1.0
+cube,D_far_turn,40.0,2,2,0.098,part 0 corner -x-y + part 0 corner -x+y,2,0.098,0.098,,,0.098,part 0 corner -x-y + part 0 corner -x+y,0.098,1.0,0.098,1.0,0.091,1.0,0.049,0.65
+cylinder,A_straight,40.0,4,6,0.56,part 0 corner -x-y + part 0 corner -x+y,2,0.56,0.426,,,0.32,part 0 corner -x-y + part 0 -x seg 2/2,0.56,1.0,0.556,1.0,0.56,1.0,0.448,0.95
+cylinder,A_straight,80.0,4,6,0.773,part 0 -x seg 1/2 + part 0 corner -x+y,2,0.773,0.62,,,0.394,part 0 corner -x-y + part 0 -x seg 2/2,0.773,1.0,0.77,1.0,0.773,1.0,0.71,0.75
+cylinder,B_left,40.0,5,12,0.317,part 0 corner +x-y + part 0 corner -x-y,4,0.265,0.182,,,0.201,part 0 -x seg 1/2 + part 0 corner +x-y,0.286,0.4,0.287,0.45,0.299,0.65,0.1,0.05
+cylinder,B_left,80.0,5,12,0.349,part 0 -x seg 1/2 + part 0 -y,2,0.349,0.206,,,0.253,part 0 -x seg 1/2 + part 0 corner +x-y,0.346,0.75,0.344,0.85,0.347,0.9,0.176,0.8
+cylinder,C_backright,40.0,4,6,0.112,part 0 +x seg 1/2 + part 0 +y,2,0.112,0.044,,,0.112,part 0 +x seg 1/2 + part 0 +y,0.112,1.0,0.112,1.0,0.108,1.0,0.026,0.6
+cylinder,C_backright,80.0,4,6,0.067,part 0 +x seg 2/2 + part 0 +y,4,0.012,0.028,,,0.004,part 0 +x seg 1/2 + part 0 +y,0.062,0.9,0.067,1.0,0.045,1.0,0.013,0.6
+cylinder,D_far_turn,40.0,4,6,0.022,part 0 corner -x-y + part 0 corner -x+y,2,0.022,0.007,,,0.022,part 0 corner -x-y + part 0 corner -x+y,0.022,1.0,0.022,1.0,0.006,0.85,0.003,0.25
+cylinder,D_far_turn,80.0,4,6,0.0,part 0 -x seg 1/2 + part 0 corner -x+y,6,0.0,0.0,,,0.0,part 0 corner -x+y + part 0 corner -x-y,0.0,1.0,0.0,1.0,0.0,1.0,0.0,1.0
+dumbbell,A_straight,40.0,7,28,0.603,part 1 corner -x-y + part 0 corner -x+y,2,0.603,0.198,0.36160938271604937,0.11184987654320988,0.603,part 1 corner -x-y + part 0 corner -x+y,0.603,1.0,0.599,1.0,0.603,1.0,0.364,0.5
+dumbbell,A_straight,80.0,7,28,0.491,part 1 -x + part 0 corner -x+y,2,0.491,0.159,0.42579814814814815,0.017017283950617277,0.313,part 1 corner -x-y + part 0 corner -x+y,0.491,1.0,0.486,1.0,0.491,1.0,0.242,0.8
+dumbbell,B_left,40.0,8,46,0.607,part 1 corner +x-y + part 2 -x seg 2/3,4,0.305,0.15,0.009826666666666671,0.18971907407407407,0.182,part 0 corner +x-y + part 0 -x,0.592,0.95,0.6,1.0,0.607,1.0,0.251,0.9
+dumbbell,B_left,80.0,8,46,0.313,part 0 -x + part 1 corner -x-y,4,0.258,0.085,0.0,0.2774277160493827,0.05,part 0 corner +x-y + part 0 -x,0.305,0.85,0.309,0.95,0.313,1.0,0.08,0.2
+dumbbell,C_backright,40.0,6,22,0.415,part 1 +x + part 0 +y,4,0.383,0.195,0.0,0.0,0.04,part 1 +x + part 2 +x seg 2/3,0.399,0.5,0.406,0.75,0.41,0.85,0.161,0.8
+dumbbell,C_backright,80.0,6,22,0.429,part 1 corner +x+y + part 0 +y,6,0.168,0.15,0.020541111111111107,0.020541111111111107,0.026,part 1 +x + part 2 +x seg 2/3,0.39,0.65,0.407,0.8,0.429,1.0,0.141,0.2
+dumbbell,D_far_turn,40.0,7,28,0.354,part 1 corner -x-y + part 0 -x,4,0.345,0.176,0.1948365185185185,0.15729025925925924,0.196,part 1 corner -x-y + part 0 corner -x+y,0.349,0.45,0.343,0.4,0.349,0.5,0.125,0.25
+dumbbell,D_far_turn,80.0,7,28,0.304,part 1 -x + part 0 corner -x+y,4,0.223,0.11,0.04779859259259259,0.0923775925925926,0.135,part 1 corner -x-y + part 0 corner -x+y,0.279,0.7,0.3,0.95,0.304,1.0,0.083,0.45
+l_shape,A_straight,80.0,6,12,0.221,part 0 corner -x-y + part 1 -x,4,0.059,0.091,0.05195419753086419,0.15435481481481483,0.221,part 0 corner -x-y + part 1 -x,0.221,1.0,0.219,1.0,0.221,1.0,0.051,0.1
+l_shape,B_left,80.0,7,30,0.097,part 1 corner +x-y + part 0 -x seg 2/2,2,0.097,0.033,,,0.096,part 1 corner +x-y + part 1 -x,0.097,0.85,0.095,0.55,0.096,0.75,0.026,0.2
+l_shape,C_backright,80.0,6,20,0.283,part 1 +y seg 1/2 + part 1 corner +x+y,2,0.283,0.141,,,0.12,part 1 +x + part 0 +y,0.283,1.0,0.281,1.0,0.283,1.0,0.105,0.6
+l_shape,D_far_turn,80.0,6,12,0.15,part 0 corner -x-y + part 1 corner -x+y,2,0.15,0.103,0.15029759259259257,0.08988177777777778,0.124,part 0 corner -x-y + part 0 corner -x+y,0.15,1.0,0.15,1.0,0.149,1.0,0.047,0.15
+long,A_straight,40.0,4,6,0.53,part 0 -x seg 1/2 + part 0 corner -x+y,4,0.318,0.386,0.3087692592592593,0.530199012345679,0.309,part 0 corner -x-y + part 0 corner -x+y,0.498,0.85,0.526,1.0,0.53,1.0,0.42,0.9
+long,B_left,40.0,5,12,0.547,part 0 corner +x-y + part 0 -x seg 2/2,2,0.547,0.164,0.3098483950617284,0.05046518518518519,0.049,part 0 -x seg 1/2 + part 0 corner +x-y,0.547,1.0,0.542,1.0,0.547,1.0,0.394,0.85
+long,C_backright,40.0,4,6,0.355,part 0 +x seg 1/2 + part 0 +y,2,0.355,0.243,0.3552985802469136,0.10850814814814815,0.355,part 0 +x seg 1/2 + part 0 +y,0.355,1.0,0.355,1.0,0.355,1.0,0.174,0.65
+long,D_far_turn,40.0,4,6,0.341,part 0 corner -x-y + part 0 -x seg 2/2,4,0.229,0.237,0.14064862962962962,0.2294591851851852,0.141,part 0 corner -x-y + part 0 corner -x+y,0.313,0.75,0.329,0.9,0.341,1.0,0.126,0.7
+plus,A_straight,80.0,5,12,0.242,part 0 corner -x-y + part 0 corner -x+y,2,0.242,0.141,,,0.17,part 1 -x + part 0 corner -x+y,0.242,1.0,0.238,1.0,0.242,1.0,0.091,0.45
+plus,B_left,80.0,6,20,0.42,part 1 corner -x-y + part 0 corner +x-y,4,0.258,0.194,,,0.156,part 1 -x + part 1 corner +x-y,0.387,0.8,0.408,0.95,0.42,1.0,0.152,0.75
+plus,C_backright,80.0,4,6,0.274,part 0 +y + part 1 corner +x+y,4,0.241,0.25,,,0.274,part 1 corner +x+y + part 0 +y,0.268,0.8,0.272,1.0,0.273,0.9,0.119,0.1
+plus,D_far_turn,80.0,5,12,0.178,part 1 corner -x-y + part 0 corner -x+y,2,0.178,0.11,,,0.056,part 1 -x + part 0 corner -x-y,0.178,1.0,0.176,1.0,0.177,1.0,0.067,0.25
+sphere,A_straight,40.0,2,2,0.899,sector 225 + sector 135,2,0.899,0.899,0.8993055555555557,0.8993055555555557,0.899,sector 225 + sector 135,0.899,1.0,0.899,1.0,0.899,1.0,0.881,1.0
+sphere,B_left,40.0,4,6,0.639,sector 315 + sector 180,2,0.639,0.5,0.4218611111111111,0.4218611111111111,0.639,sector 180 + sector 315,0.639,1.0,0.638,1.0,0.639,1.0,0.559,1.0
+sphere,C_backright,40.0,2,2,0.635,sector 0 + sector 90,2,0.635,0.635,0.6349166666666667,0.6349166666666667,0.635,sector 0 + sector 90,0.635,1.0,0.635,1.0,0.635,1.0,0.599,0.95
+sphere,D_far_turn,40.0,2,2,0.646,sector 225 + sector 135,2,0.646,0.646,0.6455333333333333,0.6455333333333333,0.646,sector 225 + sector 135,0.646,1.0,0.646,1.0,0.646,1.0,0.616,1.0
+t_shape,A_straight,80.0,5,12,0.469,part 0 -x seg 1/3 + part 0 corner -x+y,2,0.469,0.259,,,0.093,part 0 corner -x-y + part 0 -x seg 2/3,0.469,1.0,0.463,1.0,0.469,1.0,0.251,0.9
+t_shape,B_left,80.0,8,42,0.282,part 1 -y seg 2/2 + part 0 -x seg 3/3,6,0.105,0.063,0.0,0.0,0.218,part 1 corner +x-y + part 0 -x seg 3/3,0.282,1.0,0.28,1.0,0.282,1.0,0.059,0.4
+t_shape,C_backright,80.0,5,12,0.404,part 0 +y + part 1 corner +x+y,2,0.404,0.136,0.254597962962963,0.254597962962963,0.0,part 1 +x + part 0 +y,0.404,1.0,0.401,1.0,0.404,1.0,0.223,0.95
+t_shape,D_far_turn,80.0,5,12,0.267,part 0 -x seg 1/3 + part 0 corner -x+y,4,0.089,0.082,,,0.031,part 0 corner -x-y + part 0 corner -x+y,0.258,0.95,0.265,1.0,0.267,1.0,0.07,0.7
+u_channel,A_straight,80.0,5,12,0.413,part 0 corner -x+y + part 0 corner -x-y,4,0.383,0.24,0.38316697530864197,0.38316697530864197,0.413,part 0 corner -x-y + part 0 corner -x+y,0.404,0.7,0.398,0.6,0.413,1.0,0.185,0.7
+u_channel,B_left,80.0,9,56,0.289,part 2 -y seg 2/2 + part 0 -x seg 3/3,2,0.289,0.069,0.00380969135802469,0.031858518518518515,0.051,part 2 corner +x-y + part 0 -x seg 2/3,0.289,1.0,0.283,1.0,0.289,1.0,0.064,0.05
+u_channel,C_backright,80.0,7,28,0.647,part 2 corner +x+y + part 0 +y,2,0.647,0.128,0.6467788888888889,0.0,0.115,part 2 +x + part 0 +y,0.647,1.0,0.643,1.0,0.647,1.0,0.442,0.9
+u_channel,D_far_turn,80.0,5,12,0.216,part 0 corner -x-y + part 0 corner -x+y,2,0.216,0.085,0.013608925925925922,0.013608925925925922,0.216,part 0 corner -x-y + part 0 corner -x+y,0.216,1.0,0.213,1.0,0.215,1.0,0.074,0.45
