@@ -104,3 +104,66 @@ It uses this in three ways:
   - yes, across both team sizes;
   - yes, but with separate rules;
   - only when the dispatcher knows more about the task.
+
+## Results (2026-11-21; trained on seeds 1001-1003, tested on 7100 + 7900)
+
+Full tables: `logs/evals/k-dispatch/summary.md`, `logs/evals/k-budget/summary.md`.
+
+**The tree.** All nulls fall between -4.6 and +2.5, and every one of their CIs crosses 0.
+
+| | 1 robot | 2 robots | 3 robots | robot 3 at t2 (k3 - k2a) |
+|---|---|---|---|---|
+| 20 kg | 16% | 78% | 87% | +9.6 [+3.3, +15.4] |
+| 40 kg | 8% | 79% | 84% | +5.0 [-0.4, +10.8] |
+| 60 kg | 8% | 71% | 74% | +2.9 [-3.3, +9.2] |
+| 80 kg | 4% | 29% | 53% | +24.6 [+18.3, +30.8] |
+| 100 kg | 3% | 13% | 22% | +8.8 [+4.6, +13.3] |
+
+- With the scripted solo pusher (8% success alone), the 1 -> 2 decision is close to trivial, so 2 -> 3 is the test.
+- The need for a third robot is not monotone in mass.
+
+**Dispatch without the mass**, payoff vs the given-mass table (pp):
+
+| lam | no-mass fitted-Q | estimated mass -> table |
+|---|---|---|
+| 0.05 | -0.3 [-1.9, +1.2] | +0.2 [-1.1, +1.4] |
+| 0.1 | -1.3 [-3.4, +0.9] | -2.4 [-4.4, -0.4] |
+| 0.2 | -1.2 [-3.3, +0.8] | -3.0 [-4.6, -1.3] |
+
+- Adding the mass to the same fitted-Q predictor changes payoff by -0.6 to +0.7 pp, with every CI crossing 0.
+- The blind mass estimate is exact in 39% (t1) and 64% (t2, pair) of tasks. Going through an estimated mass loses;
+  predicting the gain directly does not.
+
+**Regret per task.** Hedge's 0.010-0.018 is full information. The other two learners see only the path they took:
+
+| learner | regret per task |
+|---|---|
+| Hedge | 0.010-0.018 |
+| causal EXP4 | 0.055-0.090 |
+| Exp3 over whole rules | 0.077-0.19 |
+
+**Cross-K transfer.** The 1 -> 2 threshold is "always add", because the solo pusher is weak.
+- At lam = 0.1 it transfers to 2 -> 3 at -0.8 [-2.7, +1.2].
+- At lam = 0.2 it fails, at -8.3 [-11.1, -5.6].
+
+This shows the 1 -> 2 data carries no information about when to stop adding robots. It does not show that a common
+rule fails.
+
+**Budget-matched 2 -> 3 (`k_budget.py`), 1120 test decisions.**
+- Every rule is near the mass rule at the same budget. The one significant gain over it is "mass, then response" at
+  a 10% budget: +0.9 [+0.2, +1.6] pp (39 vs 29 extra objects).
+- Response only: -0.7 to 0.0.
+- Within a mass, the push ranks the tasks. Robot 3's uplift among the top half of the response + mass ranking, minus
+  the bottom half:
+
+  | mass | top - bottom | placebo |
+  |---|---|---|
+  | 20 kg | +4.5 | |
+  | 40 kg | +5.2 | |
+  | 60 kg | +8.1 | |
+  | 80 kg | +16.5 [+4.2, +28.8] (34 vs 17) | -1.7 |
+  | 100 kg | +11.7 [+2.2, +21.3] | -0.9 |
+  | mean over masses | +9.2 [+3.7, +14.8] | -3.3 [-7.6, +0.8] |
+
+- **Caveat:** the pooled row and the "mass, then response" ranker were added after seeing the per-mass table on these
+  test seeds. They need a fresh test tree before they are claimed.
