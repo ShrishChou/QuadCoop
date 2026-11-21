@@ -32,30 +32,65 @@ Runs: 10 objects x 4 starts x 3 reps x 20 / 40 / 60 / 80 / 100 kg. Training seed
 
 Payoff = success - lam x robots added, with lam = 0 / 0.05 / 0.1 / 0.2.
 
-**Weight-aware (step 1):**
+**Step 1, given the mass:**
 - a table per (decision, K, mass), chosen by backward induction;
-- Hedge and EXP4 over mass-threshold experts;
-- Exp3 per mass over the four plans.
+- online learners over mass-threshold rules;
+- fitted-Q with the mass as a feature.
 
-**Weight-blind (step 2)** sees only how the object responds to the push:
-- progress rate, speed, yaw rate, the robots' measured contact force, time since the last progress, and the
-  distance and heading left;
-- the object's shape, which the planner knows anyway.
+**Step 2, no mass given.** The dispatcher sees how the object responds to the push:
+- progress rate, speed and yaw rate;
+- the robots' measured contact force and the time since the last progress;
+- the distance and heading left;
+- the object's shape.
 
-The blind methods:
-- **est-mass:** estimates the weight from the response, then uses the aware table.
-- **fitted-Q:** logistic models of success with and without the extra robot.
-- **Hedge / EXP4:** run over struggle-threshold experts. An expert adds a robot when the time the object would still
-  need at its current progress rate exceeds tau times the time left. Hedge gets full feedback and EXP4 bandit
-  feedback.
-- **Exp3:** run over the plans, separately in each struggle bin.
+It uses this in three ways:
+- **est-mass:** estimate the mass from the response, then apply the table.
+- **fitted-Q:** logistic success predictors with and without the next robot.
+- **Online learners** over struggle rules. A rule adds a robot when rho = (distance left / progress rate) / time left
+  exceeds tau.
 
-The online learners are trained on the training seeds, frozen, and scored on the test seeds. Results are compared
-against the aware table and the hindsight oracle, along with the regret curves.
+## Analyses (all CPU, on the five queued trees)
 
-## How regret minimization fits
+1. **The tree, with a null per comparison.** Each matched effect is shown next to its own null:
+   - k2a - k1 and k2b - k1 against k1null - k1;
+   - k3 - k2a against k2null - k2a.
 
-The tree gives every branch's outcome. Hedge is therefore the full-information learner. EXP4 and Exp3 see only the
-branch they played, which is what a deployed system would see. Their gap measures what bandit feedback costs. The
-experts are interpretable rules, so the frozen choice states the dispatch rule directly. An example is "add a second
-robot at 8 s if the object would need more than 0.5x the remaining time at its current pace".
+   Every leaf is a single rollout.
+2. **Dispatch without being given the mass.** Compare the no-mass policies with the given-mass table on payoff.
+   - The fair test of what the mass contributes is the same fitted-Q predictor with and without the mass feature.
+   - The accuracy of the mass estimate is reported separately. Matching the table on payoff does not show that the
+     team inferred the mass: it may only have recognised that progress was enough to finish.
+3. **Regret minimization, causal.** Three learners use the same threshold rules:
+   - **Hedge** sees every rule's payoff (full information, from the tree).
+   - **Exp3** samples one whole rule per task, runs it on its own path and sees only its final payoff.
+   - **EXP4** draws the t1 action from the rules' advice at t1. Only the t2 state of the branch taken is revealed,
+     and the t2 action comes from the rules' advice on that state.
+
+   Neither bandit learner sees a state the team would not have seen. The gap between Hedge and the bandits is what
+   partial feedback costs. The frozen rules are readable thresholds.
+4. **Cross-K transfer, at the same time.** At t2 (60 s left), fit a struggle threshold on 1 -> 2 decisions only, freeze
+   it, and apply it to held-out 2 -> 3 decisions. Compare it with:
+   - the threshold fitted on 2 -> 3;
+   - one fitted on both;
+   - always keep / always add.
+
+   Report payoff, success and robots sent, with paired differences and the null for that comparison. The reverse
+   direction is reported too.
+   - **Transfer close to the in-domain rule, and better than the fixed choices:** a reusable K -> K+1 rule.
+   - **Transfer fails:** a struggling pair needs help differently from a struggling solo robot, for example because a
+     third contact adds crowding.
+
+## Wording for the paper
+
+- The headline is **dispatch without being given the mass**, not "the team infers the mass".
+- **Attribution:** the second-robot effect is the gain from dispatching the implemented pair system. The solo robot is
+  a scripted pusher and the pair runs a different controller, so the effect cannot be attributed to team size alone,
+  and the direction of that bias is unknown.
+- **Noise:** each comparison carries its own null; there is no single noise figure.
+- **If the no-mass dispatcher loses,** the conclusion is that the tested signals and rules fell short under these
+  conditions.
+- **Organizing question:** can the same observable sign of struggle tell us when to send the next robot? The runs can
+  separate three answers:
+  - yes, across both team sizes;
+  - yes, but with separate rules;
+  - only when the dispatcher knows more about the task.

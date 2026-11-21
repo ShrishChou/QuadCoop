@@ -9,20 +9,25 @@ it is in) add the next robot or wait. The tree holds every outcome (leaves k1, k
 scored exactly. Payoff = success - lam x robots added (a robot sent to a task that has already ended is not sent).
 
 Policies
-  fixed      1 robot; 2 from t1; 2 from t2; 3 (2 from t1 + 1 at t2); oracle (best leaf per task, an upper bound)
-  aware      the planner knows the weight
-               table        per (decision, K, mass): add iff it pays on the training tasks (backward induction)
-               hedge-mass   Hedge over threshold experts "add at t1 iff mass >= m1, at t2 iff mass >= m2(K)"
-  blind      the planner does not know the weight; it sees how the object responds to the push
-               est-mass     the weight estimated from the response (ridge on log mass), then the aware table
-               fitted-Q     logistic T-learners per (decision, K) on the response features
-               hedge-blind  Hedge (full feedback) over experts "add iff the time the object would still need at its
-                            current progress rate exceeds tau x the time left" (one tau per decision and K)
-               exp4-blind   the same experts, bandit feedback (only the outcome of the played branch)
-               exp3-blind   Exp3 over the 4 open-loop plans per bin of that signal at t1 (bandit, no experts)
+  fixed       1 robot; 2 from t1; 2 from t2; 3 (2 from t1 + 1 at t2); oracle (best leaf per task, an upper bound)
+  given mass  table per (decision, K, mass) by backward induction (also with the object); online learners over
+              mass-threshold rules; fitted-Q with the mass as a feature
+  no mass     the dispatcher sees how the object responds to the push (progress rate, speed, yaw rate, measured
+              contact force, time since the last progress, distance / heading left) and the object's shape:
+                est-mass   the mass estimated from the response, then the given-mass table
+                fitted-Q   logistic T-learners per (decision, K), then ridge at t1 (also response only, without the
+                           object; the same predictor with the mass added is the fair test of what the mass adds)
+                online     over "struggle" rules: add iff rho = (distance left / progress rate) / time left > tau, one
+                           tau per (decision, K):
+                             hedge  full information (every rule's payoff, from the tree)
+                             exp3   bandit over whole rules: one rule sampled per task and run on its own path
+                             exp4   causal bandit with advice: t1 action from the t1 advice, only the t2 state of the
+                                    branch taken revealed, t2 action from the advice on that state
 Online learners run over the training tasks in random orders (--orders), are frozen (largest mean weight) and scored on
-the test tasks. Reported per lam: test success, robots added, payoff; paired differences vs the aware table
-(bootstrap); training regret of the online learners vs the best expert in hindsight; per mass the policies' choices.
+the test tasks by following their own path. Reported per lam: test success, robots added, payoff, paired differences
+vs the given-mass table; the mass-feature effect; regret vs the best rule in hindsight; team size per mass; and the
+cross-K transfer test (a struggle threshold fitted on 1 -> 2 decisions only, applied to 2 -> 3 at the same time t2).
+The tree table gives every matched effect with the null of that comparison.
 """
 from __future__ import annotations
 
@@ -158,83 +163,108 @@ def nearest(m, ms):
 
 
 # ---------------------------------------------------------------- online experts (Hedge / EXP4)
-def hedge_exp4(tr, experts, lam, orders, seed):
-    """experts: list of (pol1, pol2). Full feedback (hedge) and bandit (exp4) over the training tasks in random orders.
-    Returns the frozen expert index per learner and the mean regret curves vs the best expert in hindsight."""
+def online(tr, experts, lam, orders, seed):
+    """Three online learners over the same policies (experts = (pol1, pol2) threshold rules), training tasks in random
+    orders. Returns the frozen expert per learner (largest mean weight), the mean regret curves vs the best expert in
+    hindsight, and that best expert.
+      hedge   full information: every expert's payoff on the task is revealed (the tree has all four leaves)
+      exp3    bandit over whole policies: sample one rule at the task's start, run it on its own path (each decision
+              sees only the state that path reaches), see its terminal payoff, importance-weighted update
+      exp4    bandit with expert advice, causal: the t1 action is drawn from the experts' t1 advice; only the t2 state
+              of the branch taken is revealed and every expert advises on THAT state; the t2 action is drawn from that
+              advice; an expert is credited only if its advice matches both actions (estimate / P(path))"""
     rng = np.random.default_rng(seed)
     E, T = len(experts), len(tr)
-    # every expert's leaf and payoff per task (the tree gives all of them)
-    LE = np.zeros((E, T), dtype=int)
-    PE = np.zeros((E, T))
-    for e, (p1, p2) in enumerate(experts):
-        LE[e], PE[e], _, _ = play(tr, p1, p2, lam)
+    A1 = np.array([[int(p1(t)) for t in tr] for p1, _ in experts])  # (E, T) advice at t1
+    A2 = np.stack([np.array([[int(p2(t, K)) for t in tr] for _, p2 in experts]) for K in (1, 2)], -1)  # (E, T, 2)
+    LE = 2 * A1 + A2[np.arange(E)[:, None], np.arange(T)[None], A1]  # each expert's own leaf
     LV = np.array([[value(t, a1, a2, lam) for a1 in (0, 1) for a2 in (0, 1)] for t in tr])  # (T, 4)
+    PE = LV[np.arange(T)[None], LE]  # (E, T)
     lo, hi = -2 * lam, 1.0  # payoff range, rescaled to [0, 1] for the updates
     eta = math.sqrt(8 * math.log(E) / T)
-    gam = min(1.0, math.sqrt(E * math.log(E) / ((math.e - 1) * T)))
-    W = {"hedge": [], "exp4": []}
-    C = {"hedge": [], "exp4": []}
+    g3 = min(1.0, math.sqrt(E * math.log(E) / ((math.e - 1) * T)))
+    g4 = min(1.0, math.sqrt(2 * math.log(E) / ((math.e - 1) * T)))  # 2 actions per decision
+    W = {"hedge": [], "exp3": [], "exp4": []}
+    C = {"hedge": [], "exp3": [], "exp4": []}
     for _ in range(orders):
         order = rng.permutation(T)
-        wh, we = np.zeros(E), np.zeros(E)
-        gh, ge = np.zeros(T), np.zeros(T)
+        w = {k: np.zeros(E) for k in W}
+        got = {k: np.zeros(T) for k in W}
         for s, i in enumerate(order):
-            r01 = (PE[:, i] - lo) / (hi - lo)
-            ph = np.exp(wh - wh.max())
+            # hedge
+            ph = np.exp(w["hedge"] - w["hedge"].max())
             ph /= ph.sum()
-            gh[s] = ph @ PE[:, i]
-            wh += eta * r01
-            # exp4: the experts' advice is a leaf (deterministic); mix, play a leaf, see only its payoff
-            pe = np.exp(we - we.max())
-            pe /= pe.sum()
-            q = np.bincount(LE[:, i], weights=pe, minlength=4)
-            q = (1 - gam) * q + gam / 4
-            j = rng.choice(4, p=q / q.sum())
-            ge[s] = LV[i, j]
-            xhat = (LV[i, j] - lo) / (hi - lo) / q[j]
-            we += gam / 4 * xhat * (LE[:, i] == j)
+            got["hedge"][s] = ph @ PE[:, i]
+            w["hedge"] += eta * (PE[:, i] - lo) / (hi - lo)
+            # exp3 over policies
+            p3 = np.exp(w["exp3"] - w["exp3"].max())
+            p3 = (1 - g3) * p3 / p3.sum() + g3 / E
+            e = rng.choice(E, p=p3)
+            r = PE[e, i]
+            got["exp3"][s] = r
+            w["exp3"][e] += g3 / E * ((r - lo) / (hi - lo)) / p3[e]
+            # causal exp4
+            p4 = np.exp(w["exp4"] - w["exp4"].max())
+            p4 /= p4.sum()
+            q1 = (1 - g4) * np.array([p4[A1[:, i] == x].sum() for x in (0, 1)]) + g4 / 2
+            a1 = int(rng.random() < q1[1] / q1.sum())
+            adv2 = A2[:, i, a1]  # every expert's advice on the revealed t2 state (team of 1 + a1 robots)
+            q2 = (1 - g4) * np.array([p4[adv2 == x].sum() for x in (0, 1)]) + g4 / 2
+            a2 = int(rng.random() < q2[1] / q2.sum())
+            r = LV[i, 2 * a1 + a2]
+            got["exp4"][s] = r
+            match = (A1[:, i] == a1) & (adv2 == a2)
+            w["exp4"] += g4 / 2 * match * ((r - lo) / (hi - lo)) / (q1[a1] / q1.sum() * q2[a2] / q2.sum())
         best = np.cumsum(PE[:, order], 1).max(0)
-        C["hedge"].append(best - np.cumsum(gh))
-        C["exp4"].append(best - np.cumsum(ge))
-        W["hedge"].append(wh)
-        W["exp4"].append(we)
+        for k in W:
+            C[k].append(best - np.cumsum(got[k]))
+            W[k].append(w[k])
     frozen = {k: int(np.argmax(np.mean(v, 0))) for k, v in W.items()}
     return frozen, {k: np.mean(v, 0) for k, v in C.items()}, int(np.argmax(PE.sum(1)))
 
 
-def exp3_plans(tr, ctx, lam, orders, seed):
-    """Exp3 per context over the 4 open-loop plans (bandit). Returns the frozen plan per context and the regret curve
-    vs the best fixed plan per context in hindsight."""
-    rng = np.random.default_rng(seed)
-    T = len(tr)
-    LV = np.array([[value(t, a1, a2, lam) for a1 in (0, 1) for a2 in (0, 1)] for t in tr])
-    cs = sorted({ctx(t) for t in tr})
-    cnt = defaultdict(int)
-    for t in tr:
-        cnt[ctx(t)] += 1
-    lo, hi = -2 * lam, 1.0
-    Wc, C = defaultdict(list), []
-    for _ in range(orders):
-        order = rng.permutation(T)
-        w = {c: np.zeros(4) for c in cs}
-        got = np.zeros(T)
-        for s, i in enumerate(order):
-            c = ctx(tr[i])
-            gm = min(1.0, math.sqrt(4 * math.log(4) / ((math.e - 1) * cnt[c])))
-            p = np.exp(w[c] - w[c].max())
-            p = (1 - gm) * p / p.sum() + gm / 4
-            j = rng.choice(4, p=p)
-            got[s] = LV[i, j]
-            w[c][j] += gm / 4 * ((LV[i, j] - lo) / (hi - lo)) / p[j]
-        tot = defaultdict(lambda: np.zeros(4))
-        best = np.zeros(T)
-        for s, i in enumerate(order):
-            tot[ctx(tr[i])] += LV[i]
-            best[s] = sum(v.max() for v in tot.values())
-        C.append(best - np.cumsum(got))
-        for c in cs:
-            Wc[c].append(w[c])
-    return {c: int(np.argmax(np.mean(v, 0))) for c, v in Wc.items()}, np.mean(C, 0)
+def transfer(tr, te, lam, ci, fmt, ent):
+    """Cross-K transfer at the same time (t2, 60 s left): a threshold on the struggle signal "add the next robot iff
+    rho > tau", tau fitted on K = 1 -> 2 decisions only, frozen, applied to K = 2 -> 3 (and the reverse). Compared with
+    tau fitted on the target K, tau fitted on both, and the fixed choices, on the held-out tasks still running at t2."""
+    out = ["### Does one struggle threshold transfer across team sizes? (t2 decision, held-out tasks still running)", ""]
+
+    def pay(t, K, add):
+        j = 2 * (K - 1) + int(add)
+        return t["y"][j] - lam * t["adds"][j], t["y"][j], t["adds"][j]
+
+    def fit(K_list):
+        cand = sorted({rho(t["x2"][K]) for K in K_list for t in tr if t["end2"][K] == 0})
+        grid = [0.0] + [0.5 * (x + y) for x, y in zip(cand[:-1], cand[1:])][:: max(1, len(cand) // 200)] + [math.inf]
+        best, bt = -1e9, math.inf
+        for tau in grid:
+            v = np.mean([pay(t, K, rho(t["x2"][K]) > tau)[0] for K in K_list for t in tr if t["end2"][K] == 0])
+            if v > best + 1e-12:
+                best, bt = v, tau
+        return bt
+    tau = {"K1": fit([1]), "K2": fit([2]), "both": fit([1, 2])}
+    ent["transfer_tau"] = tau
+    for K in (2, 1):
+        sel = [t for t in te if t["end2"][K] == 0]
+        rules = {f"tau from 1 -> 2 only ({tau['K1']:.2f})": lambda t: rho(t["x2"][K]) > tau["K1"],
+                 f"tau from 2 -> 3 only ({tau['K2']:.2f})": lambda t: rho(t["x2"][K]) > tau["K2"],
+                 f"tau from both ({tau['both']:.2f})": lambda t: rho(t["x2"][K]) > tau["both"],
+                 f"always keep {K}": lambda t: False, f"always add robot {K + 1}": lambda t: True}
+        R = {k: np.array([pay(t, K, f(t)) for t in sel]) for k, f in rules.items()}
+        own = list(R)[1] if K == 2 else list(R)[0]
+        fixed = max(list(R)[3:], key=lambda k: R[k][:, 0].mean())
+        null = ci(np.array([t["null"]["k2" if K == 2 else "k1"] for t in sel]) - np.array([t["y"][2 * (K - 1)] for t in sel]))
+        out += [f"Applied to {K} -> {K + 1} ({len(sel)} tasks). Null for this comparison (a copy keeping the same {K}-robot team): "
+                f"{fmt(null)} pp of success.", "",
+                f"| rule | success | robots sent | payoff | vs the rule fitted on {K} -> {K + 1} | vs the best fixed ({fixed}) |",
+                "|---|---|---|---|---|---|"]
+        for k, v in R.items():
+            out.append(f"| {k} | {100 * v[:, 1].mean():.1f}% | {v[:, 2].mean():.2f} | {v[:, 0].mean():.3f} | "
+                       f"{fmt(ci(v[:, 0] - R[own][:, 0]))} | {fmt(ci(v[:, 0] - R[fixed][:, 0]))} |")
+        ent[f"transfer_to_K{K}"] = {k: {"payoff": float(v[:, 0].mean()), "success": float(v[:, 1].mean()),
+                                        "sent": float(v[:, 2].mean())} for k, v in R.items()}
+        out.append("")
+    return out
 
 
 def main() -> int:
@@ -274,15 +304,34 @@ def main() -> int:
          "with 1 / 2 robots.", ""]
     summ = {"train": len(tr), "test": len(te), "mass_estimate_exact": acc, "by_lam": {}}
 
-    # tree outcomes on the test set
-    L += ["## The tree on the test tasks (success %; nulls = a copy that keeps the same team: the noise floor)", "",
-          "| mass | 1 robot | 2 from t2 | 2 from t1 | 3 | null 1 | null 2 |", "|---|---|---|---|---|---|---|"]
+    def ci(d):
+        d = np.asarray(d, dtype=float)
+        bs = d[brng.integers(0, len(d), (4000, len(d)))].mean(1)
+        return 100 * d.mean(), 100 * np.percentile(bs, 2.5), 100 * np.percentile(bs, 97.5)
+    fmt = lambda c: f"{c[0]:+.1f} [{c[1]:+.1f}, {c[2]:+.1f}]"  # noqa: E731
+
+    # the tree on the test set: each matched effect next to its own null (the same comparison with no change)
+    L += ["## The tree on the test tasks", "",
+          "Success %, then each matched effect with the null for that comparison (pp, 95% paired bootstrap). "
+          "Robot 2's effects are against k1null - k1 (a copy of the solo robot at t1, so the null spans the same or a "
+          "longer stretch of rollout); robot 3's effect is against k2null - k2a (a copy of the pair at t2). Every leaf is "
+          "one rollout.", "",
+          "| mass | 1 robot | 2 from t2 | 2 from t1 | 3 | robot 2 at t1 (k2a-k1) | robot 2 at t2 (k2b-k1) | null k1 | "
+          "robot 3 at t2 (k3-k2a) | null k2 |", "|---|---|---|---|---|---|---|---|---|---|"]
+    tree = {}
     for m in sorted({t["mass"] for t in te}) + ["all"]:
         s_ = [t for t in te if m == "all" or t["mass"] == m]
         Y = np.array([t["y"] for t in s_])
+        n1 = np.array([t["null"]["k1"] for t in s_]) - Y[:, 0]
+        n2 = np.array([t["null"]["k2"] for t in s_]) - Y[:, 2]
+        eff = {"k2a-k1": ci(Y[:, 2] - Y[:, 0]), "k2b-k1": ci(Y[:, 1] - Y[:, 0]), "null_k1": ci(n1),
+               "k3-k2a": ci(Y[:, 3] - Y[:, 2]), "null_k2": ci(n2)}
+        tree[str(m)] = {"success": {LEAVES[j]: float(100 * Y[:, j].mean()) for j in range(4)},
+                        **{k: list(v) for k, v in eff.items()}}
         L.append(f"| {m if m == 'all' else f'{m:g} kg'} | " + " | ".join(f"{100 * Y[:, j].mean():.0f}%" for j in (0, 1, 2, 3))
-                 + f" | {100 * np.mean([t['null']['k1'] for t in s_]):.0f}% | {100 * np.mean([t['null']['k2'] for t in s_]):.0f}% |")
+                 + " | " + " | ".join(fmt(v) for v in eff.values()) + " |")
     L.append("")
+    summ["tree"] = tree
 
     # experts: one threshold per (decision, K) on rho (blind) or on the mass (aware)
     taus = [0.0, 0.25, 0.5, 1.0, 2.0, 4.0, math.inf]
@@ -293,102 +342,112 @@ def main() -> int:
     aware_exp = [(lambda t, a_=a_: int(t["end1"] == 0 and t["mass"] >= a_),
                   lambda t, K, b_=b_, c_=c_: int(t["end2"][K] == 0 and t["mass"] >= (b_ if K == 1 else c_)))
                  for a_, b_, c_ in itertools.product(mth, mth, mth)]
-    rq = np.quantile([rho(t["x1"]) for t in tr], [0.25, 0.5, 0.75])
-    rbin = lambda t: int(np.searchsorted(rq, rho(t["x1"])))  # noqa: E731
-    PLANS = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    live1 = lambda t: t["end1"] == 0  # noqa: E731
+    live2 = lambda t, K: t["end2"][K] == 0  # noqa: E731
+    onehot = lambda t: [float(t["object"] == o) for o in objects]  # noqa: E731
+    resp = lambda x: list(bfeat(x, [], ""))  # noqa: E731  the response features alone
+    FEATS = {"response + object": lambda x, t: resp(x) + onehot(t),
+             "response + object + mass": lambda x, t: resp(x) + onehot(t) + [math.log(t["mass"])],
+             "response only": lambda x, t: resp(x),
+             "mass + object only": lambda x, t: [math.log(t["mass"])] + onehot(t)}
+
+    def fit_q(ff, lam):
+        """Fitted Q: logistic T-learners (success with / without the next robot) at t2 per K, then ridge on the t1
+        values under the learned t2 policy. ff(x, t) -> features of state x of task t."""
+        q2 = {}
+        for K in (1, 2):
+            aidx = 2 * (K - 1)
+            sel = [t for t in tr if live2(t, K)]
+            X = np.array([ff(t["x2"][K], t) for t in sel])
+            q2[K] = (Logit(3.0).fit(X, np.array([t["y"][aidx] for t in sel])),
+                     Logit(3.0).fit(X, np.array([t["y"][aidx + 1] for t in sel])))
+
+        def pol2(t, K):
+            if not live2(t, K):
+                return 0
+            x = np.array(ff(t["x2"][K], t))[None]
+            return int(q2[K][1].predict(x)[0] - q2[K][0].predict(x)[0] > lam)
+        sel = [t for t in tr if live1(t)]
+        X = np.array([ff(t["x1"], t) for t in sel])
+        q1 = (Ridge(3.0).fit(X, np.array([value(t, 0, pol2(t, 1), lam) for t in sel])),
+              Ridge(3.0).fit(X, np.array([value(t, 1, pol2(t, 2), lam) for t in sel])))
+
+        def pol1(t):
+            x = np.array(ff(t["x1"], t))[None]
+            return int(live1(t) and q1[1].predict(x)[0] > q1[0].predict(x)[0])
+        return pol1, pol2
 
     for lam in [float(x) for x in a.lams.split(",")]:
         pols = {}
-        live1 = lambda t: t["end1"] == 0  # noqa: E731
-        live2 = lambda t, K: t["end2"][K] == 0  # noqa: E731
         pols["1 robot"] = (lambda t: 0, lambda t, K: 0)
         pols["2 from t2"] = (lambda t: 0, lambda t, K: int(K == 1 and live2(t, K)))
         pols["2 from t1"] = (lambda t: int(live1(t)), lambda t, K: 0)
         pols["3 (2 at t1 + 1 at t2)"] = (lambda t: int(live1(t)), lambda t, K: int(live2(t, K)))
         p1, p2 = fit_table(tr, lam)
-        pols["aware: table (K, mass)"] = (lambda t, p1=p1: int(live1(t) and p1.get(t["mass"], 0)),
-                                          lambda t, K, p2=p2: int(live2(t, K) and p2.get((K, t["mass"]), 0)))
+        pols["given mass: table (K, mass)"] = (lambda t, p1=p1: int(live1(t) and p1.get(t["mass"], 0)),
+                                               lambda t, K, p2=p2: int(live2(t, K) and p2.get((K, t["mass"]), 0)))
         p1o, p2o = fit_table(tr, lam, ctx=lambda t: (t["mass"], t["object"]))
-        pols["aware: table (K, mass, object)"] = (
+        pols["given mass: table (K, mass, object)"] = (
             lambda t, p1o=p1o: int(live1(t) and p1o.get((t["mass"], t["object"]), 0)),
             lambda t, K, p2o=p2o: int(live2(t, K) and p2o.get((K, (t["mass"], t["object"])), 0)))
-        fa, ca, besta = hedge_exp4(tr, aware_exp, lam, a.orders, 1)
-        pols["aware: hedge (mass thresholds)"] = aware_exp[fa["hedge"]]
-        pols["aware: exp4 (mass thresholds)"] = aware_exp[fa["exp4"]]
-        pe3, ce3a = exp3_plans(tr, lambda t: t["mass"], lam, a.orders, 2)
-        pols["aware: exp3 per mass (plans)"] = (lambda t, pe3=pe3: int(live1(t) and PLANS[pe3.get(t["mass"], 0)][0]),
-                                                lambda t, K, pe3=pe3: int(live2(t, K) and PLANS[pe3.get(t["mass"], 0)][1]))
-        # blind
-        pols["blind: estimated mass -> table"] = (lambda t, p1=p1: int(live1(t) and p1.get(t["m1"], 0)),
-                                                  lambda t, K, p2=p2: int(live2(t, K) and p2.get((K, t["m2"][K]), 0)))
-        # fitted Q: logistic T-learners at t2 per K, then ridge on the t1 values under the learned t2 policy
-        q2 = {}
-        for K in (1, 2):
-            aidx = 2 * (K - 1)
-            sel = [t for t in tr if t["end2"][K] == 0]
-            X = np.array([bfeat(t["x2"][K], objects, t["object"]) for t in sel])
-            q2[K] = (Logit(3.0).fit(X, np.array([t["y"][aidx] for t in sel])),
-                     Logit(3.0).fit(X, np.array([t["y"][aidx + 1] for t in sel])))
-
-        def pol2_q(t, K, q2=q2, lam=lam):
-            if not live2(t, K):
-                return 0
-            x = bfeat(t["x2"][K], objects, t["object"])[None]
-            return int(q2[K][1].predict(x)[0] - q2[K][0].predict(x)[0] > lam)
-        sel = [t for t in tr if t["end1"] == 0]
-        X = np.array([bfeat(t["x1"], objects, t["object"]) for t in sel])
-        q1 = (Ridge(3.0).fit(X, np.array([value(t, 0, pol2_q(t, 1), lam) for t in sel])),
-              Ridge(3.0).fit(X, np.array([value(t, 1, pol2_q(t, 2), lam) for t in sel])))
-        pols["blind: fitted-Q (logistic)"] = (
-            lambda t, q1=q1: int(live1(t) and q1[1].predict(bfeat(t["x1"], objects, t["object"])[None])[0]
-                                 > q1[0].predict(bfeat(t["x1"], objects, t["object"])[None])[0]), pol2_q)
-        fb, cb, bestb = hedge_exp4(tr, blind_exp, lam, a.orders, 3)
-        pols["blind: hedge (struggle thresholds)"] = blind_exp[fb["hedge"]]
-        pols["blind: exp4 (struggle thresholds)"] = blind_exp[fb["exp4"]]
-        pb3, ce3b = exp3_plans(tr, rbin, lam, a.orders, 4)
-        pols["blind: exp3 per struggle bin (plans)"] = (
-            lambda t, pb3=pb3: int(live1(t) and PLANS[pb3.get(rbin(t), 0)][0]),
-            lambda t, K, pb3=pb3: int(live2(t, K) and PLANS[pb3.get(rbin(t), 0)][1]))
+        fa, ca, besta = online(tr, aware_exp, lam, a.orders, 1)
+        for k_ in ("hedge", "exp3", "exp4"):
+            pols[f"given mass: {k_} (mass thresholds)"] = aware_exp[fa[k_]]
+        pols["no mass: estimated mass -> table"] = (lambda t, p1=p1: int(live1(t) and p1.get(t["m1"], 0)),
+                                                    lambda t, K, p2=p2: int(live2(t, K) and p2.get((K, t["m2"][K]), 0)))
+        for nm, ff in FEATS.items():
+            pols[f"{'given mass' if 'mass' in nm else 'no mass'}: fitted-Q ({nm})"] = fit_q(ff, lam)
+        fb, cb, bestb = online(tr, blind_exp, lam, a.orders, 3)
+        for k_ in ("hedge", "exp3", "exp4"):
+            pols[f"no mass: {k_} (struggle thresholds)"] = blind_exp[fb[k_]]
 
         res = {k: play(te, *v, lam) for k, v in pols.items()}
-        ref = res["aware: table (K, mass)"][1]
+        REF = "given mass: table (K, mass)"
+        ref = res[REF][1]
         orc = np.array([max(value(t, a1, a2, lam) for a1 in (0, 1) for a2 in (0, 1)) for t in te])
         L += [f"## lam = {lam:g} (a robot is worth {lam:g} of a success)", "",
-              f"Hedge (full feedback) picked: aware {fmt_exp(fa['hedge'], mth)}, blind {fmt_exp(fb['hedge'], taus)}; "
-              f"best in hindsight: aware {fmt_exp(besta, mth)}, blind {fmt_exp(bestb, taus)} "
-              f"(thresholds at t1 / t2 with 1 robot / t2 with 2 robots).", "",
-              "| policy | success | robots added | payoff | payoff vs aware table [95% CI] |", "|---|---|---|---|---|"]
+              f"Frozen threshold rules (t1 / t2 with 1 robot / t2 with 2 robots): given mass: hedge "
+              f"{fmt_exp(fa['hedge'], mth)}, exp3 {fmt_exp(fa['exp3'], mth)}, exp4 {fmt_exp(fa['exp4'], mth)}, best "
+              f"{fmt_exp(besta, mth)} kg; no mass: hedge {fmt_exp(fb['hedge'], taus)}, exp3 {fmt_exp(fb['exp3'], taus)}, "
+              f"exp4 {fmt_exp(fb['exp4'], taus)}, best {fmt_exp(bestb, taus)} (tau on the struggle signal).", "",
+              "| policy | success | robots added | payoff | payoff vs the given-mass table [95% CI] |", "|---|---|---|---|---|"]
         ent = {}
         for k, (Lf, pay, y, ad) in list(res.items()) + [("oracle (hindsight)", (None, orc, None, None))]:
-            d = pay - ref
-            bs = d[brng.integers(0, len(d), (4000, len(d)))].mean(1)
-            lo_, hi_ = np.percentile(bs, [2.5, 97.5])
-            ent[k] = {"payoff": float(pay.mean()), "diff": [float(d.mean()), float(lo_), float(hi_)]}
+            c = ci(pay - ref)
+            ent[k] = {"payoff": float(pay.mean()), "diff": list(c)}
             if y is not None:
                 ent[k].update(success=float(y.mean()), added=float(ad.mean()),
                               leaves={LEAVES[j]: float(np.mean(Lf == j)) for j in range(4)})
             L.append(f"| {k} | {'' if y is None else f'{100 * y.mean():.1f}%'} | {'' if ad is None else f'{ad.mean():.2f}'} | "
-                     f"{pay.mean():.3f} | {100 * d.mean():+.1f} [{100 * lo_:+.1f}, {100 * hi_:+.1f}] |")
-        L += ["", "Robots used per mass (mean team size at the end, test tasks):", "",
+                     f"{pay.mean():.3f} | {fmt(c)} |")
+        # the fair test of what the mass itself adds: the same fitted-Q with and without it
+        dm = ci(res["given mass: fitted-Q (response + object + mass)"][1] - res["no mass: fitted-Q (response + object)"][1])
+        ent["mass_feature_effect"] = list(dm)
+        L += ["", f"What the mass adds to the same predictor (fitted-Q, response + object, with vs without log mass): "
+                  f"{fmt(dm)} pp of payoff.", "",
+              "Mean team size at the end per mass (test tasks):", "",
               "| policy | " + " | ".join(f"{m:g} kg" for m in masses) + " |", "|---|" + "---|" * len(masses)]
-        for k in ("aware: table (K, mass)", "blind: estimated mass -> table", "blind: fitted-Q (logistic)",
-                  "blind: hedge (struggle thresholds)", "blind: exp4 (struggle thresholds)"):
+        for k in (REF, "no mass: estimated mass -> table", "no mass: fitted-Q (response + object)",
+                  "no mass: hedge (struggle thresholds)", "no mass: exp3 (struggle thresholds)",
+                  "no mass: exp4 (struggle thresholds)"):
             Lf = res[k][0]
             L.append(f"| {k} | " + " | ".join(
                 f"{np.mean([[1, 2, 2, 3][j] for t, j in zip(te, Lf) if t['mass'] == m]):.2f}" for m in masses) + " |")
         T = len(tr)
-        L += ["", f"Training regret vs the best expert in hindsight ({a.orders} random orders, {T} tasks; payoff units):", "",
+        L += ["", f"Training regret vs the best threshold rule in hindsight ({a.orders} random orders, {T} tasks; payoff "
+                  "units). Hedge sees every rule's payoff; exp3 and exp4 see only the path they took (exp4 sees the t2 state "
+                  "of the branch it took, never the other).", "",
               "| learner | after 100 | after 500 | end | per task |", "|---|---|---|---|---|"]
-        for nm, c in (("aware hedge", ca["hedge"]), ("aware exp4", ca["exp4"]), ("aware exp3 (vs best plan per mass)", ce3a),
-                      ("blind hedge", cb["hedge"]), ("blind exp4", cb["exp4"]), ("blind exp3 (vs best plan per bin)", ce3b)):
+        for nm, c in [(f"given mass {k_}", ca[k_]) for k_ in ("hedge", "exp3", "exp4")] + \
+                     [(f"no mass {k_}", cb[k_]) for k_ in ("hedge", "exp3", "exp4")]:
             L.append(f"| {nm} | {c[min(99, T - 1)]:.1f} | {c[min(499, T - 1)]:.1f} | {c[-1]:.1f} | {c[-1] / T:.3f} |")
         L.append("")
-        ent["regret_per_task"] = {"aware_hedge": float(ca["hedge"][-1] / T), "aware_exp4": float(ca["exp4"][-1] / T),
-                                  "blind_hedge": float(cb["hedge"][-1] / T), "blind_exp4": float(cb["exp4"][-1] / T),
-                                  "aware_exp3": float(ce3a[-1] / T), "blind_exp3": float(ce3b[-1] / T)}
+        ent["regret_per_task"] = {**{f"given_mass_{k_}": float(ca[k_][-1] / T) for k_ in ca},
+                                  **{f"no_mass_{k_}": float(cb[k_][-1] / T) for k_ in cb}}
+        L += transfer(tr, te, lam, ci, fmt, ent)
         summ["by_lam"][f"{lam:g}"] = ent
-        np.savez(out / f"regret_lam{lam:g}.npz", **{k: v for k, v in ca.items()}, **{f"blind_{k}": v for k, v in cb.items()},
-                 aware_exp3=ce3a, blind_exp3=ce3b)
+        np.savez(out / f"regret_lam{lam:g}.npz", **{f"given_mass_{k}": v for k, v in ca.items()},
+                 **{f"no_mass_{k}": v for k, v in cb.items()})
     (out / "summary.md").write_text("\n".join(L) + "\n")
     (out / "summary.json").write_text(json.dumps(summ, indent=1))
     print("\n".join(L))
