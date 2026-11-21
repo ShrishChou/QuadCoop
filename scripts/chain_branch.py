@@ -4,7 +4,10 @@
 
 The contact planner (expert rule 4 + the Stage 4 executor turn_debug/model_15000, start behind, 80 s) with three
 ANYmal C (QUADCOOP_PAIR=anymal3). Robot 1 starts alone: robot 2 is parked (out of the push group, idle) and robot 3
-(the scripted helper of helper_branch.py) parked too. Two decision times, --t1 and --t2; each task runs in a tree of
+(the scripted helper of helper_branch.py) parked too. The learned executor was trained in pairs only and does not
+engage on its own (kc-check: on its contact 4% of the time), so while alone robot 1 is driven by the same scripted
+ContactController as the helper, on the best single contact under the helper's direct score (re-picked every
+--repick-s); once robot 2 joins, robot 1 is handed to the learned executor with its partner. Two decision times, --t1 and --t2; each task runs in a tree of
 twins, every branch a full state copy (scripts/branch_help.clone_envs):
 
     t1: k1 --+-- (wait)  k1 ------- t2 --+-- (wait) k1        leaf "k1"   (1 robot)
@@ -66,6 +69,10 @@ def main() -> int:
     ap.add_argument("--stage-dist", type=float, default=3.0)
     ap.add_argument("--push-force", type=float, default=160.0)
     ap.add_argument("--slow-min-s", type=float, default=1.0)
+    ap.add_argument("--join", choices=("executor", "approach"), default="approach",
+                    help="robot 2 joining: the learned executor at once, or the scripted controller walks it to its planned "
+                         "contact and hands it to the executor once it is on it")
+    ap.add_argument("--repick-s", type=float, default=2.0, help="robot 1 alone: re-pick its contact this often (s)")
     ap.add_argument("--prefix", default="kchain")
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
@@ -188,6 +195,8 @@ def main() -> int:
         robots = [base.scene[ag] for ag in AGENTS]
         hr = robots[2]
         ctrl = ContactController(n, dev, reach=SPECS[H].half_length)
+        ctrl1 = ContactController(n, dev, reach=SPECS[AGENTS[0]].half_length)  # robot 1 while alone
+        ctrl2 = ContactController(n, dev, reach=SPECS[AGENTS[1]].half_length)  # robot 2 approaching (--join approach)
         idle = torch.tensor(IDLE_ACTION, device=dev)
         radius = g.radius_env[ids, obj_idx]
 
@@ -198,7 +207,10 @@ def main() -> int:
         S = {"done": zb(), "hold": zf(), "t_succ": nanv(), "fell0": zb(), "fell1": zb(), "fell2": zb(),
              "pres1": zb(), "pres2": zb(), "joint_on": zb(), "h_on": zb(), "h_has": zb(),
              "h_p": torch.zeros(n, 2, device=dev), "h_n": torch.zeros(n, 2, device=dev), "h_pre": torch.zeros(n, 2, device=dev),
-             "h_idx": torch.full((n,), -1, dtype=torch.long, device=dev), "h_arr": nanv(), "t_add2": nanv(), "t_add3": nanv(),
+             "h_idx": torch.full((n,), -1, dtype=torch.long, device=dev), "h_arr": nanv(),
+             "s_p": torch.zeros(n, 2, device=dev), "s_n": torch.zeros(n, 2, device=dev), "s_pre": torch.zeros(n, 2, device=dev),
+             "s_idx": torch.full((n,), -1, dtype=torch.long, device=dev), "s_has": zb(), "s_next": zf(), "j2": zb(),
+             "tf0": nanv(), "tf1": nanv(), "tf2": nanv(), "t_add2": nanv(), "t_add3": nanv(),
              "touch_t": zf(), "live_t": zf(), "robot_s": zf(), "last_d": g.errors()[0].clone(), "last_e": zf(),
              "ema_v": zf(), "ema_w": zf(), "ema_p": zf(), "ema_f": zf(), "best_d": g.errors()[0].clone(), "stall": zf(),
              "prev_xy": g.box_pos()[:, :2].clone(), "prev_yaw": g.contact_frame_yaw().clone(), "prev_d": g.errors()[0].clone()}
@@ -212,7 +224,7 @@ def main() -> int:
             return {"t": torch.full((n,), t, device=dev), "d": d_.clone(), "e_deg": torch.rad2deg(e_.abs()),
                     "d0": d0.clone(), "speed": S["ema_v"].clone(), "yawrate": S["ema_w"].clone(),
                     "prog_rate": S["ema_p"].clone(), "force": S["ema_f"].clone(), "stall_s": S["stall"].clone(),
-                    "on1": g.on_contact(0).float(), "on2": (g.on_contact(1) & S["pres1"]).float(),
+                    "on1": torch.where(S["pres1"], g.on_contact(0), ctrl1.pushing).float(), "on2": (g.on_contact(1) & S["pres1"]).float(),
                     "mass": torch.full((n,), mass, device=dev), "strength": g.current_strength().clamp(max=1e3),
                     "need_more": g.c_need_more.float().clone(), "done": S["done"].clone()}
 
@@ -230,6 +242,10 @@ def main() -> int:
                             v[dst] = v[src]
                 for jj, kk in zip(dst.tolist(), src.tolist()):
                     how[jj] = how[kk]
+                for cc in (ctrl, ctrl1, ctrl2):
+                    for v in vars(cc).values():
+                        if torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == n:
+                            v[dst] = v[src]
             return cnt
 
         def stage(robot, e_, others):
@@ -258,6 +274,9 @@ def main() -> int:
             S["t_add2"][e_] = t
             g.c_in_group[e_, 1] = True
             g._reselect_expert(e_)
+            if a.join == "approach":
+                S["j2"][e_] = True
+                ctrl2.reset(torch.zeros(n, dtype=torch.bool, device=dev).index_fill_(0, e_, True))
             return len(e_)
 
         def contact_scores(e_, p, nn):
@@ -274,6 +293,24 @@ def main() -> int:
             tau = (r[..., 0] * f[..., 1] - r[..., 1] * f[..., 0]) / cg.unsqueeze(-1)
             tfrac = ((cg * wz).abs() / ((cg * wz).abs() + vn.squeeze(-1)).clamp(min=1e-6)).unsqueeze(-1)
             return along + tfrac * torch.sign(wz).unsqueeze(-1) * tau - 0.3 * (1.0 - tfrac) * tau.abs(), along > -0.2
+
+        def solo_pick(e_):
+            """Robot 1 alone: the best single contact under the direct score (never against the wanted motion)."""
+            if len(e_) == 0:
+                return
+            p, nn, pre, _, valid, _ = g._contact_geom(e_, g.shape[e_])
+            sc_, ok_ = contact_scores(e_, p, nn)
+            sc_ = torch.where(ok_ & valid, sc_, torch.full_like(sc_, -1e9))
+            best, j = sc_.max(-1)
+            has = best > -1e8
+            ar = torch.arange(len(e_), device=dev)
+            changed = has & (j != S["s_idx"][e_])
+            S["s_idx"][e_] = torch.where(has, j, S["s_idx"][e_])
+            for key, src_ in (("s_p", p), ("s_n", nn), ("s_pre", pre)):
+                S[key][e_] = torch.where(has.unsqueeze(-1), src_[ar, j], S[key][e_])
+            S["s_has"][e_] = has | S["s_has"][e_]
+            if bool(changed.any()):
+                ctrl1.reset(torch.zeros(n, dtype=torch.bool, device=dev).index_fill_(0, e_[changed], True))
 
         def joint_decide(e_):
             """helper_branch.joint_decide (summed per-contact score): all three robots' contacts together."""
@@ -369,6 +406,23 @@ def main() -> int:
                 act[:, 3:6] = torch.where(S["pres1"].unsqueeze(-1), act[:, 3:6], idle.expand(n, 3))  # parked: stand
                 _, e = g.errors()
                 e = torch.where(g.symmetry() > 0, e, torch.zeros_like(e))
+                alone = ~S["pres1"] & live
+                due = alone & (t >= S["s_next"])
+                if bool(due.any()):
+                    solo_pick(due.nonzero().flatten())
+                    S["s_next"] = torch.where(due, torch.full_like(S["s_next"], t + a.repick_s), S["s_next"])
+                act1 = alone & S["s_has"]
+                tw1, _ = ctrl1(robots[0].data.root_link_pos_w[:, :2], yaw_of(robots[0].data.root_link_quat_w),
+                               g.box_pos()[:, :2], g.contact_frame_yaw(), radius, S["s_p"], S["s_n"], g.c_cof, g.goal_xy, e,
+                               pre_obj=S["s_pre"], partner_pos=robots[1].data.root_link_pos_w[:, :2], active=act1)
+                act[:, 0:3] = torch.where(act1.unsqueeze(-1), to_action(tw1), act[:, 0:3])
+                if a.join == "approach":
+                    S["j2"] &= ~g.on_contact(1) & live  # on its contact: the executor takes over
+                    tw2, _ = ctrl2(robots[1].data.root_link_pos_w[:, :2], yaw_of(robots[1].data.root_link_quat_w),
+                                   g.box_pos()[:, :2], g.contact_frame_yaw(), radius, g.c_pobj[:, 1], g.c_nobj[:, 1], g.c_cof,
+                                   g.goal_xy, e, pre_obj=g.c_preobj[:, 1], partner_pos=robots[0].data.root_link_pos_w[:, :2],
+                                   active=S["j2"])
+                    act[:, 3:6] = torch.where(S["j2"].unsqueeze(-1), to_action(tw2), act[:, 3:6])
                 mates = torch.stack([robots[k].data.root_link_pos_w[:, :2] for k in range(2)], 1)
                 hp = hr.data.root_link_pos_w[:, :2]
                 near = mates[torch.arange(n, device=dev), torch.linalg.norm(mates - hp.unsqueeze(1), dim=-1).argmin(-1)]
@@ -384,6 +438,7 @@ def main() -> int:
                 for k, ag in enumerate(AGENTS):
                     f_ = falls.fallen(base, asset_name=ag, nominal_height=SPECS[ag].nominal_height) & pres[k] & live
                     S[f"fell{k}"] |= f_
+                    S[f"tf{k}"] = torch.where(f_ & torch.isnan(S[f"tf{k}"]), torch.full_like(S[f"tf{k}"], t), S[f"tf{k}"])
                     f_any |= f_
                 tip = hb.box_tipped(base) & live & ~f_any
                 lost = cm.box_lost(base) & live & ~f_any & ~tip
@@ -440,6 +495,8 @@ def main() -> int:
                          "t_add3": "" if math.isnan(float(S["t_add3"][j])) else round(float(S["t_add3"][j]), 2),
                          "helper_arrive_s": "" if math.isnan(float(S["h_arr"][j])) else round(float(S["h_arr"][j]), 2),
                          **{f"fell_{ag}": int(bool(S[f"fell{q}"][j])) for q, ag in enumerate(AGENTS)},
+                         **{f"t_fall_{ag}": ("" if math.isnan(float(S[f"tf{q}"][j])) else round(float(S[f"tf{q}"][j]), 2))
+                            for q, ag in enumerate(AGENTS)},
                          "robots_touch_frac": round(float(S["touch_t"][j] / S["live_t"][j].clamp(min=1e-6)), 3),
                          "ended_t1": int(bool(feats[1]["done"][j])), "ended_t2": int(bool(feats[2]["done"][j])),
                          **{f"f1_{key}": fv(1, key) for key in BLIND + AWARE},
