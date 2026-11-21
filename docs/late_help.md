@@ -62,3 +62,39 @@ Rules: never / always / object-mass table / stall threshold / predictor (two log
 inputs) / oracle; online: Hedge (full information), EXP4 (bandit, the rules as experts), Exp3 (bandit, no inputs);
 lam (price of helper time) swept. Checked on synthetic branches: rule ordering as constructed, Hedge regret 0.011
 per task, EXP4 0.047, Exp3 0.152.
+
+## Results: the third robot (2026-11-21)
+
+Pair (planner) at 10 s, a scripted helper staged 3 m behind; nets vs the pair continuing alone, 95% paired bootstrap.
+
+Joint direct search vs the add-on helper (hbj-7100 / hbj-7500):
+
+| | 60 kg net | 80 kg net |
+|---|---|---|
+| null (noise floor) | +2.6 / -0.9 | +0.9 / +3.6 |
+| add-on helper (h1) | -9.6 / -12.4 | -2.6 / -4.5 |
+| joint planner | -2.6 / +0.9 | **+18.4 / +10.0** |
+
+Re-planning all three contacts removes the add-on's disruption at 60 kg (where a third robot is not needed) and makes
+the helper pay at 80 kg, on both seeds.
+
+Move type at the helper's arrival (`movetype_learn.py`, train seeds 1001-1003 = 650 decisions, test seed 7900 = 213):
+
+| test success | 60 kg | 80 kg | all |
+|---|---|---|---|
+| pair alone | 73.4% | 24.0% | 49.3% |
+| add-on helper | 63.3% | 18.3% | 41.3% |
+| direct search (move type by score) | 70.6% | 52.9% | 62.0% |
+| per-mass table = Hedge (frozen: keep at both) | 78.9% | 54.8% | 67.1% (+5.2 [-1.4, +11.7] vs direct) |
+| Exp3 (frozen: move both) | 71.6% | 47.1% | 59.6% |
+| net-force score (jnet) | 75.2% | 49.0% | 62.4% |
+| best group per task (hindsight) | 89.9% | 72.1% | 81.2% |
+
+- Direct search picks "keep" in only 13-18% of tasks, but keeping the incumbents is the best fixed rule: the contact
+  score overvalues moving a robot that is already pushing. Learned "keep" gains +8.3 [0.0, +16.5] at 60 kg.
+- Hedge regret 0.033 per decision, Exp3 0.027; with bandit feedback Exp3 still froze to the wrong group (move both).
+- The net-force score adds nothing over the per-contact score (+0.5 overall).
+- The hindsight gap (+19 pp) is not reachable with mass as the only context.
+- Interference: the add-on helper's robot contact is mostly after it arrives (11.5 s / 13.0 s per episode touching after
+  vs 2.4 / 2.6 s before); every planned variant cuts the after-arrival touching to 3.5-7 s and halves the incumbent losses
+  while touching. The problem is formation, not the approach route.
