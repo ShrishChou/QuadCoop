@@ -80,6 +80,16 @@ It uses this in three ways:
    - **Transfer fails:** a struggling pair needs help differently from a struggling solo robot, for example because a
      third contact adds crowding.
 
+5. **The main dispatch test: when should a working pair call robot 3? (`scripts/k_budget.py`)** The decision is at
+   t2, with the pair still pushing. The solo-robot decision is close to trivial with the scripted solo pusher (8%
+   success alone), so the 1 -> 2 step is not the test. Every ranker sends helpers to the same fraction of decisions:
+   - **Rankers:** random; the mass rule (training uplift per mass); mass + object; the observed push alone (T-learner);
+     push + mass; and the mass order across masses with the push order within a mass.
+   - **Scoring:** extra objects at the goal, with paired CIs against the mass rule.
+   - **Placebo:** each allocation is also scored with the k2null copy in place of robot 3, so the true value is 0.
+   - **Within each mass:** the uplift among the top half of the push ranking against the bottom half. This is the
+     question of which 80 kg pushes a helper can rescue.
+
 ## Wording for the paper
 
 - The headline is **dispatch without being given the mass**, not "the team infers the mass".
