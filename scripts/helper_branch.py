@@ -117,6 +117,12 @@ def main() -> int:
     ap.add_argument("--horizon", type=float, default=80.0)
     ap.add_argument("--branch-s", type=float, default=10.0, help="decision time (s from the start)")
     ap.add_argument("--ranks", type=int, default=3, help="helper twins: the 1st .. r-th best third contact")
+    ap.add_argument("--movetypes", action="store_true",
+                    help="add twins keep / move1 / move2: at the branch the helper arrives and the planner takes the best "
+                         "assignment in which 0 / exactly 1 / both incumbents change contact; afterwards ordinary joint "
+                         "re-planning (as the 'joint' twin) in all of them")
+    ap.add_argument("--jnet", action="store_true",
+                    help="add a 'jnet' twin: the joint planner with the net-force / net-moment score")
     ap.add_argument("--joint", action="store_true",
                     help="add a 'joint' twin: from the branch on, every re-plan chooses all three robots' contacts together")
     ap.add_argument("--stage-dist", type=float, default=3.0, help="helper staging distance behind the object (m)")
@@ -172,7 +178,9 @@ def main() -> int:
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
     ck_cfg = ck.get("cfg", {})
     assert ck_cfg.get("contacts"), f"{a.checkpoint} was not trained with --contacts"
-    arms = ["pair", "null"] + [f"h{r_ + 1}" for r_ in range(a.ranks)] + (["joint"] if a.joint else [])
+    arms = (["pair", "null"] + [f"h{r_ + 1}" for r_ in range(a.ranks)] + (["joint"] if a.joint else [])
+            + (["keep", "move1", "move2"] if a.movetypes else []) + (["jnet"] if a.jnet else []))
+    JOINTLIKE = ("joint", "keep", "move1", "move2", "jnet")
     from branch_help import clone_envs
     objects = [o.strip() for o in a.objects.split(",")]
     masses = [float(x) for x in a.masses.split(",")]
@@ -241,7 +249,18 @@ def main() -> int:
         for k in range(len(SHAPES2)):
             m2.apply_geometry(base, ids, k, torch.ones(n, 3, device=dev))
         arm_of = [c[0] for c in cases]
-        is_joint = torch.tensor([x == "joint" for x in arm_of], device=dev)
+        is_joint = torch.tensor([x in JOINTLIKE for x in arm_of], device=dev)
+        group_of = torch.tensor([{"keep": 0, "move1": 1, "move2": 2}.get(x, -1) for x in arm_of], device=dev)
+        net_of = torch.tensor([x == "jnet" for x in arm_of], device=dev)
+        g_best = torch.full((n, 3), float("nan"), device=dev)  # best score per move group at the first decision
+        g_infeas = torch.zeros(n, dtype=torch.bool, device=dev)  # this twin's group had no feasible assignment
+        # interference: robot-robot contact before / after the helper first presses; incumbent contact losses
+        h_arr = torch.full((n,), float("nan"), device=dev)
+        touch_pre = torch.zeros(n, device=dev)
+        touch_post = torch.zeros(n, device=dev)
+        inc_loss = torch.zeros(n, device=dev)
+        inc_loss_touch = torch.zeros(n, device=dev)
+        prev_on = torch.zeros(n, 2, dtype=torch.bool, device=dev)
         is_helper = torch.tensor([x.startswith("h") for x in arm_of], device=dev) | is_joint
         rank_of = torch.tensor([int(x[1:]) - 1 if x.startswith("h") else 0 for x in arm_of], device=dev)
         joint_on = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -361,9 +380,9 @@ def main() -> int:
             r = p - g.c_cof[e_].unsqueeze(1)
             tau = (r[..., 0] * f[..., 1] - r[..., 1] * f[..., 0]) / cg.unsqueeze(-1)
             tfrac = ((cg * wz).abs() / ((cg * wz).abs() + vn.squeeze(-1)).clamp(min=1e-6)).unsqueeze(-1)
-            return along + tfrac * torch.sign(wz).unsqueeze(-1) * tau - 0.3 * (1.0 - tfrac) * tau.abs(), along > -0.2
+            return along, tau, tfrac, torch.sign(wz).unsqueeze(-1), along > -0.2
 
-        def joint_decide(e_):
+        def joint_decide(e_, group=None, log=False):
             """All three robots' contacts together: maximise the summed push score of three distinct, separated
             contacts minus the expert's transition costs (time_weight x the slowest arrival, stop_weight per
             incumbent that leaves a contact it is pushing on). Keep / move one / move both are all candidates."""
@@ -375,7 +394,7 @@ def main() -> int:
             m_, K = p.shape[0], p.shape[1]
             ar = torch.arange(m_, device=dev)
             _, _, _, _, valid, sep = g._contact_geom(e_, g.shape[e_])
-            sc_, ok_ = contact_scores(e_, p, nn)
+            al_, tau_, tf_, sg_, ok_ = contact_scores(e_, p, nn)
             ok_ = ok_ & valid
             t1, t2 = prop["t_route"]
             # the helper's route: straight line to the contact's standing point / walk speed, x1.3 for going around
@@ -388,13 +407,31 @@ def main() -> int:
             kk = torch.arange(K, device=dev)
             stop1 = ((kk.unsqueeze(0) != cur[:, :1]) & on[:, :1]).float()  # (m, K)
             stop2 = ((kk.unsqueeze(0) != cur[:, 1:2]) & on[:, 1:2]).float()
-            T = (sc_[:, :, None, None] + sc_[:, None, :, None] + sc_[:, None, None, :]
+            A3 = lambda x: x[:, :, None, None] + x[:, None, :, None] + x[:, None, None, :]  # noqa: E731
+            tf4 = tf_.view(m_, 1, 1, 1)
+            sg4 = sg_.view(m_, 1, 1, 1)
+            sc_ = al_ + tf_ * sg_ * tau_ - 0.3 * (1.0 - tf_) * tau_.abs()  # per contact (the add-on helper's score)
+            push_sum = A3(sc_)
+            push_net = A3(al_) + tf4 * sg4 * A3(tau_) - 0.3 * (1.0 - tf4) * A3(tau_).abs()  # moments may cancel
+            push = torch.where(net_of[e_].view(m_, 1, 1, 1), push_net, push_sum)
+            T = (push
                  - c_.time_weight * torch.maximum(torch.maximum(t1[:, :, None, None], t2[:, None, :, None]), th[:, None, None, :])
                  - c_.stop_weight * (stop1[:, :, None, None] + stop2[:, None, :, None]))
             feas = (use[:, :, :, None] & sep[:, :, None, :] & sep[:, None, :, :]
                     & ok_[:, :, None, None] & ok_[:, None, :, None] & ok_[:, None, None, :])
             feas &= (kk[:, None, None] != kk[None, None, :]).unsqueeze(0) & (kk[None, :, None] != kk[None, None, :]).unsqueeze(0)
             T = torch.where(feas, T, torch.full_like(T, -1e9))
+            moved = ((kk[None, :, None, None] != cur[:, 0].view(m_, 1, 1, 1)).long()
+                     + (kk[None, None, :, None] != cur[:, 1].view(m_, 1, 1, 1)).long())  # 0 / 1 / 2 incumbents change
+            if log:
+                for gq in range(3):
+                    bq = torch.where(moved == gq, T, torch.full_like(T, -1e9)).view(m_, -1).max(-1).values
+                    g_best[e_, gq] = torch.where(bq > -1e8, bq, torch.full_like(bq, float("nan")))
+            if group is not None:
+                Tg = torch.where(moved == group.view(m_, 1, 1, 1), T, torch.full_like(T, -1e9))
+                okg = Tg.view(m_, -1).max(-1).values > -1e8
+                g_infeas[e_] = ~okg
+                T = torch.where(okg.view(m_, 1, 1, 1), Tg, T)  # infeasible group: flagged, falls back to unrestricted
             best, flat = T.view(m_, -1).max(-1)
             has = best > -1e8
             ia, ib, ic = flat // (K * K), (flat // K) % K, flat % K
@@ -535,7 +572,12 @@ def main() -> int:
                         st[:, 3:7] = quat_from_euler_xyz(zz, zz, yw)
                         hr.write_root_state_to_sim(st, e_)
                         joint_on[e_] = True
-                        joint_decide(e_)
+                        grp = group_of[e_]
+                        mv = grp >= 0
+                        if bool(mv.any()):
+                            joint_decide(e_[mv], group=grp[mv], log=True)
+                        if bool((~mv).any()):
+                            joint_decide(e_[~mv], log=True)
                         jgo = jsel & h_has
                         h_on |= jgo
                         h_t_on = torch.where(jgo, torch.full_like(h_t_on, t), h_t_on)
@@ -574,6 +616,15 @@ def main() -> int:
                 succ = ok & (hold >= 1.0)
                 t_succ = torch.where(succ, torch.full_like(t_succ, t), t_succ)
                 pushing_h = ph & act_h & ok
+                h_arr = torch.where(pushing_h & torch.isnan(h_arr), torch.full_like(h_arr, t), h_arr)
+                tch = (cm.robots_touching(base) > 0) & ok & h_on
+                touch_pre += (tch & torch.isnan(h_arr)).float() * dt
+                touch_post += (tch & ~torch.isnan(h_arr)).float() * dt
+                on_now = torch.stack([g.on_contact(0), g.on_contact(1)], -1)
+                lost_c = (prev_on & ~on_now).any(-1) & ok & h_on
+                inc_loss += lost_c.float()
+                inc_loss_touch += (lost_c & tch).float()
+                prev_on = on_now
                 h_push_t += pushing_h.float() * dt
                 h_force += torch.linalg.norm(cm.object_force_from(base, H), dim=-1) * pushing_h.float() * dt
                 touch_t += (cm.robots_touching(base) > 0).float() * ok.float() * dt
@@ -608,7 +659,14 @@ def main() -> int:
                             if feat is not None else {}),
                          "contact_score": "" if math.isnan(float(h_score[j])) else round(float(h_score[j]), 3),
                          "best_score": "" if math.isnan(float(h_best[j])) else round(float(h_best[j]), 3),
-                         "n_feasible": int(h_nfeas[j]), "joint_incumbent_moves": int(j_moves[j])})
+                         "n_feasible": int(h_nfeas[j]), "joint_incumbent_moves": int(j_moves[j]),
+                         **{f"group{q}_score": ("" if math.isnan(float(g_best[j, q])) else round(float(g_best[j, q]), 3))
+                            for q in range(3)},
+                         "group_infeasible": int(bool(g_infeas[j])),
+                         "helper_arrive_s": "" if math.isnan(float(h_arr[j])) else round(float(h_arr[j]) - a.branch_s, 2),
+                         "touch_before_arrival_s": round(float(touch_pre[j]), 2),
+                         "touch_after_arrival_s": round(float(touch_post[j]), 2),
+                         "incumbent_contact_losses": int(inc_loss[j]), "losses_while_touching": int(inc_loss_touch[j])})
         if fid is not None:
             _film(a, base, cases, film_ids, how, t_succ, mass, dt * stride, rec_q, rec_mp, rec_mq, rec_pts, rec_cap, out)
         sel = [x for x in rows if x["mass"] == mass]
