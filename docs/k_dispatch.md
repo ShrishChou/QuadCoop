@@ -459,3 +459,30 @@ Run once:
 
 The development value behind the "expected" readings came from the buggy trees, so no expected direction is stated
 for the rerun.
+
+### Step 1 development result (seeds 1001-1003, corrected code, 1417 eligible trio decisions)
+
+Full output: `logs/evals/k-withdraw-dev/`. Protocol rule selected **k4w75**: all three triggers within 0.2 pp, so the
+largest radius wins.
+
+| arm | success | vs k3 (stay at three) | vs k4 (robot 4 stays) | time to region vs k3 | robot-4 s |
+|---|---|---|---|---|---|
+| k3 | 63.5% | | | | 0 |
+| k3null | 63.7% | +0.1 [-1.8, +2.1] | | +0.1 s | 0 |
+| k4 | 53.3% | -10.2 [-12.6, -7.9] | | +1.8 [+1.1, +2.4] s | 24.2 |
+| k4w75 | 59.6% | -3.9 [-6.1, -1.8] | +6.4 [+4.1, +8.7] | +2.3 [+1.7, +3.0] s | 10.9 |
+
+In the heavy regime (80 + 100 kg): k4 -7.7 [-11.2, -4.1], k4w75 -4.4 [-7.9, -0.9] vs k3, and k4w75 vs k4
++3.3 [+0.0, +6.8]. On the starts not within 0.75 m at t2: k4 -12.9, k4w75 -6.7 [-10.0, -3.5] vs k3.
+
+Against the readings fixed in the protocol:
+- Not only finishing interference. Robot 4 is already slower to the near-goal region (+1.8 s). By the protocol's
+  rule, the harm starts in approach or contact assignment. It also costs time at the finish: time to success
+  +5.0 s against +1.8 s to the region.
+  - Mechanism (interim, on the starts robot 4 joined that were not yet near): robots touch each other 28% vs 15% of the
+    time, and some robot falls in 25% vs 16% of episodes. Contact switching and pressing of robots 1-3 are unchanged.
+- Finding 1 (release improves the controller): yes on development, +6.4 pp, largest at 60 kg (+15).
+- Finding 2 (calling a fourth robot can pay): no. k4w75 is below k3 in all masses and in the heavy regime. No mass
+  has k4w above k3, except 20 kg, where the trio is already near the goal and robot 4 is sent away at once (+0.4).
+  Nor is it within 2 pp of k3.
+- Finding 3 is therefore not attempted.
