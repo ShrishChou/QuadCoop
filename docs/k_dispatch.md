@@ -308,3 +308,33 @@ contact switches per robot from t2 (`switches1-4`).
 Check: `k4-check2` (seed 1001, 20 / 60 / 100 kg, 1 rep). Identical to `k4-check` up to t2 and per-mass seeded, so its
 k4 arm is a paired comparison of the old and new search. The full trees are rerun only if the fix removes the harm.
 The 8201-8202 trees from the old code are not analysed.
+
+### Paired check result (k4-check2) and mechanism
+
+The fix did not remove the harm. Robot 4 changed success by +4.5 (20 kg, n = 22), -26.7 (60 kg) and -12.5 pp (100 kg),
+with the null between 0 and +6. Robot 3 switches contacts about as often with robot 4 as without (60 kg: 7.3 vs 9.5
+switches after t2). Every robot, the pair included, switches about every 5 s in both arms; that is the planner's
+normal re-planning schedule. (Two runs of the same code agree on the trio arm in only 76% of tasks: the GPU solver is
+not bitwise reproducible and runs diverge after t2, so cross-run comparisons are not exactly paired.)
+
+On the training trees, 157 of the 270 disruptions ended at the horizon, with a median final position error of
+0.18 m (success needs 0.10 m and 6 degrees). The robots touch each other twice as often (23% vs 11% of the time), and
+successes are slower (35.8 vs 33.2 s median). Four robots bring the object close to the goal but crowd each other
+during the final alignment; no helper ever withdraws. This is a limit of the current controller, not of the
+bookkeeping.
+
+### Frozen 3 -> 4 transfer test (stated 2026-11-22 before opening 8201-8202)
+
+System: the chain4 trees as generated (code before 9feaa6f, for training and test alike). Script ,
+unchanged since ce2ccaa (sha256 5120f7e37d55...).
+
+    python scripts/k_transfer.py --train logs/evals/k4-s100{1,2,3}{a,b} --test logs/evals/k4-s820{1,2}{a,b} --out logs/evals/k-transfer
+
+Endpoints, on the test seeds' 3 -> 4 decisions:
+1. Ranking transfer: the within-mass top-half minus bottom-half uplift for the transferred 2 -> 3 rule.
+   Development value -2.8 [-12.3, +6.2]; expected about 0, which would mean no transfer.
+2. Threshold transfer: the payoff of the transferred ask rule minus always staying (the best fixed choice
+   on the training trees). Development value -6.2 [-8.9, -3.6]; expected negative, meaning the 2 -> 3 rule calls a
+   fourth robot that does harm.
+3. Secondary: the same for the in-domain 3 -> 4 rule, to show what is learnable at 3 -> 4.
+Run once.
