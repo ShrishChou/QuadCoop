@@ -418,9 +418,19 @@ def main() -> int:
             e_ = idx_of[arm][~S["done"][idx_of[arm]]]
             if len(e_) == 0:
                 return 0
-            stage(robots[2 + j], e_, list(range(2 + j)))
+            hr_ = robots[2 + j]
+            parked = torch.cat([hr_.data.root_link_pos_w[e_], hr_.data.root_link_quat_w[e_],
+                                torch.zeros(len(e_), 6, device=dev)], -1)
+            stage(hr_, e_, list(range(2 + j)))
             S["nh"][e_] = j + 1
             joint_decide(e_, j + 1)
+            # no feasible assignment now: the helper does not join (it goes back to its parking spot and the team keeps
+            # its size). Before this, nh stayed j + 1 with the helper idle at staging, and the team kept planning around
+            # a robot that never came (25% of the 3 -> 4 calls in the first k4 trees).
+            no = ~S[f"h_has{j}"][e_]
+            if bool(no.any()):
+                S["nh"][e_[no]] = j
+                hr_.write_root_state_to_sim(parked[no], e_[no])
             go = torch.zeros(n, dtype=torch.bool, device=dev).index_fill_(0, e_, True) & S[f"h_has{j}"]
             S[f"h_on{j}"] |= go
             S[f"t_add{3 + j}"] = torch.where(go, torch.full_like(S[f"t_add{3 + j}"], t), S[f"t_add{3 + j}"])
