@@ -60,8 +60,18 @@ def main() -> int:
     def f(c, k=100, p=1):
         return f"{k * c[0]:+.{p}f} [{k * c[1]:+.{p}f}, {k * c[2]:+.{p}f}]"
 
-    groups = {"all masses": ts, "heavy (80 + 100 kg)": [t for t in ts if t["k3"]["mass"] in HEAVY]}
-    groups |= {f"{m:g} kg": [t for t in ts if float(t["k3"]["mass"]) == m] for m in sorted({float(t["k3"]["mass"]) for t in ts})}
+    masses = sorted({float(t["k3"]["mass"]) for t in ts})
+    groups = {"all masses": ts, "heavy (80 + 100 kg)": [t for t in ts if float(t["k3"]["mass"]) in HEAVY]}
+    groups |= {f"{m:g} kg": [t for t in ts if float(t["k3"]["mass"]) == m] for m in masses}
+    assert len(groups["heavy (80 + 100 kg)"]) == sum(len(groups[f"{m:g} kg"]) for m in HEAVY if m in masses)
+    assert len(ts) == sum(len(groups[f"{m:g} kg"]) for m in masses)
+    # trios already inside a release radius at t2 can be "helped" by a robot 4 sent away at once: report the arms
+    # also on the starts not yet within the largest radius, where every arm's robot 4 has a transport phase
+    wr = [int(x[3:]) / 100 for x in arms if x.startswith("k4w")]
+    if wr:
+        groups[f"not within {max(wr):g} m at t2"] = [t for t in ts if _f(t["k3"]["f2_d"]) >= max(wr)]
+        groups[f"heavy, not within {max(wr):g} m at t2"] = [t for t in groups[f"not within {max(wr):g} m at t2"]
+                                                          if float(t["k3"]["mass"]) in HEAVY]
     L = [f"# Robot 4: stay, or withdraw near the goal? ({len(ts)} eligible trio decisions)", "",
          f"Arms: {', '.join(arms)}. Over all eligible starts; times are restricted means over the {H:g} s horizon "
          "(never = horizon). Differences vs k3 (stay at three), paired 95% bootstrap over tasks.", ""]
@@ -76,7 +86,7 @@ def main() -> int:
         L += [f"## {gname} ({n} decisions)", "",
               "| arm | success | in region | time to region (s) | time to success (s) | success if in region | "
               "robot-4 s | rescues / disruptions | success vs k3 (pp) | region vs k3 (pp) | time to region vs k3 (s) | "
-              "time to success vs k3 (s) |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+              "time to success vs k3 (s) | success vs k4 (pp) |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         ent = {}
         for arm in arms:
             y = col(sub, arm, "success")
@@ -92,12 +102,22 @@ def main() -> int:
             resc, disr = int(((y == 1) & (y3 == 0)).sum()), int(((y == 0) & (y3 == 1)).sum())
             ds, dr, dt_r, dt_s = ci(y - y3, B), ci(reg.astype(float) - reg3, B), ci(rt - rt3, B), ci(st - st3, B)
             same = arm == "k3"
+            dk4 = ci(y - col(sub, "k4", "success"), B) if arm.startswith("k4w") else None
             L.append(f"| {arm} | {100 * y.mean():.1f}% | {100 * reg.mean():.1f}% | {rt.mean():.1f} | {st.mean():.1f} | "
                      f"{100 * y[reg].mean() if reg.any() else float('nan'):.1f}% | {np.nanmean(h4):.1f} | {resc} / {disr} | "
-                     + (" | | | |" if same else f"{f(ds)} | {f(dr)} | {f(dt_r, 1)} | {f(dt_s, 1)} |"))
+                     + (" | | | | |" if same else f"{f(ds)} | {f(dr)} | {f(dt_r, 1)} | {f(dt_s, 1)} | "
+                                                  + (f"{f(dk4)} |" if dk4 else " |")))
             ent[arm] = {"success": float(y.mean()), "region": float(reg.mean()), "t_region": float(rt.mean()),
                         "t_success": float(st.mean()), "helper4_s": float(np.nanmean(h4)), "rescues": resc,
-                        "disruptions": disr, "d_success": ds, "d_region": dr, "d_t_region": dt_r, "d_t_success": dt_s}
+                        "disruptions": disr, "d_success_vs_k4": dk4, "d_success": ds, "d_region": dr, "d_t_region": dt_r, "d_t_success": dt_s}
+        for arm in (x for x in arms if x.startswith("k4w")):
+            r_ = int(arm[3:]) / 100
+            near = col(sub, "k3", "f2_d") < r_
+            imm = col(sub, arm, "t_withdraw") - col(sub, arm, "t_add4") < 0.1
+            pf4 = col(sub, arm, "press_frac4")
+            never = np.nan_to_num(pf4, nan=0.0) == 0
+            L.append(f"- {arm}: {int(near.sum())} of {n} starts already within {r_:g} m at t2; robot 4 withdrew at once "
+                     f"in {int(imm.sum())}, never pressed in {int(never.sum())}.")
         # transport: position error at fixed times (done episodes keep their last error)
         L += ["", "Mean position error (m) at fixed times:", "",
               "| arm | " + " | ".join(f"{tt} s" for tt in (30, 40, 50, 60)) + " |", "|---|" + "---|" * 4]

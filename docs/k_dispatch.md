@@ -406,3 +406,15 @@ Readings, fixed now:
 - Worth pursuing (justifies calling at all): k4w - k3 success > 0 with the CI above 0, in all masses or in the heavy
   regime (80 + 100 kg); or k4w within 2 pp of k3 on success with a lower restricted mean time to success.
 - Merely beating k4 is a controller improvement, not a reason to call.
+
+Amendment (2026-11-22, before any results): three separate findings, each with its own comparison on the same starts.
+1. Release improves the controller: success k4w - k4.
+2. Calling a fourth robot can pay: success k4w - k3, in all masses or the heavy regime (80 + 100 kg pooled; group size
+   checked equal to the sum of its masses).
+3. Later, only if 2 holds: a frozen dispatcher using these gains beats a mass + object rule at the same helper budget
+   on fresh tasks.
+
+Trios already within a release radius at t2 get a robot 4 that is called and sent away at once, without ever
+pushing. Per arm, the analysis counts those starts and the starts where robot 4 never pressed. Every comparison is
+also reported on the starts not yet within the largest radius (0.75 m) at t2, alone and in the heavy regime, where
+every arm's robot 4 has a transport phase. Analysis: `scripts/k_withdraw.py`.
