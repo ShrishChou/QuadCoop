@@ -436,3 +436,26 @@ keeps its size. The 2 -> 3 confirmation (kc trees, chain_branch) has the same pa
 
 The step-1 development runs were restarted on the fixed code. The withdrawal arms otherwise end a phantom as well,
 mixing the bug fix with withdrawal.
+
+## Status of the 3 -> 4 transfer claim (2026-11-22)
+
+The original transfer result is superseded, and the corrected result is not yet confirmed. The phantom-helper bug sat
+upstream of the ranking model: it changed the k4 outcomes used to train and score the dispatcher, so the old rows
+cannot be re-analysed. The step-1 withdrawal trees do not replace the transfer test, because they lack the 2 -> 3 arms
+(k2null, k3b) that the transferred rule is fitted on.
+
+Rerun on corrected code (550ba73 and later, standard chain4 arms):
+- Training: seeds 1001-1003, rebuilt.
+- Test: seeds 8401-8402, new and unopened. 8201-8202 were opened once on the old code and are retired.
+
+The script `scripts/k_transfer.py` and the three endpoints are unchanged from the frozen statement above:
+1. The transferred ranking's within-mass gap at 3 -> 4.
+2. The transferred ask rule minus always stay.
+3. The in-domain 3 -> 4 ranking.
+
+Run once:
+
+    python scripts/k_transfer.py --train logs/evals/k4c-s100{1,2,3}{a,b} --test logs/evals/k4c-s840{1,2}{a,b} --out logs/evals/k-transfer-c
+
+The development value behind the "expected" readings came from the buggy trees, so no expected direction is stated
+for the rerun.
