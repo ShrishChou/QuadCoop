@@ -7,6 +7,7 @@
                                           slots "spotarm1", "spotarm2"
     anymal_arm  ANYmal C + Spot with the arm (RAI walker)   slots "anymal", "spotarm"
     anymal3 three ANYmal C (team of three)  slots "anymal1", "anymal2", "anymal3"
+    anymal4 four ANYmal C (team of four)    slots "anymal1" .. "anymal4" (planner pair + two helpers, play only)
 
 Teams of more than two: each robot's "partner" inputs (the 9 numbers and the partner map channel) describe its
 nearest teammate (PARTNER[a] == NEAREST) and the map channel draws every teammate; robot-robot contact and crowding
@@ -32,6 +33,7 @@ PAIRS = {
     "spot_arm": (("spotarm1", "spot_arm"), ("spotarm2", "spot_arm")),
     "anymal_arm": (("anymal", "anymal_c"), ("spotarm", "spot_arm")),
     "anymal3": (("anymal1", "anymal_c"), ("anymal2", "anymal_c"), ("anymal3", "anymal_c")),
+    "anymal4": (("anymal1", "anymal_c"), ("anymal2", "anymal_c"), ("anymal3", "anymal_c"), ("anymal4", "anymal_c")),
 }
 ARM_PAIRS = tuple(p for p, sl in PAIRS.items() if any(t == "spot_arm" for _, t in sl))  # pairs with a Spot-arm slot
 ROLE = {"anymal_c": "anymal", "spot": "spot", "spot_arm": "spot_arm"}  # evals/models.yaml role suffix of each robot type
@@ -51,6 +53,6 @@ ROBOT_TYPE = dict(slots(PAIR))
 NEAREST = "nearest"  # PARTNER value in teams of more than two: the nearest teammate, chosen per env and step
 OTHERS = {a: tuple(b for b in AGENTS if b != a) for a in AGENTS}
 PARTNER = {AGENTS[0]: AGENTS[1], AGENTS[1]: AGENTS[0]} if len(AGENTS) == 2 else {a: NEAREST for a in AGENTS}
-if len(AGENTS) == 3 and os.environ.get("QUADCOOP_HELPER") == "1":  # planner + helper (scripts/helper_test.py):
-    PARTNER = {AGENTS[0]: AGENTS[1], AGENTS[1]: AGENTS[0], AGENTS[2]: NEAREST}  # the planner pair sees each other
+if len(AGENTS) >= 3 and os.environ.get("QUADCOOP_HELPER") == "1":  # planner + helper(s) (scripts/helper_test.py):
+    PARTNER = {AGENTS[0]: AGENTS[1], AGENTS[1]: AGENTS[0]} | {a: NEAREST for a in AGENTS[2:]}  # the pair sees each other
 PAIRS_OF = tuple((AGENTS[i], AGENTS[j]) for i in range(len(AGENTS)) for j in range(i + 1, len(AGENTS)))

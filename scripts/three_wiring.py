@@ -1,6 +1,8 @@
-"""Three-robot wiring check (QUADCOOP_PAIR=anymal3): actions, teammate inputs, contact sensors, terminations.
+"""Team wiring check (QUADCOOP_PAIR=anymal3 by default; anymal4 for four): actions, teammate inputs, contact sensors,
+terminations.
 
-    python scripts/three_wiring.py
+    python scripts/three_wiring.py            # three ANYmal
+    QUADCOOP_PAIR=anymal4 python scripts/three_wiring.py
 
 1. Each robot in turn gets "forward" (action 1 on vx) for 2 s while the others get 0: only that robot may travel.
 2. The partner inputs (9 numbers) of every robot equal those of its nearest teammate, recomputed from the sim.
@@ -16,12 +18,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
-os.environ["QUADCOOP_PAIR"] = "anymal3"
+os.environ.setdefault("QUADCOOP_PAIR", "anymal3")
+TEAM = os.environ["QUADCOOP_PAIR"]
 
 
 def main() -> int:
     from train_coop2 import resolve_models, set_env
-    set_env(resolve_models("b", "anymal3"))
+    set_env(resolve_models("b", TEAM))
     import torch
 
     import quadcoop  # noqa: F401
@@ -32,7 +35,8 @@ def main() -> int:
     from quadcoop.coop2.marl import action_slices
     from quadcoop.coop2.pairs import AGENTS, OTHERS
 
-    assert len(AGENTS) == 3, AGENTS
+    N = len(AGENTS)
+    assert N == {"anymal3": 3, "anymal4": 4}[TEAM], AGENTS
     cfg = make_coop2_env_cfg("b", play=True, partner_map=True, reward_set="r7")
     cfg.scene.num_envs = 16
     cfg.episode_length_s = 1e5
@@ -81,7 +85,7 @@ def main() -> int:
     sens = sorted(k for k in env.scene.sensors if k.startswith("robots_touch") and not k.endswith("_found"))
     falls = sorted(k for k in env.termination_manager.active_terms if k.endswith("_fell"))
     terms = sorted(env.action_manager.active_terms)
-    good = len(sens) == 3 and len(falls) == 3 and terms == sorted(f"walker_{a}" for a in AGENTS)
+    good = len(sens) == N * (N - 1) // 2 and len(falls) == N and terms == sorted(f"walker_{a}" for a in AGENTS)
     ok &= good
     print(f"  robot-robot sensors {sens}; fall terminations {falls}; action terms {terms}: {'PASS' if good else 'FAIL'}")
     print("ALL PASS" if ok else "SOME CHECKS FAILED")

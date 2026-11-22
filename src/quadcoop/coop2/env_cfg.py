@@ -321,8 +321,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     ) for x, y in PAIRS_OF)
     # helper (evaluation only, scripts/helper_test.py): three robots with contacts, the planner drives the first two
     # and the third is a scripted helper with the plain (non-contact) inputs; rewards are not built for it
-    assert len(AGENTS) == 2 or not contacts or (helper and len(AGENTS) == 3 and play), \
-        "the contact planner (contacts) is written for two robots (three: helper=True, play only)"
+    assert len(AGENTS) == 2 or not contacts or (helper and len(AGENTS) in (3, 4) and play), \
+        "the contact planner (contacts) is written for two robots (three / four: helper=True, play only)"
     assert not guide or (contacts and off_contact == "soft"), "guide needs contacts with off_contact soft"
     assert not push_cmd or guide, "push_cmd builds on guide (Stage 4d)"
     assert not exec_v2 or push_cmd, "exec_v2 builds on push_cmd (Stage 4e)"
@@ -355,7 +355,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                     secondary=ContactMatch(mode="subtree", pattern=SPOT_ARM_BASE, entity=a),
                     fields=("found",), reduce="netforce", num_slots=1,
                 ),)
-    cfg.sim.njmax = 1500 if len(AGENTS) == 2 else 4500  # three robots: 3994 constraints at the initial pose
+    cfg.sim.njmax = {2: 1500, 3: 4500}.get(len(AGENTS), 1500 * len(AGENTS) + 1500)  # three robots: 3994 at the initial pose
     cfg.episode_length_s = EPISODE_S
     cfg.metrics = {}
 
@@ -627,8 +627,8 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
     if touch_cost > 0:  # (the minimal reward drops robots_touch; this puts a contact cost back)
         rewards["robots_touch"] = R(func=mdp.robots_touching, weight=-touch_cost)
     cfg.rewards = rewards
-    if helper and len(AGENTS) == 3:  # the helper's per-robot terms would read planner buffers it has no slot in
-        cfg.rewards = {k: v for k, v in rewards.items() if not k.endswith(f"_{AGENTS[2]}")}
+    if helper and len(AGENTS) >= 3:  # the helpers' per-robot terms would read planner buffers they have no slot in
+        cfg.rewards = {k: v for k, v in rewards.items() if not any(k.endswith(f"_{h}") for h in AGENTS[2:])}
 
     # -- terminations ----------------------------------------------------------------------------------
     cfg.terminations = {"time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True)}
