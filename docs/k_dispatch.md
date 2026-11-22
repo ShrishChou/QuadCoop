@@ -418,3 +418,21 @@ Trios already within a release radius at t2 get a robot 4 that is called and sen
 pushing. Per arm, the analysis counts those starts and the starts where robot 4 never pressed. Every comparison is
 also reported on the starts not yet within the largest radius (0.75 m) at t2, alone and in the heavy regime, where
 every arm's robot 4 has a transport phase. Analysis: `scripts/k_withdraw.py`.
+
+## Correction (2026-11-22): a planner bug behind part or all of "robot 4 hurts"
+
+In the first k4 trees, a called helper with no feasible assignment at the moment of the call never activated. The
+team size still went to k + 1, so the team kept planning around a robot that never came. Its contacts had to be
+compatible with the absent robot's planned contact, and the plan's time cost included the arrival time of a robot
+that never moved. That happened in 25% of the 3 -> 4 calls (348 of 1391, training seeds). Those tasks lost
+-14.4 [-19.3, -9.5] pp, as much as the tasks where robot 4 joined (-15.1 [-17.9, -12.3]).
+
+So the "fourth robot hurts" result, the crowding reading, and the 3 -> 4 transfer result above (f435c68) are not
+evidence about four robots. They are superseded and will be redone on fixed trees.
+
+Fixed in chain4_branch: a called helper with no feasible assignment does not join. It returns to parking and the team
+keeps its size. The 2 -> 3 confirmation (kc trees, chain_branch) has the same pattern in 4.3% of its decisions
+(144 of 3388). Robot 3's effect in those is +5.6 pp, with no sign of harm, so the confirmed 2 -> 3 result stands.
+
+The step-1 development runs were restarted on the fixed code. The withdrawal arms otherwise end a phantom as well,
+mixing the bug fix with withdrawal.
