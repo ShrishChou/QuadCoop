@@ -286,3 +286,25 @@ tasks where it helps, and "always stay" is the baseline to beat. Full trees queu
 Claim for the paper: at 2 -> 3, observing the push identifies which pairs a third robot will rescue, beyond the
 mass. The rule confirmed within mass (B) and as a per-team ask rule that beats the mass rule with fewer calls (C). We
 did not show that it beats a mass + object lookup table at a fixed 10% budget (A).
+
+## Full four-robot trees, development look (2026-11-22; training seeds 1001-1003 only, test seeds 8201-8202 unopened)
+
+`k_transfer.py`, trained on 1001-1002 and tested on 1003:
+- At 3 -> 4, robot 4 for every trio still pushing changes success by -13.3 [-17.5, -9.1] pp (null -0.9).
+- The transferred 2 -> 3 ranking has a within-mass gap of -2.8 [-12.3, +6.2].
+- The transferred threshold calls robot 4 for 27% of trios and loses 6.2 pp to always staying. The in-domain rule
+  learns never to call.
+
+Across 1001-1003 (1391 trio decisions):
+- Robot 4 lowers success at every mass: -18, -12, -22, -18 and -6 pp at 20-100 kg. The null is between -2.3 and 0.
+- 270 disruptions against 62 rescues. Only 42% of the disruptions include a fall.
+
+Suspected cause (an implementation defect, not crowding): the bounded two-helper search draws the helpers' contacts
+from the top 8 by score. A helper's current contact need not be among them, and helpers pay no stop cost, so robot 3
+could be moved off a contact it was pushing at when robot 4 joined. The trio search ranges over all K contacts and can
+always keep it. Fix: the current, still-valid contact of each present helper is always a candidate. Episodes now log
+contact switches per robot from t2 (`switches1-4`).
+
+Check: `k4-check2` (seed 1001, 20 / 60 / 100 kg, 1 rep). Identical to `k4-check` up to t2 and per-mass seeded, so its
+k4 arm is a paired comparison of the old and new search. The full trees are rerun only if the fix removes the harm.
+The 8201-8202 trees from the old code are not analysed.

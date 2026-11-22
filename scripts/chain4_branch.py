@@ -207,6 +207,7 @@ def main() -> int:
              "prev_xy": g.box_pos()[:, :2].clone(), "prev_yaw": g.contact_frame_yaw().clone(), "prev_d": g.errors()[0].clone()}
         for q in range(4):
             S[f"fell{q}"], S[f"tf{q}"], S[f"press_t{q}"], S[f"pres_t{q}"] = zb(), nanv(), zf(), zf()
+            S[f"sw{q}"] = zf()  # contact switches from t2 on (robot q + 1)
         for j in range(2):
             S[f"h_on{j}"], S[f"h_has{j}"], S[f"h_arr{j}"] = zb(), zb(), nanv()
             S[f"h_p{j}"], S[f"h_n{j}"], S[f"h_pre{j}"] = z2(), z2(), z2()
@@ -342,7 +343,15 @@ def main() -> int:
                 ia, ib, hc = flat // (K * K), (flat // K) % K, [flat % K]
             else:
                 M = min(a.prune, K)
-                cand = torch.where(ok_, sc_, torch.full_like(sc_, -1e9)).topk(M, -1).indices  # (m, M)
+                # the top M contacts by score, always including each present helper's current (still valid) contact,
+                # so the bounded search never evicts a helper from a contact it is pushing at (the trio search, over
+                # all K contacts, can always keep it)
+                rank = torch.where(ok_, sc_, torch.full_like(sc_, -1e9))
+                for j in range(nh):
+                    hc0 = S[f"h_idx{j}"][e_]
+                    kp = (hc0 >= 0) & ok_[ar, hc0.clamp(min=0)]
+                    rank[ar[kp], hc0[kp]] += 1e6
+                cand = rank.topk(M, -1).indices  # (m, M)
                 cok = ok_.gather(1, cand)
                 csc = sc_.gather(1, cand)
                 ct = [x.gather(1, cand) for x in th]
@@ -363,10 +372,14 @@ def main() -> int:
                 hc = [cand[ar, (flat // M) % M], cand[ar, flat % M]]
             has = best > -1e8
             new = torch.where(has.unsqueeze(-1), torch.stack([ia, ib], -1), cur)
+            post = t >= a.t2 - 1e-6
+            for q in range(2):
+                S[f"sw{q}"][e_] += (has & (new[:, q] != cur[:, q]) & post).float()
             g.c_need_more[e_] = prop["need_more"]
             g.apply_assignment(e_, new, p, nn, pre, prop["t_route"])
             for j, ic in enumerate(hc):
                 changed = has & (ic != S[f"h_idx{j}"][e_])
+                S[f"sw{2 + j}"][e_] += (changed & (S[f"h_idx{j}"][e_] >= 0) & post).float()
                 S[f"h_idx{j}"][e_] = torch.where(has, ic, S[f"h_idx{j}"][e_])
                 for key, src_ in (("h_p", p), ("h_n", nn), ("h_pre", pre)):
                     S[f"{key}{j}"][e_] = torch.where(has.unsqueeze(-1), src_[ar, ic], S[f"{key}{j}"][e_])
@@ -517,6 +530,7 @@ def main() -> int:
                          **{f"press_frac{q + 1}": (round(float(S[f"press_t{q}"][j] / S[f"pres_t{q}"][j]), 3)
                                                    if float(S[f"pres_t{q}"][j]) > 0 else "") for q in range(4)},
                          **{f"fell_{ag}": int(bool(S[f"fell{q}"][j])) for q, ag in enumerate(AGENTS)},
+                         **{f"switches{q + 1}": int(S[f"sw{q}"][j]) for q in range(4)},
                          **{f"t_fall_{ag}": nanr(S[f"tf{q}"][j]) for q, ag in enumerate(AGENTS)},
                          "robots_touch_frac": round(float(S["touch_t"][j] / S["live_t"][j].clamp(min=1e-6)), 3),
                          "ended_t1": int(bool(feats[1]["done"][j])), "ended_t2": int(bool(feats[2]["done"][j])),
