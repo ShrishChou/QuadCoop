@@ -1,0 +1,188 @@
+{
+ "arms": [
+  "pair",
+  "null",
+  "h1",
+  "joint",
+  "keep",
+  "move1",
+  "move2",
+  "jnet"
+ ],
+ "masses": [
+  80.0
+ ],
+ "seed": 7100,
+ "branch_s": 10.0,
+ "stage_dist": 3.0,
+ "by_mass": {
+  "80.0": {
+   "branched": 7,
+   "pair_success": 0.0,
+   "null": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "h1": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "joint": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "keep": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "move1": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "move2": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "jnet": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "best_rank": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "all": {
+   "branched": 7,
+   "pair_success": 0.0,
+   "null": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "h1": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "joint": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "keep": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "move1": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "move2": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "jnet": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "best_rank": {
+    "success": 0.0,
+    "rescue": 0.0,
+    "disruption": 0.0,
+    "net": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  }
+ }
+}
