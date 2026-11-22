@@ -255,3 +255,34 @@ average a fourth robot is worth about nothing at 20 s. So the 3 -> 4 question is
 tasks where it helps, and "always stay" is the baseline to beat. Full trees queued: seeds 1001-1003 (training) and
 8201-8202 (test, untouched), all ten objects, 5 masses, 3 reps, split by mass into `k4-s<seed>a` (20, 40, 60 kg) and
 `k4-s<seed>b` (80, 100 kg).
+
+## Confirmation results (2026-11-22; fresh seeds 8101-8106, frozen file sha256 55451fd2121b, evaluated once)
+
+3388 eligible decisions (the pair still pushing at t2) of 3600 starts. Nothing refitted. Full output:
+`logs/evals/k-confirm/`.
+
+| endpoint | development (7100 + 7900) | confirmation (8101-8106) | placebo | verdict |
+|---|---|---|---|---|
+| A: net deliveries per 100 calls at 10%, mass-then-delta minus mass + object | +1.9 [-11.5, +14.6] | +3.1 [-3.7, +10.0] | +0.3 [-4.2, +5.0] | not shown (needed ~416 seeds; expected) |
+| B: within a mass, uplift of top half of delta minus bottom half (pp) | +9.2 [+3.9, +15.3] | **+11.9 [+9.0, +15.2]** | -0.5 [-3.3, +2.1] | confirmed |
+| C: each team alone, ask rule (delta > 0.087) minus mass rule (payoff pp, cost 0.1) | +1.9 [+0.4, +3.3] | **+1.5 [+0.7, +2.4]** | | confirmed |
+
+- Endpoint C uses fewer helpers: the ask rule calls for 49% of pairs and the mass rule for 80%. Success is 63.4% vs
+  65.0%, and net deliveries are +20.2 vs +14.3 per 100 calls. The ask rule also beats always recruiting (-3.3 pp for
+  that) and always staying (-5.0 pp).
+- Measured rescue minus disruption rate rises across quintiles of delta at every mass. Q5 - Q1 within a mass (pp):
+
+  | mass | 20 kg | 40 kg | 60 kg | 80 kg | 100 kg |
+  |---|---|---|---|---|---|
+  | Q5 - Q1 | +14.9 [+2, +28] | +17.5 [+7, +28] | +8.1 [-4, +21] | +36.8 [+25, +48] | +38.7 [+30, +47] |
+
+  Pooled: +28.3 [+22.8, +33.3].
+- "Most likely to fail" is worse than random: +8.0 vs +11.7 net per 100 calls at 10%, 27 rescues out of 339 calls.
+  The pushes that are failing are mostly ones a third robot cannot rescue.
+- At 10% every call lands at 80 kg, so endpoint A only tests the within-80 kg order, against the object table.
+- Descriptive, not an endpoint: delta alone (no mass ordering) gives the most net deliveries at 20-50% budgets, for
+  example +190 vs +176 (mass + object) at 20% and +243 vs +214 (mass) at 30%.
+
+Claim for the paper: at 2 -> 3, observing the push identifies which pairs a third robot will rescue, beyond the
+mass. The rule confirmed within mass (B) and as a per-team ask rule that beats the mass rule with fewer calls (C). We
+did not show that it beats a mass + object lookup table at a fixed 10% budget (A).
