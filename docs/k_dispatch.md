@@ -167,3 +167,65 @@ rule fails.
 
 - **Caveat:** the pooled row and the "mass, then response" ranker were added after seeing the per-mass table on these
   test seeds. They need a fresh test tree before they are claimed.
+
+## Confirmation protocol: selective recruitment at 2 -> 3 (frozen 2026-11-21, before any fresh run)
+
+The paper makes two claims, each with its own test:
+1. **Selective recruitment (main).** Given a working pair, does the dispatcher predict which pushes benefit from a
+   third robot?
+2. **Transfer across team sizes.** Can a rule trained at 2 -> 3 make useful 3 -> 4 decisions without retraining? This
+   needs a four-robot executor, which is in progress.
+
+**The system:**
+
+| component | decision | how |
+|---|---|---|
+| Dispatcher | at 20 s, stay at k or recruit one more | learned from simulated outcomes: P(delivery \| h, stay) and P(delivery \| h, recruit), logistic models fitted on both branches; delta(h) is their difference |
+| Contact planner | where each robot pushes | model-based search over candidate contacts. The pair planner scores force/moment, travel and contact breaking; the trio planner searches joint triples (`helper_branch.py`) |
+| Executor and walker | reach the contact and push | the frozen learned pair executor; robot 3 is a scripted contact controller |
+| Hedge / EXP4 / Exp3 | which dispatch rule to trust | the online-learning comparison: full feedback vs the path taken |
+
+Search enumerates contact assignments under an approximate physics score. Full feedback means the dispatcher is
+trained on both simulated futures; at deployment it sees only what is observable before the decision. Both branches
+keep the planner's normal replanning, and the recruit branch pays the helper's staging and travel.
+
+**Benchmark and inputs:**
+- All ten objects at their original dimensions: cube, long prism, sphere, cylinder, arch, dumbbell, T, L, U-channel
+  and plus.
+- 20 / 40 / 60 / 80 / 100 kg, 4 goal scenarios, 3 placements: 600 starts per seed.
+- Delivery: within 10 cm and 6 degrees, held 1 s, by 80 s.
+- Inputs: the t2 response features. The mass and object identity are given, and this is declared.
+
+**Data roles:**
+- Models are fitted on seeds 1001-1003.
+- The baseline and the ask threshold are chosen on 7100 / 7900. Those seeds informed the ranker's design, so they
+  are development data.
+- The frozen file is `frozen/k_confirm_2to3.json`, and its sha256 is recorded in the commit message. Evaluation on
+  the fresh seeds 8101-8106 refits nothing.
+
+**Endpoints:**
+- **A (the protocol's primary):** net extra deliveries per 100 helper calls at a 10% budget, "mass, then delta"
+  minus the strongest validation baseline. That baseline is mass + object, chosen over random, mass, and most likely
+  to fail alone.
+  - On the development seeds: +1.9 [-11.5, +14.6].
+  - At two-thirds of that effect, 80% power needs about 416 seeds. A is reported regardless, but it cannot confirm.
+- **B (the powered test that delta learned about this push):** robot 3's uplift among the top half of delta minus
+  the bottom half, within a mass, averaged over the masses.
+  - On the development seeds: +9.2 [+3.9, +15.3], placebo -3.3. 4 seeds are needed.
+- **C (each team decides alone):** the payoff at cost 0.1 of "recruit iff delta > tau" (tau = 0.087) minus the mass
+  rule.
+  - On the development seeds: +1.9 [+0.4, +3.3]; tau is in-sample there. 6 seeds are needed.
+- **Also reported:**
+  - success over all starts and over eligible decisions;
+  - rescues, disruptions, calls and helper-seconds;
+  - the k2null placebo;
+  - one helper per ten teams;
+  - the budget curve;
+  - delta quintiles (pooled and within mass);
+  - object x mass counts, including weak and negative cells.
+
+**On the development seeds, "most likely to fail alone" is worse than random at a 10% budget** (+8 vs +11 net per
+100 calls). The hardest pushes are often ones a helper cannot rescue.
+
+**1 -> 2:** the learned-solo late-help result (+9.0 pp) is the supporting evidence. The scripted-solo chain (8% alone)
+is labelled separately, as a weak test of selective recruitment.
