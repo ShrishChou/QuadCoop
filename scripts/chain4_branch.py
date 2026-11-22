@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import json
 import math
 import os
@@ -128,7 +129,7 @@ def main() -> int:
     t_start = time.time()
     rs = ck_cfg.get("reselect_s", (3.0, 6.0))
 
-    for mass in masses:
+    def run_mass(mass):  # one function call per mass, so its GPU state is freed before the next mass is built
         cfg = make_coop2_env_cfg(
             "b", play=True, helper=True, partner_map=bool(ck_cfg.get("partner_map", False)),
             reward_set=ck_cfg.get("reward_set", "r7"), contacts=True, tol_levels=tuple(tuple(x) for x in ck_cfg.get("tol_levels", ())),
@@ -528,11 +529,20 @@ def main() -> int:
         base.close()
         del base
 
-    with open(out / "episodes.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
-    (out / "planner.json").write_text(json.dumps(plan_stats, indent=1))
+    def dump():
+        with open(out / "episodes.csv", "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
+        (out / "planner.json").write_text(json.dumps(plan_stats, indent=1))
+
+    for mass in masses:
+        run_mass(mass)
+        gc.collect()
+        torch.cuda.empty_cache()
+        dump()  # after every mass, so a later failure keeps the finished masses
+        free, total = torch.cuda.mem_get_info()
+        print(f"[{mass:g} kg] GPU after release: {(total - free) / 2**30:.1f} of {total / 2**30:.0f} GiB in use", flush=True)
 
     brng = np.random.default_rng(0)
     key = lambda r_: (r_["object"], r_["mass"], r_["scenario"], r_["rep"])  # noqa: E731
