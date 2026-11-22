@@ -338,3 +338,26 @@ Endpoints, on the test seeds' 3 -> 4 decisions:
    fourth robot that does harm.
 3. Secondary: the same for the in-domain 3 -> 4 rule, to show what is learnable at 3 -> 4.
 Run once.
+
+### Result (run once, 2026-11-22; train 1001-1003, test 8201-8202; 913 trio decisions, 954 pair decisions)
+
+At 3 -> 4, robot 4 for every trio still pushing: -13.9 [-17.2, -10.8] pp (placebo -2.1).
+
+| endpoint | development (1003) | test (8201-8202) | placebo | verdict |
+|---|---|---|---|---|
+| 1. transferred 2 -> 3 ranking, within-mass top minus bottom | -2.8 [-12.3, +6.2] | **-11.9 [-17.3, -4.6]** | -3.1 | does not transfer; reversed |
+| 2. transferred ask rule minus always stay (payoff pp) | -6.2 [-8.9, -3.6] | **-10.0 [-12.3, -7.9]** | | overcalls: 33% of trios |
+| 3. in-domain 3 -> 4 ranking, within-mass top minus bottom | +6.1 [-2.8, +15.0] | +16.2 [+9.2, +22.8] | +2.9 | learnable at 3 -> 4 |
+
+- The trios the 2 -> 3 rule rates most in need of help are the ones robot 4 harms most.
+- The in-domain 3 -> 4 rule learns never to call; its ask rule matches always staying.
+- At a 10% budget every rule loses deliveries. Best is in-domain at -3.3 per 100 calls; random -13.9, transferred -29.9.
+- Same trees, 2 -> 3 (a different design from the kc trees: the pair pushes from t = 0, robot 3 at 20 s). The
+  in-domain within-mass gap is +13.7 [+7.0, +19.2] (placebo -3.4), so endpoint B replicates. The in-domain ask rule
+  does not beat the mass rule here: payoff 0.535 vs 0.540. Both beat always recruiting.
+
+Reading: a dispatcher learned at one team size must not be reused at the next without retraining. The value of one
+more robot changes sign between 2 -> 3 and 3 -> 4 in this system, and the 2 -> 3 rule's signal for "this team needs
+help" points the wrong way at 3 -> 4. The harm comes from crowding during the final alignment, with a controller in
+which helpers never withdraw. Whether a fourth robot can pay with a controller that lets helpers step back is not
+tested.
