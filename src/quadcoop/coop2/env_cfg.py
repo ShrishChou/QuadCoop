@@ -355,7 +355,7 @@ def make_coop2_env_cfg(variant: str = "b", play: bool = False, partner_map: bool
                     secondary=ContactMatch(mode="subtree", pattern=SPOT_ARM_BASE, entity=a),
                     fields=("found",), reduce="netforce", num_slots=1,
                 ),)
-    cfg.sim.njmax = {2: 1500, 3: 4500}.get(len(AGENTS), 1500 * len(AGENTS) + 1500)  # three robots: 3994 at the initial pose
+    cfg.sim.njmax = {2: 1500, 3: 4500, 4: 10000}.get(len(AGENTS), 2500 * len(AGENTS))  # at the initial pose: three robots 3994, four 7946
     cfg.episode_length_s = EPISODE_S
     cfg.metrics = {}
 
