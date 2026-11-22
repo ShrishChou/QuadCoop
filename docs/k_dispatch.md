@@ -325,7 +325,7 @@ bookkeeping.
 
 ### Frozen 3 -> 4 transfer test (stated 2026-11-22 before opening 8201-8202)
 
-System: the chain4 trees as generated (code before 9feaa6f, for training and test alike). Script ,
+System: the chain4 trees as generated (code before 9feaa6f, for training and test alike). Script `scripts/k_transfer.py`,
 unchanged since ce2ccaa (sha256 5120f7e37d55...).
 
     python scripts/k_transfer.py --train logs/evals/k4-s100{1,2,3}{a,b} --test logs/evals/k4-s820{1,2}{a,b} --out logs/evals/k-transfer
