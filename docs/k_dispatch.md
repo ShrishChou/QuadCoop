@@ -361,3 +361,48 @@ more robot changes sign between 2 -> 3 and 3 -> 4 in this system, and the 2 -> 3
 help" points the wrong way at 3 -> 4. The harm comes from crowding during the final alignment, with a controller in
 which helpers never withdraw. Whether a fourth robot can pay with a controller that lets helpers step back is not
 tested.
+
+## Step 1: does robot 4 hurt because it stays too long? (protocol written 2026-11-22, before any run)
+
+The question: did robot 4 do harm because it never leaves, crowding the final alignment, or was its arrival already
+counterproductive?
+
+Tree (`chain4_branch.py --withdraw 0.75,0.5,0.3`): the pair from t = 0, robot 3 at t1 = 8 s. At t2 = 20 s the unfinished
+trio branches into:
+- k3: stay at three.
+- k3null: a copy of k3.
+- k4: robot 4 joins and stays.
+- k4w75 / k4w50 / k4w30: robot 4 joins and withdraws for good once the object's position error first drops below
+  0.75 / 0.5 / 0.3 m.
+
+On withdrawal, robot 4 stops pushing and walks straight out from the object, avoiding teammates. It counts as released
+1.5 m beyond the object's radius, or after 8 s. The trio re-plans its contacts at once with the trio search. Nothing
+else differs between arms. The corrected contact search (9feaa6f) is used everywhere.
+
+Logged per episode:
+- t_region: the first time the position error is below 0.5 m (the near-goal region, fixed now).
+- Success: 10 cm and 6 degrees held for 1 s.
+- helper4_s: robot 4's seconds from joining until released or the end.
+- The position error at 30, 40, 50 and 60 s.
+- The withdrawal and release times.
+
+Eligible decisions: tasks where the trio is still pushing at t2.
+
+Development (seeds 1001-1003, all ten objects, 5 masses, 3 reps): choose the trigger. The rule is the highest success
+over all eligible decisions; within 1 pp, the larger radius wins (earlier release, fewer helper-seconds). Then confirm on
+fresh seeds 8301-8302 with arms k3, k3null, k4 and the chosen k4w, evaluated once.
+
+Reported on the confirmation seeds, by arm, over all eligible starts:
+- The share entering the region.
+- Restricted mean time to the region over the horizon, with never-entered (timeouts, falls) counted as 80 s.
+- Success.
+- Robot 4's helper-seconds.
+- Matched rescues and disruptions against k3. Paired 95% bootstrap over tasks.
+
+Readings, fixed now:
+- Finishing interference is supported if k4 enters the region at least as often and as fast as k3 but succeeds less,
+  and the chosen k4w recovers success relative to k4.
+- If k4 is already slower to the region than k3, the harm is in approach or contact assignment, not in finishing.
+- Worth pursuing (justifies calling at all): k4w - k3 success > 0 with the CI above 0, in all masses or in the heavy
+  regime (80 + 100 kg); or k4w within 2 pp of k3 on success with a lower restricted mean time to success.
+- Merely beating k4 is a controller improvement, not a reason to call.

@@ -53,12 +53,13 @@ sys.path.insert(0, str(ROOT))
 SCENARIOS = (("A_straight", 3.0, 0.0, 0.0), ("B_left", 3.0, 60.0, 30.0), ("C_backright", 3.0, -135.0, -60.0),
              ("D_far_turn", 5.0, 0.0, 90.0))
 TEN = "cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus"
-ARMS = ("k2", "k2null", "k3b", "k3", "k3null", "k4")
-LEAVES = ("k2", "k3b", "k3", "k4")
-ROBOTS_OF = {"k2": 2, "k2null": 2, "k3b": 3, "k3": 3, "k3null": 3, "k4": 4}
+ARMS_STD = ("k2", "k2null", "k3b", "k3", "k3null", "k4")
+LEAVES_STD = ("k2", "k3b", "k3", "k4")
+ROBOTS_STD = {"k2": 2, "k2null": 2, "k3b": 3, "k3": 3, "k3null": 3, "k4": 4}
 BLIND = ("t", "d", "e_deg", "d0", "speed", "yawrate", "prog_rate", "force", "stall_s", "on1", "on2", "on3", "on4")
 INV = ("k", "frac_press", "force_per", "n_free", "free_best")
 AWARE = ("mass", "strength", "need_more")
+D_AT = (30, 40, 50, 60)  # position error logged at these times (s)
 
 
 def main() -> int:
@@ -75,10 +76,22 @@ def main() -> int:
     ap.add_argument("--push-force", type=float, default=160.0)
     ap.add_argument("--slow-min-s", type=float, default=1.0)
     ap.add_argument("--prune", type=int, default=8, help="helpers' candidate contacts in the joint quadruple search")
+    ap.add_argument("--withdraw", default="", help="diagnostic tree (docs/k_dispatch.md, step 1): comma list of radii (m); "
+                    "arm k4w<cm> = robot 4 joins at t2 and withdraws once the position error first drops below the radius")
+    ap.add_argument("--region", type=float, default=0.5, help="near-goal region (position error, m) for t_region")
+    ap.add_argument("--release-dist", type=float, default=1.5, help="withdrawn helper released this far beyond the radius")
     ap.add_argument("--prefix", default="k4chain")
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
     assert a.t2 > a.t1 > 0
+    WD = [float(x) for x in a.withdraw.split(",") if x.strip()]
+    WARMS = tuple(f"k4w{round(100 * x)}" for x in WD)
+    if WD:  # diagnostic tree: k2 is only the root; the 3 -> 4 leaves are k3, k4 and the withdrawing k4w arms
+        ARMS = ("k2", "k3", "k3null", "k4") + WARMS
+        LEAVES = ("k3", "k4") + WARMS
+    else:
+        ARMS, LEAVES = ARMS_STD, LEAVES_STD
+    ROBOTS_OF = {**ROBOTS_STD, **{w: 4 for w in WARMS}}
 
     os.environ["QUADCOOP_PAIR"] = "anymal4"
     os.environ["QUADCOOP_HELPER"] = "1"
@@ -95,7 +108,7 @@ def main() -> int:
 
     from branch_help import clone_envs
     from quadcoop import falls
-    from quadcoop.contact_control import IDLE_ACTION, ContactController, to_action
+    from quadcoop.contact_control import IDLE_ACTION, VX, VY, ContactController, to_action
     from quadcoop.coop2 import mdp as cm
     from quadcoop.coop2.env_cfg import SPECS, make_coop2_env_cfg
     from quadcoop.coop2.marl import actor_groups, actor_state, make_model
@@ -213,6 +226,13 @@ def main() -> int:
             S[f"h_p{j}"], S[f"h_n{j}"], S[f"h_pre{j}"] = z2(), z2(), z2()
             S[f"h_idx{j}"] = torch.full((n,), -1, dtype=torch.long, device=dev)
             S[f"ph{j}"] = zb()
+        S["wd"], S["rel"], S["t_wd"], S["t_rel"] = zb(), zb(), nanv(), nanv()  # robot 4 withdrawn / released
+        S["t_reg"], S["h4_s"] = nanv(), zf()
+        for tt in D_AT:
+            S[f"d{tt}"] = nanv()
+        rw = torch.full((n,), -1.0, device=dev)  # withdrawal radius per env (-1: never)
+        for w_, x_ in zip(WARMS, WD):
+            rw[idx_of[w_]] = x_
         d0 = g.errors()[0].clone()
         how = [""] * n
         feats = {1: None, 2: None}
@@ -220,7 +240,7 @@ def main() -> int:
 
         def present():
             return [torch.ones(n, dtype=torch.bool, device=dev), torch.ones(n, dtype=torch.bool, device=dev),
-                    S["nh"] >= 1, S["nh"] >= 2]
+                    S["nh"] >= 1, (S["nh"] >= 2) | (S["wd"] & ~S["rel"])]
 
         def pressing():
             return [g.on_contact(0), g.on_contact(1), S["ph0"] & (S["nh"] >= 1), S["ph1"] & (S["nh"] >= 2)]
@@ -427,17 +447,35 @@ def main() -> int:
                 t = i * dt
                 if i == n1:
                     feats[1] = snapshot()
-                    c_ = branch("k2", ["k3", "k3null", "k4", "k2null", "k3b"])
-                    na = sum(add_helper(tw, 0) for tw in ("k3", "k3null", "k4"))
+                    if WD:
+                        c_ = branch("k2", [x for x in ARMS if x != "k2"])
+                        na = sum(add_helper(tw, 0) for tw in ARMS if tw != "k2")
+                    else:
+                        c_ = branch("k2", ["k3", "k3null", "k4", "k2null", "k3b"])
+                        na = sum(add_helper(tw, 0) for tw in ("k3", "k3null", "k4"))
                     print(f"  [{mass:g} kg] t1 {t:.1f} s ({c_} tensors per copy): "
                           f"{int(feats[1]['done'][idx_of['k2']].sum())}/{len(base_cases)} ended; robot 3 added in {na}", flush=True)
                 if i == n2:
                     feats[2] = snapshot()
-                    branch("k2", ["k2null", "k3b"])
-                    branch("k3", ["k3null", "k4"])
-                    nb = add_helper("k3b", 0)
-                    nc = add_helper("k4", 1)
+                    if WD:
+                        branch("k3", ["k3null", "k4", *WARMS])
+                        nb = 0
+                        nc = sum(add_helper(tw, 1) for tw in ("k4", *WARMS))
+                    else:
+                        branch("k2", ["k2null", "k3b"])
+                        branch("k3", ["k3null", "k4"])
+                        nb = add_helper("k3b", 0)
+                        nc = add_helper("k4", 1)
                     print(f"  [{mass:g} kg] t2 {t:.1f} s: robot 3 added in {nb} (k3b), robot 4 in {nc} (k4)", flush=True)
+                if WD and i > n2:
+                    w_ = (S["nh"] >= 2) & ~S["wd"] & ~S["done"] & (g.errors()[0] < rw)
+                    if bool(w_.any()):
+                        S["wd"] |= w_
+                        S["t_wd"] = torch.where(w_, torch.full_like(S["t_wd"], t), S["t_wd"])
+                        S["h_on1"] &= ~w_
+                        S["nh"] = torch.where(w_, torch.ones_like(S["nh"]), S["nh"])
+                        ctrls[1].reset(w_)
+                        joint_decide(w_.nonzero().flatten(), 1)  # the trio re-plans at once
                 live = ~S["done"]
                 act = torch.cat([actors[ag](obs) for ag in PLAN], -1)
                 _, e = g.errors()
@@ -454,7 +492,22 @@ def main() -> int:
                                        S[f"h_p{j}"], S[f"h_n{j}"], g.c_cof, g.goal_xy, e, pre_obj=S[f"h_pre{j}"],
                                        partner_pos=near, active=act_h)
                     S[f"ph{j}"] = ph & act_h
-                    acts.append(torch.where(act_h.unsqueeze(-1), to_action(tw_), idle.expand(n, 3)))
+                    a_h = torch.where(act_h.unsqueeze(-1), to_action(tw_), idle.expand(n, 3))
+                    if WD and j == 1:  # withdrawn and not yet released: walk straight out, clear of teammates
+                        ret = S["wd"] & ~S["rel"] & live
+                        if bool(ret.any()):
+                            out_ = hp - g.box_pos()[:, :2]
+                            u_ = out_ / torch.linalg.norm(out_, dim=-1, keepdim=True).clamp(min=1e-3)
+                            aw = hp - near
+                            dn = torch.linalg.norm(aw, dim=-1, keepdim=True).clamp(min=1e-3)
+                            v_w = 0.5 * u_ + torch.clamp(1.0 - dn / 1.2, min=0.0) * aw / dn
+                            v_w = v_w * torch.clamp(0.6 / torch.linalg.norm(v_w, dim=-1, keepdim=True).clamp(min=1e-6), max=1.0)
+                            yw4 = yaw_of(hr.data.root_link_quat_w)
+                            c4, s4 = torch.cos(yw4), torch.sin(yw4)
+                            tw_r = torch.stack([(c4 * v_w[:, 0] + s4 * v_w[:, 1]).clamp(*VX),
+                                                (-s4 * v_w[:, 0] + c4 * v_w[:, 1]).clamp(*VY), torch.zeros_like(c4)], -1)
+                            a_h = torch.where(ret.unsqueeze(-1), to_action(tw_r), a_h)
+                    acts.append(a_h)
                 o_, _, _, _, _ = base.step(torch.cat(acts, -1))
                 obs = TensorDict({kk: v for kk, v in o_.items() if not kk.startswith("walker_")}, batch_size=[n])
                 t = (i + 1) * dt
@@ -496,6 +549,17 @@ def main() -> int:
                     S[f"press_t{q}"] += (prs[q] & pres[q] & ok).float() * dt
                 S["touch_t"] += (cm.robots_touching(base) > 0).float() * ok.float() * dt
                 S["live_t"] += ok.float() * dt
+                S["h4_s"] += (pres[3] & ok).float() * dt
+                reg = ok & (d < a.region) & torch.isnan(S["t_reg"])
+                S["t_reg"] = torch.where(reg, torch.full_like(S["t_reg"], t), S["t_reg"])
+                for tt in D_AT:
+                    if abs(t - tt) < dt / 2:
+                        S[f"d{tt}"] = S["last_d"].clone()
+                if WD:
+                    dr = torch.linalg.norm(robots[3].data.root_link_pos_w[:, :2] - g.box_pos()[:, :2], dim=-1)
+                    rl = S["wd"] & ~S["rel"] & ((dr >= radius + a.release_dist) | (t - S["t_wd"] >= 8.0) | S["done"])
+                    S["rel"] |= rl
+                    S["t_rel"] = torch.where(rl, torch.full_like(S["t_rel"], t), S["t_rel"])
                 S["robot_s"] += ok.float() * dt * sum(p_.float() for p_ in pres)
                 for j in f_any.nonzero().flatten().tolist():
                     how[j] = "fell_" + "+".join(ag for k, ag in enumerate(AGENTS) if bool(S[f"fell{k}"][j]))
@@ -533,6 +597,9 @@ def main() -> int:
                          **{f"switches{q + 1}": int(S[f"sw{q}"][j]) for q in range(4)},
                          **{f"t_fall_{ag}": nanr(S[f"tf{q}"][j]) for q, ag in enumerate(AGENTS)},
                          "robots_touch_frac": round(float(S["touch_t"][j] / S["live_t"][j].clamp(min=1e-6)), 3),
+                         "t_region": nanr(S["t_reg"][j]), "helper4_s": round(float(S["h4_s"][j]), 1),
+                         "t_withdraw": nanr(S["t_wd"][j]), "t_release": nanr(S["t_rel"][j]),
+                         **{f"d{tt}": nanr(S[f"d{tt}"][j]) for tt in D_AT},
                          "ended_t1": int(bool(feats[1]["done"][j])), "ended_t2": int(bool(feats[2]["done"][j])),
                          **{f"f1_{key}": fv(1, key) for key in BLIND + INV + AWARE},
                          **{f"f2_{key}": fv(2, key) for key in BLIND + INV + AWARE}})
@@ -566,16 +633,19 @@ def main() -> int:
         v = np.asarray(v, dtype=float)
         bs = v[brng.integers(0, len(v), (2000, len(v)))].mean(1)
         return 100 * v.mean(), 100 * np.percentile(bs, 2.5), 100 * np.percentile(bs, 97.5)
+    PAIRS = ([("k4", "k3"), *((w, "k3") for w in WARMS), ("k3null", "k3")] if WD else
+             [("k3b", "k2"), ("k2null", "k2"), ("k4", "k3"), ("k3null", "k3")])
     md = [f"# 2 -> 3 and 3 -> 4 tree: {a.prefix}", "",
           f"Seed {a.seed}, {len(base_cases)} tasks per mass; robot 3 at {a.t1:g} s (k3) or {a.t2:g} s (k3b); robot 4 at "
           f"{a.t2:g} s after robot 3 at {a.t1:g} s (k4). Success over all starts. Nets in pp, 95% paired bootstrap.", "",
-          "| mass | k2 | k3b | k3 | k4 | k3b-k2 | k2null-k2 | k4-k3 | k3null-k3 | press frac robot 3 / 4 (k4) | falls (k4) |",
-          "|---|---|---|---|---|---|---|---|---|---|---|"]
+          "| mass | " + " | ".join(LEAVES) + " | " + " | ".join(f"{x}-{b}" for x, b in PAIRS)
+          + " | press frac robot 3 / 4 (k4) | falls (k4) |",
+          "|---|" + "---|" * (len(LEAVES) + len(PAIRS) + 2)]
     summ = {"seed": a.seed, "t1": a.t1, "t2": a.t2, "planner": plan_stats, "by_mass": {}}
     for m in masses + ["all"]:
         ks = [k_ for k_, r_ in by["k2"].items() if m == "all" or r_["mass"] == m]
         y = {tw: np.array([by[tw][k_]["success"] for k_ in ks], dtype=float) for tw in ARMS}
-        diffs = {f"{x}-{b}": ci(y[x] - y[b]) for x, b in (("k3b", "k2"), ("k2null", "k2"), ("k4", "k3"), ("k3null", "k3"))}
+        diffs = {f"{x}-{b}": ci(y[x] - y[b]) for x, b in PAIRS}
         pf = [np.mean([float(by["k4"][k_][f"press_frac{q}"]) for k_ in ks if by["k4"][k_][f"press_frac{q}"] != ""] or [np.nan])
               for q in (3, 4)]
         fl = np.mean([any(by["k4"][k_][f"fell_{ag}"] for ag in AGENTS) for k_ in ks])
