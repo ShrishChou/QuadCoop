@@ -229,3 +229,29 @@ keep the planner's normal replanning, and the recruit branch pays the helper's s
 
 **1 -> 2:** the learned-solo late-help result (+9.0 pp) is the supporting evidence. The scripted-solo chain (8% alone)
 is labelled separately, as a weak test of selective recruitment.
+
+## Four-robot validation (2026-11-22, `k4-check`: seed 1001, 60 and 100 kg, 40 tasks each)
+
+`scripts/chain4_branch.py`; the pair pushes from t = 0, robot 3 joins at 8 s (k3) or 20 s (k3b), robot 4 at 20 s after
+robot 3 at 8 s (k4). The first attempt overflowed the constraint buffer (7946 rows at the initial pose against 7500);
+njmax is now 10000 for four robots (e353bc2).
+
+- Wiring (`QUADCOOP_PAIR=anymal4 scripts/three_wiring.py`): all four robots move only on their own command, partner
+  inputs are the nearest teammate's, 6 robot-robot sensors and 4 fall terms. PASS.
+- Joint search: one helper 45-76 ms per env, feasible 91-94%; two helpers (bounded, top 8 contacts each)
+  101-108 ms per env, feasible 71%. About 9 of the 24 minutes per mass.
+- Helpers press about as often as robot 3 does: fraction of time pressing, robot 3 / robot 4 in k4, 0.29 / 0.21
+  at 60 kg and 0.53 / 0.43 at 100 kg (robot 3 in k3: 0.25, 0.52).
+- Robot 4 adds no falls: any robot fell in 12% (60 kg) and 33% (100 kg) of k4 episodes, against 12% and 38% in k3.
+  Robot 3 joining early does raise the pair's falls at 100 kg (any fall 38% in k3, 35% in k3null, 7% with the pair).
+
+| mass | pair (k2) | + robot 3 at 20 s (k3b) | trio (k3) | + robot 4 (k4) | k3b - k2 | k4 - k3 | k3null - k3 (null) |
+|---|---|---|---|---|---|---|---|
+| 60 | 75% | 75% | 75% | 60% | +0.0 [-15, +15] | -15.0 [-32, +2] | -5.0 [-20, +8] |
+| 100 | 10% | 28% | 20% | 22% | +17.5 [+8, +30] | +2.5 [-15, +18] | +7.5 [-2, +18] |
+
+Reading: four-robot execution works (no overflow, search mostly feasible, helpers press, no extra falls), but on
+average a fourth robot is worth about nothing at 20 s. So the 3 -> 4 question is whether a rule can find the few
+tasks where it helps, and "always stay" is the baseline to beat. Full trees queued: seeds 1001-1003 (training) and
+8201-8202 (test, untouched), all ten objects, 5 masses, 3 reps, split by mass into `k4-s<seed>a` (20, 40, 60 kg) and
+`k4-s<seed>b` (80, 100 kg).
