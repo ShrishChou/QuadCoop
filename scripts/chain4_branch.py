@@ -84,6 +84,12 @@ def main() -> int:
                     help="footprint enlargement (docs/k_dispatch.md, step 2): horizontal size factors x this, heights kept "
                          "(cylinder: length only; sphere: radius, so it grows in height too); inertia stretched to match "
                          "(pseudo_inertia d1/d2, mass unchanged); contact separation recomputed at the new size")
+    ap.add_argument("--film", type=int, default=1, help="1 = side-by-side films of matched branches (quadcoop/branch_film.py)")
+    ap.add_argument("--film-pairs", default="", help="left:right arms to film (default k3:k4,k2:k3b; withdraw trees "
+                    "k3:k4 and k3 / k4 against the first withdrawal arm)")
+    ap.add_argument("--film-max", type=int, default=8, help="films per pair and mass")
+    ap.add_argument("--film-size", default="960x720", help="per panel")
+    ap.add_argument("--film-stride", type=int, default=2, help="steps per frame")
     ap.add_argument("--prefix", default="k4chain")
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
@@ -253,6 +259,16 @@ def main() -> int:
         how = [""] * n
         feats = {1: None, 2: None}
         st_ = {1: {"calls": 0, "envs": 0, "feasible": 0, "sec": 0.0}, 2: {"calls": 0, "envs": 0, "feasible": 0, "sec": 0.0}}
+
+        film = None
+        if a.film:
+            from quadcoop.branch_film import BranchFilm
+
+            fp = a.film_pairs or ("k3:k4," + ",".join(f"k3:{w},k4:{w}" for w in WARMS[:1]) if WD else "k3:k4,k2:k3b")
+            pairs = [tuple(x.split(":")) for x in fp.split(",") if x.strip()]
+            fw, fh = (int(x) for x in a.film_size.lower().split("x"))
+            film = BranchFilm(base, g, robots, cases, pairs, a.film_stride, out / "videos", a.film_max, (fw, fh),
+                              t_from=a.t2 - 4.0)
 
         def present():
             return [torch.ones(n, dtype=torch.bool, device=dev), torch.ones(n, dtype=torch.bool, device=dev),
@@ -599,6 +615,13 @@ def main() -> int:
                 if i % 1000 == 0:
                     print(f"  [{mass:g} kg] step {i}/{steps}: live {int((~S['done']).sum())}/{n} ({time.time() - t0:.0f} s)",
                           flush=True)
+                if film is not None and (i + 1) % a.film_stride == 0 and t >= a.t2 - 4.0 - 1e-6:
+                    try:
+                        film.record(t, S, pres, prs, [torch.linalg.norm(cm.object_force_from(base, ag), dim=-1)
+                                                      for ag in AGENTS], cm.robots_touching(base))
+                    except Exception as ex:  # noqa: BLE001  (films never cost the episode data)
+                        print(f"  [film] recording off: {ex}", flush=True)
+                        film = None
                 if i > n2 and bool(S["done"].all()):
                     break
         if feats[2] is None:
@@ -635,6 +658,15 @@ def main() -> int:
         print(f"[{mass:g} kg] " + "  ".join(f"{arm} {sum(x['success'] for x in sel if x['arm'] == arm)}/"
                                           f"{sum(1 for x in sel if x['arm'] == arm)}" for arm in ARMS)
               + f"  ({time.time() - t_start:.0f} s)", flush=True)
+        if film is not None:
+            try:
+                film.render(rows, mass, a.t2, a.horizon)
+            except Exception as ex:  # noqa: BLE001  (films never cost the episode data)
+                import traceback
+
+                traceback.print_exc()
+                print(f"  [film] skipped: {ex}", flush=True)
+            film = None
         base.close()
         del base
 

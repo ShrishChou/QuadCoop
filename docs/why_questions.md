@@ -177,3 +177,59 @@ Readings:
 - C > B: the similarity term earns its place.
 - B, C and D no better than A: the candidate set lacks a usable turning push, or the executor cannot realise the
   torque.
+
+### 2B development results (seed 7100, 2026-11-23)
+
+Jobs 30143391-98; `logs/evals/fm-dev-{A,B,C,D}-{turn,turn_mirror}-expert`. 320 tasks per arm (long and arch,
+60 and 80 kg, eight turns, 10 placements). Paired by task, 95% bootstrap over tasks.
+
+Determinism check failed. Only 49 of 99 first-stall times match between A and B. Tasks where neither arm ever logged
+evidence also end differently (0 of 88 identical final states), so the GPU simulation does not repeat itself. The arms
+share placements, not trajectories. The comparison is a task-paired one, and D is not a true branch (that needs
+`clone_envs`, as in chain4).
+
+| success, gain over A (pp) | n | A | B exact pair | C similar pushes | D forced switch |
+|---|---|---|---|---|---|
+| all | 320 | 76% | +10.9 [+5.9, +16.2] | +11.2 [+6.2, +16.6] | +5.0 [+0.3, +10.0] |
+| long, clockwise | 80 | 49% | +33.8 [+21.2, +46.2] | +32.5 [+20.0, +45.0] | +20.0 [+7.5, +32.5] |
+| long, clockwise 60-81 deg | 40 | 18% | +62.5 [+45.0, +77.5] | +60.0 [+42.5, +75.0] | +47.5 [+30.0, +65.0] |
+| long, counter-clockwise | 80 | 84% | +3.8 [-5.0, +12.5] | +5.0 [-3.8, +13.8] | +1.2 [-7.5, +10.0] |
+| long, 15-30 deg | 80 | 85% | +5.0 [-2.5, +12.5] | +5.0 [-3.8, +13.8] | -2.5 [-11.2, +5.0] |
+| arch | 160 | 86% | +3.1 [-2.5, +8.8] | +3.8 [-1.9, +10.0] | -0.6 [-5.6, +5.0] |
+
+Per cell, A then B: long 80 kg -81 deg 0% -> 70%, -60 deg 0% -> 80%; long 60 kg -81 deg 30% -> 90%, -60 deg
+40% -> 80%. The controls do not move beyond n = 10 noise.
+
+Mechanism (120 tasks with a verified stall in A, compared on the same tasks in each arm):
+
+| arm | success | memory switch | abs heading error at stall / +10 s / +20 s (deg, median) | finishing stalls |
+|---|---|---|---|---|
+| A | 62% | 0% | 58 / 47 / 33 | 13.4 |
+| B | 87% | 55% | 59 / 50 / 17 | 6.8 |
+| C | 86% | 61% | 60 / 50 / 27 | 6.6 |
+| D | 73% | 60% | 59 / 54 / 29 | 8.1 |
+
+What the switch is: on heavy clockwise long turns the planner holds the two diagonal corners (candidates 8 and 3,
+corners -x+y and +x-y). That is a pure couple of 0.18 m per unit force. The memory's first switch is usually
+(8, 3) -> (8, 4): one robot leaves the +x-y corner for the +x long face at y = -0.25, pushing straight in. It worked
+in B in 20 of 21 cases. The alternative (9, 3) moves the other robot to the -x face. Both trade a 45 deg corner push for
+a flat-face push with a larger lever (0.25 m).
+
+Readings:
+- D > A: the planner overvalued the incumbent pair.
+- B, C > D: one forced switch is not enough. The memory must keep the stalled pair penalised, or the planner returns
+  to it.
+- C = B: the similarity kernel adds nothing here. In these tasks there is one alternative and the exact penalty finds it.
+
+Robot-swap check (jobs 30149104/6, `turn-swap-*`, long only, the same tasks as A): clockwise 49% -> 50%, clockwise
+60-81 deg 18% -> 20%, counter-clockwise 84% -> 56%.
+- Pressing follows the network: at -60 deg, robot 1/2 press fraction 0.14/0.80 becomes 0.60/0.19 when swapped.
+- Success does not move. At 80 kg -81 deg, both robots press 84-89% of the time in A and still fail, with 0 switches.
+- The clockwise failure is the contact choice, not the walking policy. The counter-clockwise drop is index
+  specialisation of the networks (cf. the -5.9 pp swap result).
+
+Open: why the unmodified planner relocks clockwise but switches 6-12 times counter-clockwise. A tie-break by candidate
+index (argmin takes the first) would treat mirrored pairs differently. Not yet checked.
+
+Test (seed 7300, settings unchanged from development): jobs 30165806-20, `fm-test-*`.
+Films: `presentation_export/05_contact_planner/failed_push_memory/`.

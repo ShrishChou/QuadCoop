@@ -795,7 +795,11 @@ def main() -> int:
                 elif getattr(g.cfg, "guide", False):
                     ex = ex[:3] + [torch.linalg.norm(cm.object_force_from(base, ag), dim=-1) for ag in AGENTS]
                 rule_now = g.c_rule.float() if hasattr(g, "c_rule") else torch.full_like(d_, -1.0)
-                rec_cap.append(torch.stack([d_, torch.rad2deg(e_), g.c_switches, *ex, rule_now], -1)[fid].cpu().numpy())
+                fmw = fms = torch.zeros_like(d_)
+                if getattr(g.cfg, "fail_mem", 0) > 0:  # failed-push memory: evidence on the current pair, its switches
+                    fmw = (g.c_fm_w * (g.c_fm_idx == g.c_idx.unsqueeze(1)).all(-1).float()).sum(-1)
+                    fms = g.c_fm_log["switches"]
+                rec_cap.append(torch.stack([d_, torch.rad2deg(e_), g.c_switches, *ex, rule_now, fmw, fms], -1)[fid].cpu().numpy())
         if fid is not None:
             record()
 
@@ -1458,7 +1462,7 @@ def main() -> int:
                     def cap(f, fi=fi, head=head, legend=legend, c0n=c0n, c1n=c1n):
                         txt = f"{head} | t {f * stride * dt:4.1f} s"
                         if CP is not None:
-                            d_, e_, sw, c0, c1, trd, f0, f1, rl = CP[fi, f]
+                            d_, e_, sw, c0, c1, trd, f0, f1, rl, fmw, fms = CP[fi, f]
                             on = MK[fi, f, :, 6]
                             cmd = {0.0: "WALK", 1.0: "HOLD", 2.0: "PUSH"}
                             r0 = f" {cmd.get(float(c0), '')}" if c0 >= 0 else ""
@@ -1468,7 +1472,9 @@ def main() -> int:
                             team = (" | team READY" if trd > 0.5 else " | team not ready") if trd >= 0 else ""
                             txt += (f"\nto goal {d_:.2f} m, {e_:+.0f} deg | {c0n} {'ON' if on[0] > 0.5 else 'off'}{r0}{ff0}, "
                                     f"{c1n} {'ON' if on[1] > 0.5 else 'off'}{r1}{ff1}{team} | contact changes {sw:.0f}"
-                                    f" | rule {int(rl)}\n{legend}")
+                                    f" | rule {int(rl)}"
+                                    + (f"\nfailed-push memory: {fmw:.1f} failed windows on this pair, {fms:.0f} switches"
+                                       if g.cfg.fail_mem > 0 else "") + f"\n{legend}")
                         return txt
 
                     def marks(f, fi=fi):
