@@ -486,3 +486,25 @@ Against the readings fixed in the protocol:
   has k4w above k3, except 20 kg, where the trio is already near the goal and robot 4 is sent away at once (+0.4).
   Nor is it within 2 pp of k3.
 - Finding 3 is therefore not attempted.
+
+## Corrected 3 -> 4 transfer: result (run once, 2026-11-22)
+
+`scripts/k_transfer.py` unchanged (sha256 5120f7e37d55). Train: k4c seeds 1001-1003. Test: 8401-8402, unopened
+before this run. 920 test decisions at 3 -> 4 and 941 at 2 -> 3. Output: `logs/evals/k-transfer-c/`.
+
+Frozen endpoints at 3 -> 4:
+1. Transferred (2 -> 3) ranking, within-mass top half minus bottom half: -1.8 pp [-8.2, +4.5] (placebo +1.5).
+   No transfer.
+2. Transferred ask rule (delta > 0.061, calls 44%) minus always stay: payoff -8.5 [-10.8, -6.2]. The transferred
+   rule is worse than never calling.
+3. In-domain 3 -> 4 ranking: +6.0 [-1.3, +12.1] (placebo +2.1). Not established. The in-domain ask rule calls 0%,
+   so it is always stay.
+
+Context on the same test trees:
+- Recruiting a fourth robot everywhere: -10.3 pp [-13.4, -7.3] (placebo -0.2). The fourth-robot harm replicates on
+  fresh seeds with the phantom fix.
+- 2 -> 3 replicates: recruiting +12.1 [+9.1, +15.1]; in-domain ranking +13.6 [+8.4, +20.0]; in-domain ask rule vs
+  always recruit +2.4 [+1.2, +3.6].
+
+Status for the paper: the 2 -> 3 dispatcher is confirmed on fresh seeds. It does not transfer to 3 -> 4, where the
+best rule is to stay at three. This replaces "corrected transfer is unconfirmed".
