@@ -173,6 +173,7 @@ class MarlCfg:
     off_contact_cost: float = 1.0  # env option (recorded): per second off a reached contact (soft)
     contact_approach: float = 1.0  # env option (recorded): weight of the pull to the assigned contact (soft)
     critic_warmup_resume: int = 0  # critic-only iterations after a resume (e.g. when the rewards changed)
+    warmup_once: bool = False  # a resume (e.g. a requeue) keeps the run's own warmup origin: no second critic-only phase
     guide: bool = False  # env option (recorded): Stage 4d route inputs (6 more per robot)
     bump_cost: float = 1.0  # env option (recorded)
     disturb_frac: float = 0.0  # env option (recorded)
@@ -877,6 +878,8 @@ class MarlTrainer:
                 pg["lr"] = self.lr[a]
         self.it = int(ck["iter"])
         self.resume_it = self.it
+        if self.cfg.warmup_once and ck.get("resume_origin") is not None:  # a requeue of this run: warm up only once
+            self.resume_it = int(ck["resume_origin"])
         if self.cfg.actor_schedule and ck.get("sched_origin") is not None:  # a requeue continues the schedule: no
             self.sched_origin = int(ck["sched_origin"])                     # second critic-only phase
             self.resume_it = ck.get("resume_origin", self.it)

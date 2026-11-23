@@ -74,6 +74,10 @@ FORMATIONS3 = {  # teams of three (--pair anymal3): the same frames, the middle 
     "flank": ((-90.0, 180.0, 90.0), "goal", ("right", "behind", "left")),
 }
 
+FORMATIONS4 = {  # teams of four (--pair anymal4): four places behind the object, 44 deg apart
+    "standard": ((-66.0, -22.0, 22.0, 66.0), "world", ("behind_left_out", "behind_left", "behind_right", "behind_right_out")),
+}
+
 SCENARIOS = (  # name, distance (m), direction (deg, + = left, 0 = straight ahead of the robots), turn (deg)
     ("A_straight", 3.0, 0.0, 0.0),
     ("B_left", 3.0, 60.0, 30.0),
@@ -97,8 +101,9 @@ def models_for(a) -> tuple[dict, str]:
         variant = ck.get("variant", "b")
         pair = cfg.get("pair", "mixed")
         what = f"checkpoint {a.checkpoint} (iteration {ck['iter']}, {ck['algo']}, pair {pair})"
-        if a.pair == "anymal3" and pair == "anymal":  # a pair's actors as a trio (anymal3 <- anymal1): the transfer
-            pair, what = "anymal3", what + ", run as a team of three (anymal3 uses anymal1's actor)"
+        if a.pair in ("anymal3", "anymal4") and pair == "anymal":  # a pair's actors as a larger team: the transfer
+            pair, what = a.pair, what + (", run as a team of three (anymal3 uses anymal1's actor)" if a.pair == "anymal3"
+                                         else ", run as a team of four (anymal3 / anymal4 use anymal1's / anymal2's actors)")
         if a.solo:
             if a.solo not in robot_of(pair):
                 raise SystemExit(f"--solo {a.solo}: this checkpoint's robots are {list(robot_of(pair))}")
@@ -135,7 +140,7 @@ def main() -> int:
     ap.add_argument("--arm-lock", default="",
                     help="Spot-arm checkpoints with learned arms: comma list of robots whose arm is held stowed "
                          "(their arm outputs ignored), or 'all': the arm ablation")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm", "anymal3"), default="mixed",
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm", "anymal3", "anymal4"), default="mixed",
                     help="frozen pair / solo: which two robots (a checkpoint carries its own)")
     ap.add_argument("--variant", choices=("b", "ctrl"), default="b")
     ap.add_argument("--partner-map", action="store_true",
@@ -232,9 +237,9 @@ def main() -> int:
     stats_dir = ROOT / "evals" / a.name / "eval" / "pair"
     out.mkdir(parents=True, exist_ok=True)
     formations = [x.strip() for x in a.formations.split(",")]
-    if len(AGENTS) == 3:  # teams of three: their own start formations, no swap
+    if len(AGENTS) in (3, 4):  # teams of three / four: their own start formations, no swap
         FORMATIONS.clear()
-        FORMATIONS.update(FORMATIONS3)
+        FORMATIONS.update(FORMATIONS3 if len(AGENTS) == 3 else FORMATIONS4)
         assert not a.swap, "--swap exchanges two robots' start places"
     bad = [x for x in formations if x not in FORMATIONS]
     if bad:

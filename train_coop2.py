@@ -221,7 +221,7 @@ def main() -> int:
     ap.add_argument("--pilot-episode-s", type=float, default=0.0, help="episode length with --pilot-level")
     ap.add_argument("--dyaw-choices", action="store_true",
                     help="goal heading change is -1, 0 or +1 x the level's value, equally often (left / straight / right)")
-    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm", "anymal3"), default="mixed",
+    ap.add_argument("--pair", choices=("mixed", "anymal", "spot", "spot_arm", "anymal_arm", "anymal3", "anymal4"), default="mixed",
                     help="which two robots: ANYmal C + Spot (mixed), two ANYmal C, two Spot "
                          "(quadcoop/coop2/pairs.py); both start from that type's Stage 2 policy")
     ap.add_argument("--seed", type=int, default=0)
@@ -294,6 +294,8 @@ def main() -> int:
                          "and a cost per second off a reached contact; terminate: Stage 4 / 4b rules")
     ap.add_argument("--off-contact-cost", type=float, default=1.0, help="soft: per second off a reached contact")
     ap.add_argument("--contact-approach", type=float, default=1.0, help="soft: weight of the pull to the assigned contact")
+    ap.add_argument("--warmup-once", action="store_true",
+                    help="a resumed run (e.g. a requeue) keeps its first warmup origin: critic-only iterations only once")
     ap.add_argument("--critic-warmup-resume", type=int, default=0,
                     help="critic-only iterations after --resume (use when the rewards changed, e.g. 100)")
     ap.add_argument("--guide", action="store_true",
@@ -630,7 +632,7 @@ def main() -> int:
                   drift_dist=a.drift_dist, drift_heading_deg=a.drift_heading,
                   reselect_s=reselect_s, random_start=a.random_start, off_contact=a.off_contact,
                   off_contact_cost=a.off_contact_cost, contact_approach=a.contact_approach,
-                  critic_warmup_resume=a.critic_warmup_resume, guide=a.guide, bump_cost=a.bump_cost,
+                  critic_warmup_resume=a.critic_warmup_resume, warmup_once=a.warmup_once, guide=a.guide, bump_cost=a.bump_cost,
                   disturb_frac=a.disturb_frac, init_from=a.init_from or "", push_cmd=a.push_cmd,
                   walk_cost=a.walk_cost, reselect_min_dist=a.reselect_min_dist,
                   exec_v2=a.exec_v2, hold_rand=a.hold_rand if a.exec_v2 else 0.0, hold_cost_w=a.hold_cost,
