@@ -19,6 +19,8 @@ Per step, while the episode is live (`ok`):
 Per episode and phase: seconds, progress (distance gained, m) and heading gained (deg); per robot: touching seconds,
 mean goal force and mean useful torque over the phase (N, N m; integral / phase seconds), mean |torque|, and the
 touching seconds on each side. `t_align` = first entry into the alignment region.
+Signed yaw command (the planner's wanted yaw rate c_wdes, where the env has it): seconds with a turn needed and
+commanded, and of those the seconds commanded the opposite way to the heading error (an orientation flip).
 """
 from __future__ import annotations
 
@@ -51,6 +53,8 @@ class PushProbe:
         self.tuse = {p: z(n, R) for p in PHASES}
         self.tabs = {p: z(n, R) for p in PHASES}
         self.side = {p: z(n, 4) for p in PHASES}
+        self.wcmd = {p: z(n) for p in PHASES}  # seconds with a turn needed (> 2 deg) and commanded (planner c_wdes)
+        self.wflip = {p: z(n) for p in PHASES}  # ... of which the commanded yaw rate has the opposite sign
         self.t_align = torch.full((n,), float("nan"), device=dev)
         d, e = g.errors()
         self.prev_d, self.prev_e = d.clone(), e.abs().clone()
@@ -72,11 +76,18 @@ class PushProbe:
         by = self._yaw(g.box_quat())
         cb, sb = torch.cos(by), torch.sin(by)
         need = torch.where(ea > math.radians(2.0), torch.sign(e), torch.zeros_like(e))
+        wz = getattr(g, "c_wdes", None)
+        if wz is not None:
+            cmd = (need != 0) & (wz.abs() > 1e-3)
+            flip = cmd & (torch.sign(wz) != need)
         for p, m in (("tr", ~al), ("al", al)):
             w = okf * m.float()
             self.T[p] += w * dt
             self.prog[p] += w * (self.prev_d - d)
             self.dyaw[p] += w * torch.rad2deg(self.prev_e - ea)
+            if wz is not None:
+                self.wcmd[p] += w * cmd.float() * dt
+                self.wflip[p] += w * flip.float() * dt
         for k, ag in enumerate(self.agents):
             r = self.env.scene[ag]
             F = cm.object_force_from(self.env, ag)
@@ -105,6 +116,8 @@ class PushProbe:
             out[f"{p}_s"] = round(T, 2)
             out[f"{p}_prog"] = round(float(self.prog[p][j]), 3)
             out[f"{p}_dyaw"] = round(float(self.dyaw[p][j]), 1)
+            out[f"{p}_wcmd_s"] = round(float(self.wcmd[p][j]), 2)
+            out[f"{p}_wflip_s"] = round(float(self.wflip[p][j]), 2)
             for k in range(len(self.agents)):
                 out[f"{p}_touch{k + 1}"] = round(float(self.touch[p][j, k]), 2)
                 out[f"{p}_fgoal{k + 1}"] = round(float(self.fgoal[p][j, k]) / T, 1) if T > 0 else ""

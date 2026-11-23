@@ -1343,6 +1343,7 @@ def main() -> int:
                 sep = round(float(np.linalg.norm(cl[c1].p - cl[c2].p)), 2)
             rows[rule].append({
                 **(probe.row(j) if probe is not None else {}),
+                **(g.fail_mem_row(j) if stage4 and g.cfg.fail_mem > 0 else {}),
                 "object": o, "seen_shape": int(o in TRAIN_NAMES), "mass": mass, "scenario": SCENARIOS[s][0],
                 "distance": SCENARIOS[s][1], "direction": SCENARIOS[s][2], "turn": round(math.degrees(float(turn[j])), 1),
                 "rep": r, "success": int(how[j] == "success"), "precise": int(bool(precise[j])), "outcome": how[j],

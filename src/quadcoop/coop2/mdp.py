@@ -335,6 +335,20 @@ class CoopPush2Command(Push2Command):
         self.c_fin = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window: no progress in the zone
         self.c_win_yaw = torch.zeros(n, device=dev)
         self.c_stalled = torch.zeros(n, dtype=torch.bool, device=dev)  # the last window saw no progress
+        # failed-push memory (cfg.fail_mem > 0): assignments tried in this turn and the evidence their pushes failed
+        S_ = int(self.cfg.fail_slots)
+        self.c_fm_idx = torch.full((n, S_, 2), -1, dtype=torch.long, device=dev)  # contact of robot 1, robot 2
+        self.c_fm_p = torch.zeros(n, S_, 2, 2, device=dev)  # their positions (object frame) ...
+        self.c_fm_n = torch.zeros(n, S_, 2, 2, device=dev)  # ... and outward normals (push = -normal)
+        self.c_fm_w = torch.zeros(n, S_, device=dev)  # failed windows (fractional: slow turning counts in part)
+        self.c_fm_sign = torch.zeros(n, device=dev)  # the turn direction the evidence belongs to
+        self.c_win_ae = torch.zeros(n, device=dev)  # |heading error| at the window's start
+        self.c_win_both = torch.ones(n, dtype=torch.bool, device=dev)  # both robots pushing through the window
+        self.c_fm_done = torch.zeros(n, dtype=torch.bool, device=dev)  # fail_mem 3: the forced switch was made
+        self.c_fm_log = {k: torch.zeros(n, device=dev) for k in ("windows", "prod", "switches", "cleared")}
+        self.c_fm_first = {k: torch.full((n,), float("nan"), device=dev) for k in (
+            "t_stall", "ae_stall", "ae_10", "ae_20", "t_sw", "ae_sw", "old1", "old2", "new1", "new2", "j_old", "j_new",
+            "w_old")}
         # the last re-plan's cause (logged): 0 reset, 1 timer, 2 wrench residual, 3 no progress, 4 weak pair,
         # 5 finish, 6 slow arrival; and re-plans run this episode (a re-plan may keep the same pair)
         self.c_plan_reason = torch.zeros(n, dtype=torch.long, device=dev)
@@ -1414,6 +1428,20 @@ class CoopPush2Command(Push2Command):
             c.stop_weight * (stop[0].unsqueeze(2) + stop[1].unsqueeze(1))
         J = torch.where(use, J, torch.full_like(J, 1e9))
         cur_ok = use[ar, cur[:, 0], cur[:, 1]]
+        fm_w_cur = torch.zeros(m, device=dev)
+        fm_gate = torch.zeros(m, dtype=torch.bool, device=dev)
+        if c.fail_mem > 0:
+            # failed-push memory: the evidence enters the candidate table itself, so the argmin and the keep / switch
+            # comparison below both see it (the stall_penalty only moves the threshold)
+            pen, fm_w_cur, fm_gate = self._fail_penalty(ids, p, nn, shape, cur)
+            fm_gate = fm_gate & (c.fail_mem >= 1) & ~self.c_fm_done[ids]  # 0.5: evidence logged, never used
+            if c.fail_mem >= 3:
+                # forced alternative (branch diagnostic): at the trigger, every assignment similar to the stalled pair
+                # is excluded and the best of the rest is taken (no margin); once only
+                fire = fm_gate & (fm_w_cur >= c.fail_min)
+                J = torch.where(use & fire[:, None, None] & (pen > c.fail_diff), torch.full_like(J, 1e8), J)
+            else:
+                J = torch.where(use, J + c.fail_lambda * pen * fm_gate.float()[:, None, None], J)
         j_cur = torch.where(cur_ok, J[ar, cur[:, 0], cur[:, 1]], torch.full_like(res[:, 0, 0], 1e9))
         j_cur = j_cur + c.stall_penalty * self.c_stalled[ids].float()
         # no usable pair can slide the object (every residual 1): more robots (or more force) needed
@@ -1421,18 +1449,69 @@ class CoopPush2Command(Push2Command):
         best, flat = J.view(m, -1).min(-1)
         gi, gj = flat // K, flat % K
         go = best < j_cur - c.expert_margin
+        if c.fail_mem >= 3:
+            go = go | (fm_gate & (fm_w_cur >= c.fail_min) & (best < 1e3))  # a feasible, not relocked alternative
         zone = torch.zeros_like(go)
         if c.finish_dist > 0:
             # finishing zone: keep the pair unless it cannot make the motion left (residual > finish_resid)
             res_cur = torch.where(cur_ok, res[ar, cur[:, 0], cur[:, 1]], torch.ones_like(j_cur))
             zone = self.pose_error()[ids] < c.finish_dist
-            go = go & (~zone | (res_cur > c.finish_resid))
+            # failed-push memory: repeated verified turning stalls on this exact pair also allow the comparison
+            fm_ok = fm_gate & (fm_w_cur >= c.fail_min)
+            go = go & (~zone | (res_cur > c.finish_resid) | fm_ok)
         new = cur.clone()
         new[:, 0] = torch.where(go, gi, new[:, 0])
         new[:, 1] = torch.where(go, gj, new[:, 1])
         # the remaining entries are the expert's intermediate quantities, exposed as coordinator features only
         return dict(new=new, cur=cur, p=p, nn=nn, pre=pre_all, use=use, t_route=t_route, need_more=need_more,
-                    res=res, J=J, t_arr=t_arr, stop=stop, on=torch.stack(ons, -1), j_cur=j_cur, zone=zone)
+                    res=res, J=J, t_arr=t_arr, stop=stop, on=torch.stack(ons, -1), j_cur=j_cur, zone=zone,
+                    best=best, fm_w_cur=fm_w_cur, fm_gate=fm_gate)
+
+    def _fail_gate(self, ids: torch.Tensor) -> torch.Tensor:
+        """The failed-push memory applies during a near-goal turn: within fail_near of the goal position, heading
+        error above fail_turn_deg, in the direction the evidence was collected for."""
+        c = self.cfg
+        d, e = self.errors()
+        d, e = d[ids], e[ids]
+        e = torch.where(self.symmetry()[ids] > 0, e, torch.zeros_like(e))
+        return (d < c.fail_near) & (e.abs() > math.radians(c.fail_turn_deg)) & (torch.sign(e) == self.c_fm_sign[ids])
+
+    def _fail_penalty(self, ids, p, nn, shape, cur):
+        """(m, K, K) failure evidence carried by each candidate assignment (robot 1 at i, robot 2 at j), the evidence
+        on the exact current pair (m,) and the gate (m,). fail_mem 1: only the exact assignment tried; 2: each tried
+        assignment lends its evidence to similar pushes, per robot (identity kept) a kernel in the contact position
+        (object frame, per axis / the object's half extents, scale fail_sigma) times ((1 + n . n') / 2) ** 8, so
+        nearby contacts on the same face share it and a contact on another face (even at the same corner) does not."""
+        c = self.cfg
+        K = p.shape[1]
+        w = self.c_fm_w[ids]  # (m, S)
+        idx = self.c_fm_idx[ids]  # (m, S, 2)
+        oh = [torch.nn.functional.one_hot(idx[..., k].clamp(min=0), K).float() * (idx[..., k] >= 0).float().unsqueeze(-1)
+              for k in range(2)]  # (m, S, K)
+        exact = torch.einsum("ms,msi,msj->mij", w, oh[0], oh[1])
+        ar = torch.arange(len(ids), device=self.device)
+        w_cur = exact[ar, cur[:, 0], cur[:, 1]]
+        if c.fail_mem >= 3:  # similarity of each candidate to the current (stalled) pair, in [0, 1]
+            h = self.bbox_env[ids, shape, 2:4].clamp(min=0.05)
+            sim_ = 1.0
+            for k in range(2):
+                dp = (p - self.c_pobj[ids, k].unsqueeze(1)) / h[:, None, :]
+                kp = torch.exp(-(dp ** 2).sum(-1) / (2.0 * c.fail_sigma ** 2))
+                kn = ((1.0 + (nn * self.c_nobj[ids, k].unsqueeze(1)).sum(-1)) / 2.0).clamp(min=0) ** 8
+                sim_ = sim_ * (kp * kn).unsqueeze(2 - k)  # robot 1 indexes i (dim 1), robot 2 indexes j (dim 2)
+            pen = sim_
+        elif c.fail_mem >= 2:
+            h = self.bbox_env[ids, shape, 2:4].clamp(min=0.05)  # (m, 2)
+            ks = []
+            for k in range(2):
+                dp = (p.unsqueeze(1) - self.c_fm_p[ids][:, :, k].unsqueeze(2)) / h[:, None, None, :]  # (m, S, K, 2)
+                kp = torch.exp(-(dp ** 2).sum(-1) / (2.0 * c.fail_sigma ** 2))
+                kn = ((1.0 + (nn.unsqueeze(1) * self.c_fm_n[ids][:, :, k].unsqueeze(2)).sum(-1)) / 2.0).clamp(min=0) ** 8
+                ks.append(kp * kn * (idx[..., k] >= 0).float().unsqueeze(-1))
+            pen = torch.einsum("ms,msi,msj->mij", w, ks[0], ks[1])
+        else:
+            pen = exact
+        return pen, w_cur, self._fail_gate(ids)
 
     def apply_assignment(self, ids: torch.Tensor, new: torch.Tensor, p: torch.Tensor, nn: torch.Tensor,
                          pre: torch.Tensor, t_route: list) -> torch.Tensor:
@@ -1473,7 +1552,82 @@ class CoopPush2Command(Push2Command):
         """The expert planner's decision (_propose_expert), applied (apply_assignment)."""
         prop = self._propose_expert(ids)
         self.c_need_more[ids] = prop["need_more"]
+        if self.cfg.fail_mem > 0:
+            sw = (prop["new"] != prop["cur"]).any(-1) & prop["fm_gate"] & (prop["fm_w_cur"] > 0)
+            if bool(sw.any()):
+                e_ = ids[sw]
+                self.c_fm_log["switches"][e_] += 1.0
+                if self.cfg.fail_mem >= 3:
+                    self.c_fm_done[e_] = True
+                f_ = self.c_fm_first
+                first = torch.isnan(f_["t_sw"][e_])
+                e1, sw1 = e_[first], sw.nonzero().flatten()[first]
+                if len(e1):
+                    f_["t_sw"][e1] = self.c_time[e1]
+                    f_["ae_sw"][e1] = torch.rad2deg(self.errors()[1][e1].abs())
+                    for k in range(2):
+                        f_[f"old{k + 1}"][e1] = prop["cur"][sw1, k].float()
+                        f_[f"new{k + 1}"][e1] = prop["new"][sw1, k].float()
+                    f_["j_old"][e1] = prop["j_cur"][sw1]
+                    f_["j_new"][e1] = prop["best"][sw1]
+                    f_["w_old"][e1] = prop["fm_w_cur"][sw1]
         self.apply_assignment(ids, prop["new"], prop["p"], prop["nn"], prop["pre"], prop["t_route"])
+
+    def _fail_evidence(self, full, on, d, e) -> None:
+        """Failed-push memory, at the end of each no-progress window (non-overlapping, so a window counts once however
+        many re-plans ran in it). Counted during a near-goal turn (within fail_near, |heading error| at the window's
+        start above fail_turn_deg) when both robots pushed on their contacts through the whole window: evidence
+        1 - (heading gained / fail_rate_deg), clipped to [0, 1], on the current assignment (slow turning earns
+        partial credit). A productive window (gained >= fail_rate_deg) multiplies all evidence by fail_decay; a
+        change of turn direction clears it; a reset clears it."""
+        c = self.cfg
+        ae = e.abs()
+        self.c_win_both &= (on & (self.c_phase == 2)).all(-1)
+        act = full & (self.c_rule == 4) & (d < c.fail_near) & (self.c_win_ae > math.radians(c.fail_turn_deg))
+        sgn = torch.sign(e)
+        flip = act & (self.c_fm_sign != 0) & (sgn != self.c_fm_sign)
+        if bool(flip.any()):
+            self.c_fm_w[flip] = 0.0
+            self.c_fm_idx[flip] = -1
+            self.c_fm_log["cleared"] += flip.float()
+        self.c_fm_sign[:] = torch.where(act, sgn, self.c_fm_sign)
+        gained = torch.rad2deg(self.c_win_ae - ae)
+        cnt = act & self.c_win_both
+        inc = (1.0 - gained / c.fail_rate_deg).clamp(0.0, 1.0)
+        prod = cnt & (inc <= 0)
+        self.c_fm_w[prod] *= c.fail_decay
+        self.c_fm_log["prod"] += prod.float()
+        bad = cnt & (inc > 0)
+        f_ = self.c_fm_first
+        if bool(bad.any()):
+            E = bad.nonzero().flatten()
+            cur = self.c_idx[E]
+            match = (self.c_fm_idx[E] == cur.unsqueeze(1)).all(-1)
+            has = match.any(-1)
+            slot = torch.where(has, match.float().argmax(-1), self.c_fm_w[E].argmin(-1))
+            new = ~has
+            if bool(new.any()):
+                En, sn = E[new], slot[new]
+                self.c_fm_idx[En, sn] = cur[new]
+                self.c_fm_p[En, sn] = self.c_pobj[En]
+                self.c_fm_n[En, sn] = self.c_nobj[En]
+                self.c_fm_w[En, sn] = 0.0
+            self.c_fm_w[E, slot] += inc[E]
+            self.c_fm_log["windows"] += bad.float()
+            first = bad & torch.isnan(f_["t_stall"])
+            f_["t_stall"][first] = self.c_time[first]
+            f_["ae_stall"][first] = torch.rad2deg(ae[first])
+        for tt in (10, 20):  # heading error 10 / 20 s after the first verified stall (walking to new contacts included)
+            due = torch.isnan(f_[f"ae_{tt}"]) & ~torch.isnan(f_["t_stall"]) & (self.c_time >= f_["t_stall"] + tt)
+            f_[f"ae_{tt}"][due] = torch.rad2deg(ae[due])
+
+    def fail_mem_row(self, j: int) -> dict:
+        """Episode columns for the failed-push memory (logged for every arm: evidence is only collected when on)."""
+        out = {f"fm_{k}": int(v[j]) for k, v in self.c_fm_log.items()}
+        for k, v in self.c_fm_first.items():
+            x = float(v[j])
+            out[f"fm_{k}"] = "" if math.isnan(x) else round(x, 3)
+        return out
 
     def _update_expert(self, dt: float | None = None) -> None:
         """At 1 / expert_dt: priorities, expected arrivals, the no-progress window and the go / hold
@@ -1506,6 +1660,8 @@ class CoopPush2Command(Push2Command):
         stuck_far = (moved < c.stall_move) & (turned < c.stall_turn)
         stuck_fin = (self.c_win_pe - pe) < c.finish_frac * self.c_win_pe.clamp(max=c.finish_dist)
         stalled = full & torch.where(zone, stuck_fin, stuck_far) & pushing & ~done & (self.c_rule == 4)
+        if c.fail_mem > 0:
+            self._fail_evidence(full, on, d, e)
         fin = stalled & zone
         self.c_fin_stalls += fin.float()
         self.c_fin |= fin
@@ -1526,6 +1682,8 @@ class CoopPush2Command(Push2Command):
         self.c_win_xy[:] = torch.where(restart.unsqueeze(-1), self.box_pos()[:, :2], self.c_win_xy)
         self.c_win_yaw[:] = torch.where(restart, self.heading(), self.c_win_yaw)
         self.c_win_pe[:] = torch.where(restart, pe, self.c_win_pe)
+        self.c_win_ae[:] = torch.where(restart, e.abs(), self.c_win_ae)
+        self.c_win_both[:] = torch.where(restart, torch.ones_like(self.c_win_both), self.c_win_both)
         # go / hold: a robot on its contact pushes when its partner is on too; alone only if it can make
         # the wanted motion by itself (solo residual < resid_bad), the partner is > solo_wait_s away and
         # the object is light enough for one robot (mass x friction x g < robot_push_force)
@@ -2164,6 +2322,16 @@ class CoopPush2Command(Push2Command):
                 self.c_fin_stalls[env_ids] = 0.0
                 self.c_fin[env_ids] = False
                 self.c_stalled[env_ids] = False
+                self.c_fm_idx[env_ids] = -1
+                self.c_fm_w[env_ids] = 0.0
+                self.c_fm_sign[env_ids] = 0.0
+                self.c_fm_done[env_ids] = False
+                self.c_win_ae[env_ids] = 0.0
+                self.c_win_both[env_ids] = True
+                for v_ in self.c_fm_log.values():
+                    v_[env_ids] = 0.0
+                for v_ in self.c_fm_first.values():
+                    v_[env_ids] = float("nan")
                 self.c_replans[env_ids] = 0.0
                 self.c_plan_reason[env_ids] = 0
                 self.c_plan_n[env_ids] = 0.0
@@ -2503,6 +2671,20 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     finish_dist: float = 0.0  # > 0: finishing zone, pose error (m, distance + rho_g x angle) below this:
     finish_frac: float = 0.1  # ... no progress = pose error fell by less than this share of itself in a window;
     finish_resid: float = 0.5  # ... stalls not penalised, the pair changed only if its residual is above this
+    # failed-push memory (eval ablation; docs/why_questions.md): a temporary, episode-local cost on assignments whose
+    # pushes failed to turn the object, added to the candidate table before the argmin
+    fail_mem: float = 0.0  # 0 off (current planner); 0.5 evidence logged only; 1 the exact assignment tried;
+    # 2 similar pushes share its evidence; 3 forced alternative: at the trigger, switch once to the best assignment
+    # not similar to the stalled pair (branch diagnostic)
+    fail_lambda: float = 0.25  # cost per window of failure evidence (a far switch costs ~0.4 walk + 0.2 stops + margin)
+    fail_turn_deg: float = 15.0  # counted / applied while |heading error| is above this ...
+    fail_near: float = 0.5  # ... with the object within this of the goal position (m)
+    fail_rate_deg: float = 3.0  # heading gained per stall_window that counts as productive (no evidence)
+    fail_min: float = 2.0  # evidence on the current pair that lets the planner switch inside the finishing zone
+    fail_decay: float = 0.5  # a productive window multiplies all evidence by this
+    fail_sigma: float = 0.25  # similarity: contact-position scale, in object half extents (per axis)
+    fail_slots: int = 8  # assignments remembered per episode
+    fail_diff: float = 0.3  # fail_mem 3 (forced alternative): similarity to the stalled pair above this is excluded
     turn_full_dist: float = 0.0  # > 0: beyond this distance (m) the wanted turn shrinks as 1 / distance
     robot_push_force: float = 250.0  # N one robot can push with (assumed; to be measured): heavier -> push together
     roll_ratio: float = 0.0  # > 0: lying cylinders roll; resistance across the axis = roll_ratio x sliding (0 = isotropic)

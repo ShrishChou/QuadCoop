@@ -125,3 +125,55 @@ the nearest point of the true shape, and the moment is taken at that point (`g.s
 definition, for the cross-system comparison: `probe2-planner-expert` (30114284), `probe-ippo` (30099479),
 `probe-mappo` (30099480). The cheap checks above keep the first definition; they only compare planner runs with
 each other.
+
+## Section 2B: does revising the contact ranking after failed turns help? (planner ablation, frozen robots)
+
+What the code does now (verified):
+- `_propose_expert` adds `stall_penalty` to `j_cur` only. The argmin is still taken over the unpenalised J, so the
+  current pair can win again: the penalty moves the threshold, not the ranking.
+- Inside the finishing zone a stall sets `c_fin`, not `c_stalled`, so no penalty applies. A switch is allowed only
+  when the current pair's residual exceeds `finish_resid`.
+- In `probe-planner-turn-expert`, all ten 80 kg long-object -81 deg failures logged 27-38 finishing stalls and 0
+  switches (38 is nearly every 2 s window of the episode).
+
+Change (`coop2/mdp.py`, `fail_mem`, episode-local):
+J_updated(a) = J_geometry+travel+switching(a) + lambda * sum_j w_j K(a, a_j).
+- The penalty goes into the candidate table before the argmin. Keep-or-switch uses the same table with the usual
+  margin.
+- Evidence is counted once per non-overlapping 2 s window, only during a near-goal turn: within 0.5 m and
+  |heading error| > 15 deg at the window's start. Both robots must push on their contacts through the whole window.
+- Evidence = 1 - (heading gained / 3 deg), clipped to [0, 1], so slow turning earns partial credit.
+- A productive window halves all evidence. A change of turn direction clears it. Reset clears it.
+- The penalty applies only during a turn in the direction the evidence was collected for.
+- Repeated stalls (evidence >= 2 on the current exact pair) allow the comparison inside the finishing zone.
+- Robot identity is kept.
+
+Arms (`contact_test.py --set fail_mem=...`):
+- **A, 0.5:** current planner; evidence logged, never used.
+- **B, 1:** penalty on the exact failed assignment.
+- **C, 2:** similar pushes share the penalty. Per robot, the kernel is
+  exp(-|dp / half extents|^2 / (2 x 0.25^2)) x ((1 + n . n') / 2)^8. Same face and direction share it; another face,
+  even at the same corner, does not.
+- **D, 3:** branch diagnostic. At the same trigger, every assignment with similarity > 0.3 to the stalled pair is
+  excluded, and the best of the rest is taken once, without the margin.
+
+All arms share lambda 0.25 per window, the trigger and the margin. The arms run identical trajectories until the
+memory first changes a decision, if the simulation is deterministic. Check: A's and B's first verified stall times
+(`fm_t_stall`) should match task by task.
+
+Tasks: long and arch at 60 and 80 kg; `--tasks turn` and `turn_mirror` (+-15, +-30, +-60, +-81 deg); 10 repeats.
+Controls: arch turns, and long turns of 15-30 deg.
+- Development: seed 7100. Settings may change once after it.
+- Test: fresh placements, seed 7300, settings frozen.
+
+Outcomes:
+- **Primary:** success, paired by task, B / C / D minus A.
+- **Mechanism:** heading error 10 s and 20 s after the first verified stall (walking included); switches; the old
+  and new assignments and their scores.
+- **Orientation-flip check:** seconds commanded against the heading error (`*_wflip_s`).
+
+Readings:
+- D > A: the planner overvalued the incumbent pair.
+- C > B: the similarity term earns its place.
+- B, C and D no better than A: the candidate set lacks a usable turning push, or the executor cannot realise the
+  torque.
