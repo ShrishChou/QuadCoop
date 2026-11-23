@@ -102,3 +102,26 @@ Kept for after section 3 data:
 - fresh seeds at the same helper budget;
 - full-feedback fit first, then a bandit with chosen-action feedback only.
 Four robots maximum for the class paper.
+
+## Section 2 cheap checks: first results (planner, 2026-11-22)
+
+Arch and long, 20-80 kg, 4 placements x 10 repeats, seed 7100 (320 tasks per run). Paired over matched tasks.
+- Mirrored goals (`probe-planner-mirror-expert`): 67% vs 66%, -1.2 pp [-7.5, +5.0]. Arch -3.8 [-11.9, +4.4], long
+  +1.2 [-8.1, +10.0]. Per-scenario shifts of 10-17 pp sit inside the noise of 40 tasks. No sign or wrapping bug shows.
+- Robot-index swap (`probe-planner-swap-expert`): -5.9 pp [-11.6, -0.3]. The two actor networks are a little
+  specialised to their index; not large enough to explain the long-object loss.
+- Turn in place (`probe-planner-turn-expert`): arch 82-92% at every size. Long: 98% (+15 deg), 75% (-30), 82%
+  (+60), 45% (-90). The -90 task is set to -81 deg, the clamp. The long -90 failures are by mass: 20 kg 70%,
+  40 kg 80%, 60 kg 30%, 80 kg 0%. 22 failures, none fell; 21 ended 44-83 deg off, so the object barely turned.
+  A heavy long object cannot be turned far in place.
+  Next: whether that is the direction or the size. `--tasks turn_mirror` negates the turns, so +90 is run as well
+  (job 30114359).
+- Torque sign (front-point definition): the sign of the moment agrees with the heading actually gained in 86% of
+  transport phases and 60% of alignment phases (turn-in-place alignment 93%). No moment-sign error.
+
+Probe correction: the first version labelled sides by the bounding box. On the arch, the pillar faces lie inside
+the feet's box, so a push from behind read as a side touch. The side now comes from the outward surface normal at
+the nearest point of the true shape, and the moment is taken at that point (`g.surface_geometry`). Runs on the new
+definition, for the cross-system comparison: `probe2-planner-expert` (30114284), `probe-ippo` (30099479),
+`probe-mappo` (30099480). The cheap checks above keep the first definition; they only compare planner runs with
+each other.

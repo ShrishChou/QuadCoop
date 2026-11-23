@@ -239,6 +239,7 @@ class CoopPush2Command(Push2Command):
         self.c_pre = torch.zeros(S, K, 2, device=dev)
         self.c_valid = torch.zeros(S, K, dtype=torch.bool, device=dev)
         self.c_sep_ok = torch.zeros(S, K, K, dtype=torch.bool, device=dev)
+        self.c_stand_off = torch.zeros(S, K, device=dev)
         self.c_com = torch.zeros(S, 2, device=dev)
         for s, cl in enumerate(lists):
             for c in cl:
@@ -250,6 +251,8 @@ class CoopPush2Command(Push2Command):
             d = np.linalg.norm(st[:, None] - st[None], axis=-1) if len(cl) else np.zeros((0, 0))
             ok = (d >= self.cfg.contact_min_sep) & ~np.eye(len(cl), dtype=bool)
             self.c_sep_ok[s, :len(cl), :len(cl)] = torch.tensor(ok, device=dev)
+            for c in cl:  # standing point = p + off * n (for scaled_sep)
+                self.c_stand_off[s, c.index] = float(np.dot(np.asarray(c.stand) - np.asarray(c.p), np.asarray(c.n)))
             self.c_com[s] = torch.tensor(C.centre_of_mass(nom_np[s], kinds_np[s]), dtype=torch.float)
         # a lone sphere spins freely as it rolls: its contacts live in the frame it started with
         valid_parts = self.kinds >= 0
@@ -1077,6 +1080,11 @@ class CoopPush2Command(Push2Command):
         nn = self.c_n[shape] / f.unsqueeze(1)
         nn = nn / torch.linalg.norm(nn, dim=-1, keepdim=True).clamp(min=1e-6)
         sep = self.c_sep_ok[shape]
+        if self.cfg.scaled_sep:  # the nominal rule (standing points >= contact_min_sep apart) at this env's size
+            st = p + nn * self.c_stand_off[shape].unsqueeze(-1)
+            K = p.shape[1]
+            eye = torch.eye(K, dtype=torch.bool, device=p.device).unsqueeze(0)
+            sep = (torch.linalg.norm(st.unsqueeze(2) - st.unsqueeze(1), dim=-1) >= self.cfg.contact_min_sep) & ~eye
         if self.cfg.footprint_sep:  # planner v2: the robots' footprints at this env's object size
             a0, a1 = AGENTS[0], AGENTS[1]
             reach = max(self.reach[a0], self.reach[a1])
@@ -2366,6 +2374,7 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     contact_mix: tuple[float, ...] = (1.0, 1.0, 1.0)  # spread, adjacent, random[, wrench[, expert]] pair
     contact_start_at: float = 0.7  # share of robots starting at the contact (the rest at its approach point)
     contact_min_sep: float = 0.85  # m between the two robots' standing points
+    scaled_sep: bool = False  # recompute the contact_min_sep rule at each env's object size (default: nominal table)
     # planner (QUADCOOP_PLANNER: default "ends"; v2 = all three parts; v1 = the planner before 2026-11-09):
     #   face_ends   turning contacts at the two ends of every short face (a cube had none: all its
     #               contacts pushed through its centre)

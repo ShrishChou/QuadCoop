@@ -157,6 +157,7 @@ def main() -> int:
                          "final heading error / 180 deg)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--probe", action="store_true", help="log per-robot goal force, turning moment and contact side, split into transport / alignment (quadcoop.push_probe)")
     ap.add_argument("--formations", default="standard", help="comma list of standard, flank, goal_behind")
     ap.add_argument("--swap", action="store_true", help="also run each task with the robots' start places exchanged")
     ap.add_argument("--recovery", action="store_true",
@@ -192,6 +193,7 @@ def main() -> int:
     from quadcoop import falls
     from quadcoop.coop2 import mdp as cm
     from quadcoop.coop2.env_cfg import SPECS, make_coop2_env_cfg
+    from quadcoop.push_probe import PushProbe
     from quadcoop.coop2.marl import PairPolicy, action_slices
     from quadcoop.coop2.mdp import AGENTS
     from quadcoop.coop2.video import Camera, render_episode
@@ -248,7 +250,7 @@ def main() -> int:
 
     for mass in masses:
         cfg = make_coop2_env_cfg(variant, play=True, partner_map=partner_map, reward_set=reward_set,
-                                 push_sensors=a.recovery, arm=arm_mode, hand_obs=hand_obs,
+                                 push_sensors=a.recovery or a.probe, arm=arm_mode, hand_obs=hand_obs,
                                  geom_obs=geom_obs, hist_obs=hist_obs)
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
@@ -377,6 +379,7 @@ def main() -> int:
         live_steps = torch.zeros(n, device=dev)
         min_rd = torch.full((n,), 1e9, device=dev)
         d0, _ = g.errors()
+        probe = (PushProbe(base, g, AGENTS, [SPECS[x].half_length for x in AGENTS]) if a.probe else None)
         last_d, last_e, min_d = d0.clone(), torch.zeros(n, device=dev), d0.clone()
         d_prev = d0.clone()
         pt, yt = 0.10, math.radians(6.0)
@@ -410,6 +413,8 @@ def main() -> int:
                 d, e = g.errors()
                 ea = e.abs()
                 ok = live & ~f_any & ~tip & ~lost
+                if probe is not None:
+                    probe.step(ok, dt, t)
                 t_prog = torch.where(ok & torch.isnan(t_prog) & (d <= d0 - 0.25), torch.full_like(t_prog, t), t_prog)
                 last_d = torch.where(ok, d, last_d)
                 last_e = torch.where(ok, ea, last_e)
@@ -529,6 +534,8 @@ def main() -> int:
                       if a.recovery else {}),
                    **(planner.row(j) if planner is not None else {}),
                    "video": ""}
+            if probe is not None:
+                row.update(probe.row(j))
             mine.append(row)
         if a.recovery:
             arr = {k: np.stack(v, 1) for k, v in rtr.items()}  # (n, T, ...)

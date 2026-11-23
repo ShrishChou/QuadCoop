@@ -111,6 +111,8 @@ SEGMENT_SCENARIOS = (  # --tasks segment (E6): short fixed-contact motions from 
     ("S_side_turn", 1.5, -45.0, -30.0),
     ("S_long", 4.0, 0.0, 0.0),  # command-to-force probe: a long straight push (added last: earlier tasks unchanged)
 )
+MIRROR_SCENARIOS = tuple((f"{nm}_m", d, -dirn, -turn) for nm, d, dirn, turn in SCENARIOS)  # --tasks mirror: left <-> right
+TURN_MIRROR_SCENARIOS = tuple((f"{nm}_m", d, -dirn, -turn) for nm, d, dirn, turn in TURN_SCENARIOS)  # --tasks turn_mirror
 RULES = ("centre", "adjacent", "spread")
 SHARE_BINS = 5  # commanded share of robot 1, in bins of 0.2 (following the force split)
 
@@ -383,7 +385,7 @@ def main() -> int:
                          "success); non-successful episodes still end at --horizon")
     ap.add_argument("--recipe-min-share", type=float, default=0.15,
                     help="--recipe share: a robot asked for less than this share of the push holds its contact instead")
-    ap.add_argument("--tasks", choices=("standard", "turn", "segment"), default="standard",
+    ap.add_argument("--tasks", choices=("standard", "turn", "segment", "mirror", "turn_mirror"), default="standard",
                     help="standard: scripts/eval_coop2.py's 4 scenarios; turn: turn in place (the object starts at the goal "
                          "position with its heading off by 15 / 30 / 60 / 90 deg, capped by the object's symmetry); "
                          "segment: 1.5 m straight / 45 deg sideways / with a 30 deg turn (E6, use --horizon 20)")
@@ -411,12 +413,17 @@ def main() -> int:
                          "at partner_vx, all episode; lateral and heading commands stay the executor's")
     ap.add_argument("--device", default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--probe", action="store_true", help="log per-robot goal force, turning moment and contact side, split into transport / alignment (quadcoop.push_probe)")
     a = ap.parse_args()
     global SCENARIOS
     if a.tasks == "turn":
         SCENARIOS = TURN_SCENARIOS
     elif a.tasks == "segment":
         SCENARIOS = SEGMENT_SCENARIOS
+    elif a.tasks == "mirror":
+        SCENARIOS = MIRROR_SCENARIOS
+    elif a.tasks == "turn_mirror":
+        SCENARIOS = TURN_MIRROR_SCENARIOS
     if a.scenarios:
         keep = [x.strip() for x in a.scenarios.split(",")]
         unknown = set(keep) - {sc_[0] for sc_ in SCENARIOS}
@@ -448,6 +455,7 @@ def main() -> int:
     from quadcoop.coop2 import mdp as cm
     from quadcoop.coop2 import diag as dgm
     from quadcoop.coop2.env_cfg import SPECS, make_coop2_env_cfg
+    from quadcoop.push_probe import PushProbe
     from quadcoop.coop2.marl import PairPolicy
     from quadcoop.coop2.mdp import AGENTS
     from quadcoop.coop2.video import Camera, render_episode
@@ -895,6 +903,7 @@ def main() -> int:
             yaw = yaw_of(r.data.root_link_quat_w)
             return r.data.root_link_pos_w[:, :2] + SPECS[AGENTS[k]].half_length * torch.stack([torch.cos(yaw), torch.sin(yaw)], -1)
         d0, _ = g.errors()
+        probe = (PushProbe(base, g, AGENTS, [SPECS[x].half_length for x in AGENTS]) if a.probe else None)
         last_d, last_e, min_d = d0.clone(), torch.zeros(n, device=dev), d0.clone()
         pt, yt = 0.10, math.radians(6.0)
         all_done_at = None
@@ -1039,6 +1048,8 @@ def main() -> int:
                 d, e2 = g.errors()
                 ea = e2.abs()
                 ok = live & ~f_any & ~tip & ~lost
+                if probe is not None:
+                    probe.step(ok, dt, t)
                 last_d = torch.where(ok, d, last_d)
                 last_e = torch.where(ok, ea, last_e)
                 min_d = torch.where(ok, torch.minimum(min_d, d), min_d)
@@ -1331,6 +1342,7 @@ def main() -> int:
             if c1 is not None and c2 is not None:
                 sep = round(float(np.linalg.norm(cl[c1].p - cl[c2].p)), 2)
             rows[rule].append({
+                **(probe.row(j) if probe is not None else {}),
                 "object": o, "seen_shape": int(o in TRAIN_NAMES), "mass": mass, "scenario": SCENARIOS[s][0],
                 "distance": SCENARIOS[s][1], "direction": SCENARIOS[s][2], "turn": round(math.degrees(float(turn[j])), 1),
                 "rep": r, "success": int(how[j] == "success"), "precise": int(bool(precise[j])), "outcome": how[j],

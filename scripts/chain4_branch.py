@@ -80,6 +80,10 @@ def main() -> int:
                     "arm k4w<cm> = robot 4 joins at t2 and withdraws once the position error first drops below the radius")
     ap.add_argument("--region", type=float, default=0.5, help="near-goal region (position error, m) for t_region")
     ap.add_argument("--release-dist", type=float, default=1.5, help="withdrawn helper released this far beyond the radius")
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="footprint enlargement (docs/k_dispatch.md, step 2): horizontal size factors x this, heights kept "
+                         "(cylinder: length only; sphere: radius, so it grows in height too); inertia stretched to match "
+                         "(pseudo_inertia d1/d2, mass unchanged); contact separation recomputed at the new size")
     ap.add_argument("--prefix", default="k4chain")
     ap.add_argument("--device", default=None)
     a = ap.parse_args()
@@ -156,17 +160,26 @@ def main() -> int:
         cfg.scene.num_envs = n
         cfg.episode_length_s = 1e5
         cfg.terminations = {}
+        cfg.sim.contact_sensor_maxmatch = 256  # four robots on an enlarged object reach ~84 matches (default 64 overflows)
         cfg.commands["goal"].robot_push_force = a.push_force
         alpha = 0.5 * math.log(mass / NOMINAL_MASS)
-        for name in OBJ_NAMES2:
+        ls_ = math.log(a.scale)
+        for name, shp in zip(OBJ_NAMES2, SHAPES2, strict=True):
             cfg.events[f"{name}_mass"].params["alpha_range"] = (alpha, alpha)
+            if a.scale != 1.0:  # stretch the inertia with the footprint (mass set by alpha alone)
+                dx, dy, dz = {"cylinder": (0.0, ls_, 0.0), "sphere": (ls_, ls_, ls_)}.get(shp.name, (ls_, ls_, 0.0))
+                for key, v in (("d1_range", dx), ("d2_range", dy), ("d3_range", dz)):
+                    cfg.events[f"{name}_mass"].params[key] = (v, v)
         torch.manual_seed(a.seed)
         base = ManagerBasedRlEnv(cfg=cfg, device=device)
         g = base.command_manager.get_term("goal")
         dev = base.device
         ids = torch.arange(n, device=dev)
         for k in range(len(SHAPES2)):
-            m2.apply_geometry(base, ids, k, torch.ones(n, 3, device=dev))
+            fk = {"cylinder": (1.0, a.scale, 1.0)}.get(SHAPES2[k].name, (a.scale, a.scale, 1.0))
+            m2.apply_geometry(base, ids, k, torch.tensor(fk, device=dev).expand(n, 3).contiguous())
+        if a.scale != 1.0:
+            g.cfg.scaled_sep = True  # the nominal separation table would hide the room the enlargement adds
         idx_of = {tw: torch.tensor([j for j, c in enumerate(cases) if c[0] == tw], device=dev) for tw in ARMS}
         g.c_cap_mult[:] = 1.0
 
@@ -208,6 +221,9 @@ def main() -> int:
         ctrls = [ContactController(n, dev, reach=SPECS[h].half_length) for h in HS]
         idle = torch.tensor(IDLE_ACTION, device=dev)
         radius = g.radius_env[ids, obj_idx]
+        bid = torch.tensor([g.objs[int(k)].indexing.body_ids[0] for k in obj_idx.tolist()], device=dev)
+        obj_mass = base.sim.model.body_mass[ids, bid].clone()
+        obj_izz = base.sim.model.body_inertia[ids, bid, 2].clone()
 
         nanv = lambda: torch.full((n,), float("nan"), device=dev)  # noqa: E731
         zf = lambda: torch.zeros(n, device=dev)  # noqa: E731
@@ -607,6 +623,8 @@ def main() -> int:
                          **{f"switches{q + 1}": int(S[f"sw{q}"][j]) for q in range(4)},
                          **{f"t_fall_{ag}": nanr(S[f"tf{q}"][j]) for q, ag in enumerate(AGENTS)},
                          "robots_touch_frac": round(float(S["touch_t"][j] / S["live_t"][j].clamp(min=1e-6)), 3),
+                         "scale": a.scale, "obj_radius": round(float(radius[j]), 3), "obj_mass_sim": round(float(obj_mass[j]), 2),
+                         "obj_izz": round(float(obj_izz[j]), 3),
                          "t_region": nanr(S["t_reg"][j]), "helper4_s": round(float(S["h4_s"][j]), 1),
                          "t_withdraw": nanr(S["t_wd"][j]), "t_release": nanr(S["t_rel"][j]),
                          **{f"d{tt}": nanr(S[f"d{tt}"][j]) for tt in D_AT},
