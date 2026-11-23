@@ -6,7 +6,8 @@
 # 2. B2 added to the frozen turning test (seed 7300, beside A-D).
 # 3. 3 -> 4 size-and-entry trees (chain4_branch --place 1): k3 / k4 walk-in / k4p placed, at scale 1.0 and 1.5,
 #    20 / 60 / 100 kg, development seeds 1001-1003 and test seeds 8401-8402.
-# Usage: bash slurm/submit_penalty_place.sh [bench|turn|place]...
+# bench140: the benchmark with a 140 s horizon (2:20) instead of 80 s.
+# Usage: bash slurm/submit_penalty_place.sh [bench|bench140|turn|place]...
 set -e
 cd "$(dirname "$0")/.."
 SB="sbatch --parsable ${DEP:+--dependency=$DEP} -p mit_normal_gpu,mit_preemptable --requeue --exclude=node4207,node2902 -G l40s:1 -c 8 --mem=32G -o logs/slurm/%x-%j.out"
@@ -22,6 +23,17 @@ for what in "$@"; do
           vid="--videos 0"
           [ $r = 1 ] && vid="--videos 1 --video-objects $TEN --video-masses 20,40,60,80 --video-scenarios all --video-reps 0"
           $SB -t 04:00:00 -J qc-olp-$name-r$r --wrap "$PRE $CT --objects $TEN --masses 20,40,60,80 --reps 3 --seed 7100 --probe $vid --set $set_ --prefix olp-$name-r$r"
+        done
+      done ;;
+    bench140)  # the same benchmark with a 140 s horizon (2:20) instead of 80 s
+      # run 1's films are hard-linked (full quality) into presentation_export: A -> 07, B2 -> 08
+      for arm in A:fail_mem=0.5:07_longer_planner_contact B2:fail_mem=1,fail_act=2:08_penalizing_longer_planner_contact; do
+        name=${arm%%:*}; rest=${arm#*:}; set_=${rest%%:*}; pe=presentation_export/${rest#*:}
+        for r in 1 2; do
+          vid="--videos 0"; post=""
+          [ $r = 1 ] && vid="--videos 1 --video-objects $TEN --video-masses 20,40,60,80 --video-scenarios all --video-reps 0" \
+            && post=" && mkdir -p $pe && cp -al logs/evals/olp140-$name-r$r-expert/pair/videos/. $pe/"
+          $SB -t 07:00:00 -J qc-olp140-$name-r$r --wrap "$PRE $CT --objects $TEN --masses 20,40,60,80 --reps 3 --seed 7100 --probe --horizon 140 $vid --set $set_ --prefix olp140-$name-r$r$post"
         done
       done ;;
     turn)
