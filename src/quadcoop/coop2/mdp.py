@@ -345,10 +345,12 @@ class CoopPush2Command(Push2Command):
         self.c_win_ae = torch.zeros(n, device=dev)  # |heading error| at the window's start
         self.c_win_both = torch.ones(n, dtype=torch.bool, device=dev)  # both robots pushing through the window
         self.c_fm_done = torch.zeros(n, dtype=torch.bool, device=dev)  # fail_mem 3: the forced switch was made
-        self.c_fm_log = {k: torch.zeros(n, device=dev) for k in ("windows", "prod", "switches", "cleared")}
+        # changed: re-plans whose decision the memory changes (fail_mem 0.5: would change), against the same table
+        # without it; changed_eps is changed > 0
+        self.c_fm_log = {k: torch.zeros(n, device=dev) for k in ("windows", "prod", "switches", "cleared", "changed")}
         self.c_fm_first = {k: torch.full((n,), float("nan"), device=dev) for k in (
             "t_stall", "ae_stall", "ae_10", "ae_20", "t_sw", "ae_sw", "old1", "old2", "new1", "new2", "j_old", "j_new",
-            "w_old")}
+            "w_old", "t_chg", "d_chg", "ae_chg")}
         # the last re-plan's cause (logged): 0 reset, 1 timer, 2 wrench residual, 3 no progress, 4 weak pair,
         # 5 finish, 6 slow arrival; and re-plans run this episode (a re-plan may keep the same pair)
         self.c_plan_reason = torch.zeros(n, dtype=torch.long, device=dev)
@@ -1430,11 +1432,17 @@ class CoopPush2Command(Push2Command):
         cur_ok = use[ar, cur[:, 0], cur[:, 1]]
         fm_w_cur = torch.zeros(m, device=dev)
         fm_gate = torch.zeros(m, dtype=torch.bool, device=dev)
+        J0, Jw, gate_w = J, None, None
         if c.fail_mem > 0:
             # failed-push memory: the evidence enters the candidate table itself, so the argmin and the keep / switch
             # comparison below both see it (the stall_penalty only moves the threshold)
             pen, fm_w_cur, fm_gate = self._fail_penalty(ids, p, nn, shape, cur)
-            fm_gate = fm_gate & (c.fail_mem >= 1) & ~self.c_fm_done[ids]  # 0.5: evidence logged, never used
+            if c.fail_act > 0 and c.fail_mem < 3:  # only repeated failures count
+                pen = torch.where(pen >= c.fail_act - 1e-6, pen, torch.zeros_like(pen))
+            gate_w = fm_gate & ~self.c_fm_done[ids]  # the memory's gate whether or not it is used
+            fm_gate = gate_w & (c.fail_mem >= 1)  # 0.5: evidence logged, never used
+            if c.fail_mem < 3:
+                Jw = torch.where(use, J + c.fail_lambda * pen * gate_w.float()[:, None, None], J)
             if c.fail_mem >= 3:
                 # forced alternative (branch diagnostic): at the trigger, every assignment similar to the stalled pair
                 # is excluded and the best of the rest is taken (no margin); once only
@@ -1462,10 +1470,28 @@ class CoopPush2Command(Push2Command):
         new = cur.clone()
         new[:, 0] = torch.where(go, gi, new[:, 0])
         new[:, 1] = torch.where(go, gj, new[:, 1])
+        fm_changed = torch.zeros(m, dtype=torch.bool, device=dev)
+        if Jw is not None:
+            # does the memory change this decision? The same rule on the table with the memory (applied or not) and
+            # without it; fail_mem 0.5 counts the decisions it would have changed
+            def _decide(J_, fm_ok_):
+                jc = torch.where(cur_ok, J_[ar, cur[:, 0], cur[:, 1]], torch.full_like(res[:, 0, 0], 1e9))
+                jc = jc + c.stall_penalty * self.c_stalled[ids].float()
+                b_, f_ = J_.view(m, -1).min(-1)
+                g_ = b_ < jc - c.expert_margin
+                if c.finish_dist > 0:
+                    g_ = g_ & (~zone | (res_cur > c.finish_resid) | fm_ok_)
+                out_ = cur.clone()
+                out_[:, 0] = torch.where(g_, f_ // K, out_[:, 0])
+                out_[:, 1] = torch.where(g_, f_ % K, out_[:, 1])
+                return out_
+            new_w = _decide(Jw, gate_w & (fm_w_cur >= c.fail_min))
+            new_0 = _decide(J0, torch.zeros_like(gate_w))
+            fm_changed = (new_w != new_0).any(-1)
         # the remaining entries are the expert's intermediate quantities, exposed as coordinator features only
         return dict(new=new, cur=cur, p=p, nn=nn, pre=pre_all, use=use, t_route=t_route, need_more=need_more,
                     res=res, J=J, t_arr=t_arr, stop=stop, on=torch.stack(ons, -1), j_cur=j_cur, zone=zone,
-                    best=best, fm_w_cur=fm_w_cur, fm_gate=fm_gate)
+                    best=best, fm_w_cur=fm_w_cur, fm_gate=fm_gate, fm_changed=fm_changed)
 
     def _fail_gate(self, ids: torch.Tensor) -> torch.Tensor:
         """The failed-push memory applies during a near-goal turn: within fail_near of the goal position, heading
@@ -1553,6 +1579,17 @@ class CoopPush2Command(Push2Command):
         prop = self._propose_expert(ids)
         self.c_need_more[ids] = prop["need_more"]
         if self.cfg.fail_mem > 0:
+            chg = prop["fm_changed"]
+            if bool(chg.any()):
+                e_ = ids[chg]
+                self.c_fm_log["changed"][e_] += 1.0
+                f_ = self.c_fm_first
+                e1 = e_[torch.isnan(f_["t_chg"][e_])]
+                if len(e1):
+                    d_, a_ = self.errors()
+                    f_["t_chg"][e1] = self.c_time[e1]
+                    f_["d_chg"][e1] = d_[e1]
+                    f_["ae_chg"][e1] = torch.rad2deg(a_[e1].abs())
             sw = (prop["new"] != prop["cur"]).any(-1) & prop["fm_gate"] & (prop["fm_w_cur"] > 0)
             if bool(sw.any()):
                 e_ = ids[sw]
@@ -2685,6 +2722,8 @@ class CoopPush2CommandCfg(Push2CommandCfg):
     fail_sigma: float = 0.25  # similarity: contact-position scale, in object half extents (per axis)
     fail_slots: int = 8  # assignments remembered per episode
     fail_diff: float = 0.3  # fail_mem 3 (forced alternative): similarity to the stalled pair above this is excluded
+    fail_act: float = 0.0  # > 0 (fail_mem 1 / 2): an assignment is penalised only once its evidence reaches this
+    # (repeated failed windows; 0 = from the first evidence, the development setting)
     turn_full_dist: float = 0.0  # > 0: beyond this distance (m) the wanted turn shrinks as 1 / distance
     robot_push_force: float = 250.0  # N one robot can push with (assumed; to be measured): heavier -> push together
     roll_ratio: float = 0.0  # > 0: lying cylinders roll; resistance across the axis = roll_ratio x sliding (0 = isotropic)

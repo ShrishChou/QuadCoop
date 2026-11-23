@@ -21,6 +21,14 @@ Tree (every branch a full state copy, scripts/branch_help.clone_envs):
                                        +-- (add)  k4      leaf "k4"   (robot 4 at t2: a 3 -> 4 decision at t2)
     nulls: k2null = k2 copied at t2 (stays 2); k3null = k3 copied at t2 (stays 3)
 
+Size-and-entry tree (--place 1): k2 is only the root; the 3 -> 4 leaves at t2 are k3 (stay at three), k4 (robot 4
+called, the joint search assigns contacts, it walks in from staging) and k4p (robot 4 placed): a copy of k4 taken
+right after that assignment, so the same contacts, in which only robot 4 is moved to the standing point of its
+assigned contact (contact + normal x (reach + standoff), facing the push), when that footprint is clear of the object
+(>= 2 cm) and of robots 1-3 (rectangles 0.55 x 0.30 half extents + 5 cm). Object, incumbents and the deadline are
+untouched. A stance that is not clear is not forced: robot 4 walks in as in k4, and place_ok = 0 records it
+(so k4p is analysed both as requested and over the clear stances).
+
 So both transitions are decided at the same time (t2, 60 s left) from a team that has had its size since t1 (2 -> 3)
 or since t1 with the pair since 0 (3 -> 4). Logged at each decision (f1_*, f2_*): the chain_branch features plus
 team-size-invariant ones: k, the fraction of present robots pressing, force per robot, and whether the next helper
@@ -78,6 +86,8 @@ def main() -> int:
     ap.add_argument("--prune", type=int, default=8, help="helpers' candidate contacts in the joint quadruple search")
     ap.add_argument("--withdraw", default="", help="diagnostic tree (docs/k_dispatch.md, step 1): comma list of radii (m); "
                     "arm k4w<cm> = robot 4 joins at t2 and withdraws once the position error first drops below the radius")
+    ap.add_argument("--place", type=int, default=0, help="1 = size-and-entry tree: leaves k3, k4 (robot 4 walks in), "
+                    "k4p (robot 4 placed at its assigned stance)")
     ap.add_argument("--region", type=float, default=0.5, help="near-goal region (position error, m) for t_region")
     ap.add_argument("--release-dist", type=float, default=1.5, help="withdrawn helper released this far beyond the radius")
     ap.add_argument("--scale", type=float, default=1.0,
@@ -96,12 +106,17 @@ def main() -> int:
     assert a.t2 > a.t1 > 0
     WD = [float(x) for x in a.withdraw.split(",") if x.strip()]
     WARMS = tuple(f"k4w{round(100 * x)}" for x in WD)
+    assert not (WD and a.place), "--withdraw and --place are separate trees"
     if WD:  # diagnostic tree: k2 is only the root; the 3 -> 4 leaves are k3, k4 and the withdrawing k4w arms
         ARMS = ("k2", "k3", "k3null", "k4") + WARMS
         LEAVES = ("k3", "k4") + WARMS
+    elif a.place:
+        ARMS = ("k2", "k3", "k3null", "k4", "k4p")
+        LEAVES = ("k3", "k4", "k4p")
     else:
         ARMS, LEAVES = ARMS_STD, LEAVES_STD
-    ROBOTS_OF = {**ROBOTS_STD, **{w: 4 for w in WARMS}}
+    ROBOTS_OF = {**ROBOTS_STD, **{w: 4 for w in WARMS}, "k4p": 4}
+    ROOTED = bool(WD or a.place)  # k2 only the root: every other arm takes robot 3 at t1
 
     os.environ["QUADCOOP_PAIR"] = "anymal4"
     os.environ["QUADCOOP_HELPER"] = "1"
@@ -250,6 +265,13 @@ def main() -> int:
             S[f"ph{j}"] = zb()
         S["wd"], S["rel"], S["t_wd"], S["t_rel"] = zb(), zb(), nanv(), nanv()  # robot 4 withdrawn / released
         S["t_reg"], S["h4_s"] = nanv(), zf()
+        S["live2"] = zf()  # live seconds from t2 on
+        for q in range(4):
+            S[f"fg{q}"], S[f"fa{q}"] = zf(), zf()  # goal-directed and |force| integrals from t2 on (robot q + 1)
+        S["pl"] = torch.full((n,), -1, dtype=torch.long, device=dev)  # k4p: 1 placed, 0 not clear, -1 n/a
+        S["pl_obj"], S["pl_rob"] = nanv(), nanv()  # k4p: stance clearance to the object / nearest robot (m)
+        S["pl_tgt"] = nanv()  # k4p: stance clearance to the incumbents' assigned stances (m)
+        S["pl_who"] = torch.zeros(n, dtype=torch.long, device=dev)  # k4p: the incumbent nearest R4's stance (1-3)
         for tt in D_AT:
             S[f"d{tt}"] = nanv()
         rw = torch.full((n,), -1.0, device=dev)  # withdrawal radius per env (-1: never)
@@ -264,7 +286,8 @@ def main() -> int:
         if a.film:
             from quadcoop.branch_film import BranchFilm
 
-            fp = a.film_pairs or ("k3:k4," + ",".join(f"k3:{w},k4:{w}" for w in WARMS[:1]) if WD else "k3:k4,k2:k3b")
+            fp = a.film_pairs or ("k3:k4," + ",".join(f"k3:{w},k4:{w}" for w in WARMS[:1]) if WD else
+                                  "k3:k4,k3:k4p,k4:k4p" if a.place else "k3:k4,k2:k3b")
             pairs = [tuple(x.split(":")) for x in fp.split(",") if x.strip()]
             fw, fh = (int(x) for x in a.film_size.lower().split("x"))
             film = BranchFilm(base, g, robots, cases, pairs, a.film_stride, out / "videos", a.film_max, (fw, fh),
@@ -469,6 +492,72 @@ def main() -> int:
             ctrls[j].reset(go)
             return int(go.sum())
 
+        def obb_gap(c1, y1, c2, y2, hl=0.55, hw=0.30):
+            """Separation (m) of two robot rectangles (centres (m, 2), yaws (m,)) along the best separating axis;
+            < 0: they overlap (by that much)."""
+            ax = [torch.stack([torch.cos(y1), torch.sin(y1)], -1), torch.stack([-torch.sin(y1), torch.cos(y1)], -1),
+                  torch.stack([torch.cos(y2), torch.sin(y2)], -1), torch.stack([-torch.sin(y2), torch.cos(y2)], -1)]
+            d = c2 - c1
+            gaps = []
+            for u in ax:
+                r1 = hl * (ax[0] * u).sum(-1).abs() + hw * (ax[1] * u).sum(-1).abs()
+                r2 = hl * (ax[2] * u).sum(-1).abs() + hw * (ax[3] * u).sum(-1).abs()
+                gaps.append((d * u).sum(-1).abs() - r1 - r2)
+            return torch.stack(gaps, -1).max(-1).values
+
+        def place4(arm):
+            """k4p: move robot 4 to the standing point of the contact the joint search just gave it (copied from k4),
+            if that footprint is clear; otherwise leave it to walk in (place_ok 0). Returns how many were placed."""
+            e_ = idx_of[arm][~S["done"][idx_of[arm]] & S["h_has1"][idx_of[arm]] & (S["nh"][idx_of[arm]] >= 2)]
+            if len(e_) == 0:
+                return 0
+            r4 = robots[3]
+            oy = g.contact_frame_yaw()[e_]
+            cs, sn = torch.cos(oy), torch.sin(oy)
+            rw = lambda v: torch.stack([cs * v[:, 0] - sn * v[:, 1], sn * v[:, 0] + cs * v[:, 1]], -1)  # noqa: E731
+            p_w = g.box_pos()[e_, :2] + rw(S["h_p1"][e_])
+            n_w = rw(S["h_n1"][e_])
+            stand = p_w + n_w * (ctrls[1].reach + ctrls[1].standoff)
+            yw = torch.atan2(-n_w[:, 1], -n_w[:, 0])
+            fwd = -n_w
+            lat = torch.stack([-fwd[:, 1], fwd[:, 0]], -1)
+            clear_o = torch.full((len(e_),), 1e3, device=dev)
+            for x in torch.linspace(-0.55, 0.51, 9).tolist():
+                for y in torch.linspace(-0.30, 0.30, 5).tolist():
+                    q = r4.data.root_link_pos_w[:, :2].clone()
+                    q[e_] = stand + x * fwd + y * lat
+                    clear_o = torch.minimum(clear_o, g.nearest_surface(q)[0][e_])
+            # why a stance is not clear: the same check against the incumbents' assigned (target) stances. < 0.05
+            # there too: the joint assignment itself puts two bodies in one place; clear there: an incumbent is
+            # only passing through R4's stance
+            gaps_r, clear_t = [], torch.full((len(e_),), 1e3, device=dev)
+            for k in range(3):
+                rk = robots[k]
+                gaps_r.append(obb_gap(stand, yw, rk.data.root_link_pos_w[e_, :2], yaw_of(rk.data.root_link_quat_w[e_])))
+                if k < 2:
+                    pk, nk = g.c_pobj[e_, k], g.c_nobj[e_, k]
+                else:
+                    pk, nk = S["h_p0"][e_], S["h_n0"][e_]
+                nkw = rw(nk)
+                tk = g.box_pos()[e_, :2] + rw(pk) + nkw * (ctrls[0].reach + ctrls[0].standoff)
+                clear_t = torch.minimum(clear_t, obb_gap(stand, yw, tk, torch.atan2(-nkw[:, 1], -nkw[:, 0])))
+            gr = torch.stack(gaps_r, -1)
+            clear_r = gr.min(-1).values
+            ok_ = (clear_o >= 0.02) & (clear_r >= 0.05)
+            S["pl"][e_] = ok_.long()
+            S["pl_obj"][e_], S["pl_rob"][e_] = clear_o, clear_r
+            S["pl_tgt"][e_], S["pl_who"][e_] = clear_t, gr.argmin(-1) + 1
+            ep = e_[ok_]
+            if len(ep):
+                st = torch.zeros(len(ep), 13, device=dev)
+                st[:, :2] = stand[ok_]
+                st[:, 2] = r4.data.root_link_pos_w[ep, 2]
+                zz = torch.zeros(len(ep), device=dev)
+                st[:, 3:7] = quat_from_euler_xyz(zz, zz, yw[ok_])
+                r4.write_root_state_to_sim(st, ep)
+                ctrls[1].reset(torch.zeros(n, dtype=torch.bool, device=dev).index_fill_(0, ep, True))
+            return int(ok_.sum())
+
         class Coord:
             def __call__(self, g_, ids_):
                 nh_ = S["nh"][ids_]
@@ -489,7 +578,7 @@ def main() -> int:
                 t = i * dt
                 if i == n1:
                     feats[1] = snapshot()
-                    if WD:
+                    if ROOTED:
                         c_ = branch("k2", [x for x in ARMS if x != "k2"])
                         na = sum(add_helper(tw, 0) for tw in ARMS if tw != "k2")
                     else:
@@ -499,16 +588,24 @@ def main() -> int:
                           f"{int(feats[1]['done'][idx_of['k2']].sum())}/{len(base_cases)} ended; robot 3 added in {na}", flush=True)
                 if i == n2:
                     feats[2] = snapshot()
+                    npl = 0
                     if WD:
                         branch("k3", ["k3null", "k4", *WARMS])
                         nb = 0
                         nc = sum(add_helper(tw, 1) for tw in ("k4", *WARMS))
+                    elif a.place:
+                        branch("k3", ["k3null", "k4"])
+                        nb = 0
+                        nc = add_helper("k4", 1)
+                        branch("k4", ["k4p"])  # the same assignment, then only robot 4 moves
+                        npl = place4("k4p")
                     else:
                         branch("k2", ["k2null", "k3b"])
                         branch("k3", ["k3null", "k4"])
                         nb = add_helper("k3b", 0)
                         nc = add_helper("k4", 1)
-                    print(f"  [{mass:g} kg] t2 {t:.1f} s: robot 3 added in {nb} (k3b), robot 4 in {nc} (k4)", flush=True)
+                    print(f"  [{mass:g} kg] t2 {t:.1f} s: robot 3 added in {nb} (k3b), robot 4 in {nc} (k4)"
+                          + (f", placed at its stance in {npl} (k4p)" if a.place else ""), flush=True)
                 if WD and i > n2:
                     w_ = (S["nh"] >= 2) & ~S["wd"] & ~S["done"] & (g.errors()[0] < rw)
                     if bool(w_.any()):
@@ -578,6 +675,15 @@ def main() -> int:
                 fsum = sum(torch.linalg.norm(cm.object_force_from(base, ag), dim=-1) * pres[k].float()
                            for k, ag in enumerate(AGENTS))
                 S["ema_f"] += al * (fsum - S["ema_f"])
+                if i >= n2:
+                    ug = g.goal_xy - xy
+                    ug = ug / torch.linalg.norm(ug, dim=-1, keepdim=True).clamp(min=1e-6)
+                    S["live2"] += ok.float() * dt
+                    for k, ag in enumerate(AGENTS):
+                        F_ = cm.object_force_from(base, ag)
+                        w_ = (pres[k] & ok).float() * dt
+                        S[f"fg{k}"] += w_ * (F_ * ug).sum(-1)
+                        S[f"fa{k}"] += w_ * torch.linalg.norm(F_, dim=-1)
                 S["prev_xy"], S["prev_yaw"], S["prev_d"] = xy.clone(), yw_.clone(), d.clone()
                 better = d < S["best_d"] - 0.05
                 S["best_d"] = torch.where(better, d, S["best_d"])
@@ -649,6 +755,14 @@ def main() -> int:
                          "scale": a.scale, "obj_radius": round(float(radius[j]), 3), "obj_mass_sim": round(float(obj_mass[j]), 2),
                          "obj_izz": round(float(obj_izz[j]), 3),
                          "t_region": nanr(S["t_reg"][j]), "helper4_s": round(float(S["h4_s"][j]), 1),
+                         "live2_s": round(float(S["live2"][j]), 1),
+                         **{f"fgoal{q + 1}": round(float(S[f"fg{q}"][j] / S["live2"][j].clamp(min=1e-6)), 1) for q in range(4)},
+                         **{f"fabs{q + 1}": round(float(S[f"fa{q}"][j] / S["live2"][j].clamp(min=1e-6)), 1) for q in range(4)},
+                         "fgoal_inc": round(float(sum(S[f"fg{q}"][j] for q in range(3)) / S["live2"][j].clamp(min=1e-6)), 1),
+                         "place_ok": "" if int(S["pl"][j]) < 0 else int(S["pl"][j]),
+                         "place_clear_obj": nanr(S["pl_obj"][j]), "place_clear_robot": nanr(S["pl_rob"][j]),
+                         "place_clear_target": nanr(S["pl_tgt"][j]),
+                         "place_nearest": "" if int(S["pl"][j]) < 0 else int(S["pl_who"][j]),
                          "t_withdraw": nanr(S["t_wd"][j]), "t_release": nanr(S["t_rel"][j]),
                          **{f"d{tt}": nanr(S[f"d{tt}"][j]) for tt in D_AT},
                          "ended_t1": int(bool(feats[1]["done"][j])), "ended_t2": int(bool(feats[2]["done"][j])),
@@ -694,6 +808,7 @@ def main() -> int:
         bs = v[brng.integers(0, len(v), (2000, len(v)))].mean(1)
         return 100 * v.mean(), 100 * np.percentile(bs, 2.5), 100 * np.percentile(bs, 97.5)
     PAIRS = ([("k4", "k3"), *((w, "k3") for w in WARMS), ("k3null", "k3")] if WD else
+             [("k4", "k3"), ("k4p", "k3"), ("k4p", "k4"), ("k3null", "k3")] if a.place else
              [("k3b", "k2"), ("k2null", "k2"), ("k4", "k3"), ("k3null", "k3")])
     md = [f"# 2 -> 3 and 3 -> 4 tree: {a.prefix}", "",
           f"Seed {a.seed}, {len(base_cases)} tasks per mass; robot 3 at {a.t1:g} s (k3) or {a.t2:g} s (k3b); robot 4 at "
@@ -714,6 +829,32 @@ def main() -> int:
         md.append(f"| {m if m == 'all' else f'{m:g}'} | " + " | ".join(f"{100 * y[tw].mean():.0f}%" for tw in LEAVES) + " | "
                   + " | ".join(f"{v[0]:+.1f} [{v[1]:+.0f}, {v[2]:+.0f}]" for v in diffs.values())
                   + f" | {pf[0]:.2f} / {pf[1]:.2f} | {100 * fl:.0f}% |")
+    if a.place:  # entry: requests, joins, clear stances, arrivals, incumbent force; k4p over the clear stances
+        md += ["", f"Scale {a.scale:g}. Robot 4 requested in every live k4 / k4p env at t2. joined: the joint search found "
+               "a feasible assignment; placed: its stance was clear (k4p); assignment overlaps: R4's stance also overlaps an incumbent's assigned stance, not just where it stands now; arrived: robot 4 pushing (s after t2, median); "
+               "incumbent force: robots 1-3, mean goal-directed N from t2 on.", "",
+               "| mass | requests | joined | placed (of joined) | not placed: assignment overlaps | arrived k4 / k4p | t arrive k4 / k4p | incumbent force k3 / k4 / k4p "
+               "| robot 4 force k4 / k4p | clear stances: k3 / k4 / k4p | k4p-k3 (clear) | k4-k3 (clear) |",
+               "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for m in masses + ["all"]:
+            ks = [k_ for k_, r_ in by["k4"].items() if (m == "all" or r_["mass"] == m) and not r_["ended_t2"]]
+            if not ks:
+                continue
+            f_ = lambda tw, c: np.nanmean([float(by[tw][k_][c]) if by[tw][k_][c] != "" else np.nan for k_ in ks])  # noqa: E731
+            jo = [k_ for k_ in ks if by["k4"][k_]["t_add4"] != ""]
+            pl = [k_ for k_ in jo if by["k4p"][k_]["place_ok"] == 1]
+            npl = [k_ for k_ in jo if by["k4p"][k_]["place_ok"] == 0]
+            ov = sum(by["k4p"][k_]["place_clear_target"] != "" and float(by["k4p"][k_]["place_clear_target"]) < 0.05 for k_ in npl)
+            ar = {tw: [float(by[tw][k_]["arrive4"]) - a.t2 for k_ in jo if by[tw][k_]["arrive4"] != ""] for tw in ("k4", "k4p")}
+            yc = {tw: np.array([by[tw][k_]["success"] for k_ in pl], dtype=float) for tw in LEAVES}
+            cl = (ci(yc["k4p"] - yc["k3"]), ci(yc["k4"] - yc["k3"])) if pl else ((np.nan,) * 3,) * 2
+            md.append(f"| {m if m == 'all' else f'{m:g}'} | {len(ks)} | {len(jo)} | {len(pl)} | {ov} of {len(npl)} | "
+                      f"{len(ar['k4'])} / {len(ar['k4p'])} | {np.median(ar['k4']) if ar['k4'] else np.nan:.1f} / "
+                      f"{np.median(ar['k4p']) if ar['k4p'] else np.nan:.1f} | "
+                      + " / ".join(f"{f_(tw, 'fgoal_inc'):.0f}" for tw in LEAVES) + " | "
+                      + f"{f_('k4', 'fgoal4'):.0f} / {f_('k4p', 'fgoal4'):.0f} | "
+                      + " / ".join(f"{100 * yc[tw].mean():.0f}%" if pl else "-" for tw in LEAVES) + " | "
+                      + " | ".join(f"{v[0]:+.1f} [{v[1]:+.0f}, {v[2]:+.0f}]" for v in cl) + " |")
     (out / "summary.md").write_text("\n".join(md) + "\n")
     (out / "summary.json").write_text(json.dumps(summ, indent=1))
     print("\n".join(md))

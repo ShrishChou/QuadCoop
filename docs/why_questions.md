@@ -233,3 +233,69 @@ index (argmin takes the first) would treat mirrored pairs differently. Not yet c
 
 Test (seed 7300, settings unchanged from development): jobs 30165806-20, `fm-test-*`.
 Films: `presentation_export/05_contact_planner/failed_push_memory/`.
+
+## Protocols fixed 2026-11-23 (before results)
+
+### 2C. Penalty on ordinary deliveries (`slurm/submit_penalty_place.sh bench`)
+
+The 480 ten-object tasks of `pres-planner` (seed 7100; 10 objects x 20/40/60/80 kg x 4 placements x 3 repeats), frozen
+walkers and executor. Two runs per arm, because the GPU simulation does not repeat itself.
+- **A** (`olp-A-r*`): fail_mem 0.5. Decisions are unchanged from the current planner. It logs every re-plan whose
+  decision the memory would have changed.
+- **B2** (`olp-B2-r*`): fail_mem 1 with fail_act 2. An assignment is penalised only once it has at least two failed
+  windows of evidence. One productive window halves the evidence (below the threshold), so a pair that is moving the
+  object keeps its contacts. This differs from the development B, which could act on a single window: in fm-dev B,
+  28% of first switches came with evidence below 2.
+
+Unchanged from 2B: evidence counts only near the goal while turning (within 0.5 m, |heading error| > 15 deg). Stalls in
+transport are left to the existing stall logic.
+
+Reported:
+- Paired success, B2 - A, with tasks the unit (the mean of the two runs); overall and by object and by mass.
+- Decisions the memory changes. Counterfactual at every re-plan: the same rule on the table with and without the
+  memory (`fm_changed`; first change `fm_t_chg`, `fm_d_chg`, `fm_ae_chg`). Reported as the share of episodes with at
+  least one change, and changes per episode, for A (would change) and B2 (did change).
+
+Turning check: B2 is added to the seed 7300 test beside A-D (`fm-test-B2-*`).
+Films: run 1 of each arm films every task's rep 0. Curated pairs go to
+`presentation_export/06_contact_planner_online_learning/`.
+
+### 3B. 3 -> 4: footprint x entry (`chain4_branch.py --place 1`; `slurm/submit_penalty_place.sh place`)
+
+Leaves at t2 = 20 s, from one decision state per task:
+- **k3:** stay at three.
+- **k4:** robot 4 is called; the joint search assigns contacts and it walks in from staging.
+- **k4p:** a copy of k4 taken right after that assignment. Only robot 4 moves, to the standing point of its assigned
+  contact, if the footprint there is clear of the object (>= 2 cm) and of robots 1-3 (>= 5 cm). Otherwise it walks
+  in, recorded as place_ok = 0.
+- **k3null:** a second copy of k3, as the noise floor.
+
+Scale 1.0 and 1.5; 20, 60 and 100 kg. Development seeds 1001-1003, test seeds 8401-8402. Controller version fixed
+across all trees.
+
+The k4s15 trees cannot supply k3 or k4 for this comparison: branches are matched only within one job, and across
+jobs the decision states differ. They still give 2 -> 3 at 1.5 and a replication of k4 - k3.
+
+Reported per mass and footprint:
+- Delivery: k4 - k3, k4p - k3 and k4p - k4. k4p is reported as requested (every request; a stance that is not clear
+  counts as requested) and over the clear stances.
+- Entry: requests; joins (a feasible joint assignment); clear stances; arrivals and time to arrival.
+- Force: incumbent goal-directed force (robots 1-3, from t2 on); robot 4's force.
+
+Readings:
+- k4p > k4 but both < k3: the approach costs, and staying at three is still right.
+- k4p > k3 > k4: there is value to recover with a physical priority or routing planner.
+- k4 > k3 at 1.5: the scaling result.
+
+### 4B. Does the planner know when to ask? (after 3B)
+
+Decision at t2 in the place trees: recruit robot 4 (k4, physical entry) or stay (k3). Both outcomes are simulated for
+every task, so any rule is scored on the same tasks.
+- **Rules:** always stay; always recruit; mass + shape + footprint (one threshold); the learned rule, which also sees
+  the push and the free contacts (f2_*).
+- **Fit and freeze:** rules are fitted and thresholds fixed on development seeds 1001-1003 (both footprints), then
+  frozen and scored once on test seeds 8401-8402.
+- **Comparison:** at the same helper budget. The mass + shape + footprint rule's threshold is set so it recruits in as
+  many test tasks as the learned rule.
+- **4 -> 5:** only if 3B shows a fourth robot can add value under at least one condition. The frozen 3 -> 4 rule is
+  tried first. A rule refitted on 4 -> 5 data is reported separately.
