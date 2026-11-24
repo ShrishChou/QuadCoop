@@ -4,7 +4,7 @@ CPU only (ffmpeg from imageio-ffmpeg, matplotlib, torch on CPU). Sources: presen
 presentation_videos/ (films), evals_present/ and logs/evals/ (numbers). Re-run to rebuild; existing outputs are
 overwritten.
 
-    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects] [starts] [intro]     (default: all)
+    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects] [starts] [intro] [library]     (default: all)
 
 objects and starts render in MuJoCo with software EGL (no GPU): the twelve objects, and the single robot's start positions.
 """
@@ -860,8 +860,158 @@ def build_intro():
     print("intro done")
 
 
+# ---------------------------------------------------------------- one strip per object, per method
+LIB = ("cube", "long", "sphere", "cylinder", "arch", "dumbbell", "t_shape", "beam", "l_shape", "asym", "u_channel",
+       "plus")  # the twelve objects, in the order of paper_media/object
+PRETTY = {"t_shape": "T shape", "l_shape": "L shape", "u_channel": "U channel", "asym": "split-friction box"}
+SCEN = ("A_straight", "B_left", "C_backright", "D_far_turn")
+SCEN_TXT = {"A_straight": "straight", "B_left": "left", "C_backright": "back right", "D_far_turn": "far turn"}
+OUTC = {"success": "success", "horizon": "timed out", "fell": "a robot fell"}
+_CLIP = re.compile(r"^(?:mappo_|ippo_)?(?P<obj>[a-z_]+?)_(?P<m>\d+)kg_(?P<scen>[A-D]_[a-z_]+?)_(?:rep|r)(?P<rep>\d+)"
+                   r"(?:_helper)?__(?P<out>success|horizon|fell)")
+
+
+def _clips(paths):
+    out = []
+    for p in paths:
+        m = _CLIP.match(p.name)
+        if m:
+            out.append(dict(path=p, obj=m["obj"], m=int(m["m"]), scen=m["scen"], out=m["out"]))
+    return out
+
+
+def _pick(cands, i, masses):
+    """Best clip for the object at position i: a success if there is one, then a time-out, then a fall; heavier
+    masses first in the order given; the scenario order is rotated by i so the set covers all four scenarios."""
+    rot = SCEN[i % 4:] + SCEN[:i % 4]
+    key = lambda c: (c.get("q", 0), ["success", "horizon", "fell"].index(c["out"]),
+                     masses.index(c["m"]) if c["m"] in masses else 99, rot.index(c["scen"]), c["path"].name)
+    return min(cands, key=key) if cands else None
+
+
+def _k4_films():
+    """Three-vs-four branch films (left k3, right k4) where robot 4 joined, arrived and pushed. Searched in
+    presentation_export and every chain4 run's videos; one entry per unique film name."""
+    import json
+    seen, out = set(), []
+    roots = [PE / "05_contact_planner" / "3_vs_4_robots"] + sorted((ROOT / "logs/evals").glob("k4*"))
+    for r in roots:
+        for p in sorted(list(r.glob("*/*.mp4")) + list(r.glob("videos/k3_vs_k4/*.mp4"))):
+            if "__k3-" not in p.name or "__k4-" not in p.name or p.name in seen or not p.with_suffix(".json").exists():
+                continue
+            k4 = json.loads(p.with_suffix(".json").read_text()).get("k4", {})
+            if not isinstance(k4.get("t_add4"), (int, float)):
+                continue  # robot 4 never called in / no feasible assignment: not a four-robot film
+            arrived = isinstance(k4.get("arrive4"), (int, float))
+            press = k4["press_frac4"] if isinstance(k4.get("press_frac4"), (int, float)) else 0.0
+            q = 0 if arrived and press >= 0.3 else 1 if arrived else 2  # pushing, reached the object, never reached
+            seen.add(p.name)
+            tf = [k4[c] for c in k4 if c.startswith("t_fall_") and isinstance(k4[c], (int, float))]
+            end = k4["t_success"] if isinstance(k4.get("t_success"), (int, float)) else min(tf + [80.0])
+            m = re.match(r"^(?P<obj>[a-z_]+?)_(?P<m>\d+)kg_(?P<scen>[A-D]_[a-z_]+?)_r\d+", p.name)
+            out.append(dict(path=p, obj=m["obj"], m=int(m["m"]), scen=m["scen"], out=OUTC_KEY(k4["outcome"]),
+                            arrive=k4["arrive4"] if arrived else None, end=end, press=press, q=q))
+    return out
+
+
+def OUTC_KEY(o: str) -> str:
+    return "fell" if o.startswith("fell") else o
+
+
+def _sheet(rows, name, width=420):
+    """rows: (strip image, row label). Label column on the left, strips scaled to 4 x width."""
+    gap, lw = 6, 290
+    ims = []
+    for img, _ in rows:
+        s = width * 4 + 3 * gap
+        ims.append(img.resize((s, round(img.height * s / img.width)), Image.LANCZOS))
+    h = max(i.height for i in ims)
+    g = Image.new("RGB", (lw + ims[0].width, len(ims) * h + (len(ims) - 1) * gap), (255, 255, 255))
+    import matplotlib
+    font = ImageFont.truetype(str(Path(matplotlib.get_data_path()) / "fonts/ttf/DejaVuSans-Bold.ttf"), 26)
+    small = ImageFont.truetype(str(Path(matplotlib.get_data_path()) / "fonts/ttf/DejaVuSans.ttf"), 21)
+    d = ImageDraw.Draw(g)
+    for k, (im, (lab, sub)) in enumerate(zip(ims, (r[1] for r in rows))):
+        y = k * (h + gap)
+        g.paste(im, (lw, y))
+        lines, cur = [], ""
+        for part in sub.split(", "):  # wrap the description at commas to fit the label column
+            nxt = f"{cur}, {part}" if cur else part
+            if cur and d.textlength(nxt, font=small) > lw - 24:
+                lines.append(cur + ",")
+                nxt = part
+            cur = nxt
+        lines.append(cur)
+        y0 = y + h // 2 - (36 + 26 * len(lines)) // 2
+        d.text((14, y0), lab, fill=(0, 0, 0), font=font)
+        for n, ln in enumerate(lines):
+            d.text((14, y0 + 38 + 26 * n), ln, fill=(70, 70, 70), font=small)
+    p = OUT / name
+    g.save(p, quality=92)
+    return p
+
+
+def build_library():
+    """One four-frame strip per object for each method, plus a contact sheet per method (all objects, and two halves
+    of six for a page each). A success is used wherever the method has one filmed for that object; otherwise the
+    best failure, named and labelled as such. Writes <folder>/all_objects/ and paper_media/library_index.csv.
+    The last frame is at 92% of the clip, before the clip's tail after the episode ends."""
+    Q = [0.02, 0.32, 0.62, 0.92]
+    S = PE / "02_anymal_single_robot_push"
+    C = PE / "05_contact_planner"
+    sets = [
+        ("02_single_robot", "single_robot", "One ANYmal, push policy",
+         _clips(p for m in (20, 40, 60, 80) for p in (S / f"{m}kg").glob("*.mp4")), [60, 80, 40, 20]),
+        ("03_ippo_mappo", "ippo", "IPPO pair", _clips((PE / "03_anymal_ippo_pair").glob("*.mp4")), [80, 40]),
+        ("03_ippo_mappo", "mappo", "MAPPO pair", _clips((PE / "04_anymal_mappo_pair").glob("*.mp4")), [80, 40]),
+        ("04_contact_planner", "planner_pair", "Contact planner, two robots",
+         _clips(p for m in (20, 40, 60, 80) for p in (C / f"{m}kg").glob("*.mp4")), [80, 60, 40, 20]),
+        ("05_teams_2_3_4", "three_robots", "Contact planner, three robots",
+         _clips((PE / "10_planner_three_robots").glob("*.mp4")), [80, 100]),
+        ("05_teams_2_3_4", "four_robots", "Contact planner, four robots", _k4_films(), [80, 60, 100, 40, 20]),
+    ]
+    index = [("method", "object", "mass_kg", "scenario", "outcome", "strip", "source")]
+    for folder, tag, title, cands, masses in sets:
+        rows = []
+        for i, obj in enumerate(LIB):
+            c = _pick([x for x in cands if x["obj"] == obj], i, masses)
+            nm = PRETTY.get(obj, obj.replace("_", " "))
+            if c is None:
+                index.append((tag, obj, "", "", "not filmed", "", ""))
+                print(f"  {tag}: no film of {obj}")
+                continue
+            suffix = "" if c["out"] == "success" else f"_{c['out']}"
+            fn = f"{folder}/all_objects/{tag}_{obj}_{c['m']}kg_{c['scen']}{suffix}_strip.jpg"
+            if c.get("q") == 2:
+                fn = fn.replace("_strip.jpg", "_r4_not_at_contact_strip.jpg")
+            if tag == "four_robots":
+                # right panel (k4); film time 0 = episode 16 s; every frame inside k4's episode, the second just
+                # after robot 4 reaches the object
+                t_last = min(c["end"] - 16 - 0.5, duration(c["path"]) - 0.2)
+                ta = min((c["arrive"] if c["arrive"] else 24.0) - 16 + 1.0, t_last - 1.0)
+                times = [1.5, ta, (ta + t_last) / 2, t_last]
+                p = save_strip(c["path"], times, fn, which="right", t0=16)
+            else:
+                p = save_strip(c["path"], Q, fn)
+            sub = f"{c['m']} kg, {SCEN_TXT[c['scen']]}" + ("" if c["out"] == "success" else f", {OUTC[c['out']]}")
+            if c.get("q") == 2:
+                sub += ", R4 never at contact"
+            elif c.get("q") == 1:
+                sub += ", R4 barely pushed"
+            rows.append((Image.open(p), (nm, sub)))
+            index.append((tag, obj, c["m"], c["scen"], c["out"], fn, str(c["path"].relative_to(ROOT))))
+        _sheet(rows, f"{folder}/{tag}_all_objects.jpg")
+        _sheet(rows[:6], f"{folder}/{tag}_all_objects_part1.jpg")
+        if rows[6:]:
+            _sheet(rows[6:], f"{folder}/{tag}_all_objects_part2.jpg")
+        print(f"{title}: {len(rows)} objects")
+    with open(OUT / "library_index.csv", "w", newline="") as f:
+        csv.writer(f).writerows(index)
+    print("library done")
+
+
 if __name__ == "__main__":
-    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects", "starts", "intro"]
+    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects", "starts", "intro", "library"]
     for w in what:
         {"frames": build_frames, "maps": build_maps, "graphs": build_graphs, "copy": build_copy,
-         "objects": build_objects, "starts": build_starts, "intro": build_intro}[w]()
+         "objects": build_objects, "starts": build_starts, "intro": build_intro, "library": build_library}[w]()

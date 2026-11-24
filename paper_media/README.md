@@ -133,6 +133,42 @@ Original planner (A) vs the penalty (B2), the same task:
 - `*_l_shape_80kg_strip.jpg` (straight ahead) and `*_u_channel_40kg_strip.jpg` (goal behind on the right): from the
   ordinary benchmark. Tasks where the penalty acted and B2 succeeded while A did not.
 
+## all_objects: one strip per object for every method
+
+Each method folder has an `all_objects/` subfolder with one four-frame strip per object, plus contact sheets that stack
+them with a label column (object, mass, scenario, and the outcome when it is not a success).
+
+| method | folder | sheets | objects |
+|---|---|---|---|
+| one ANYmal, push policy | `02_single_robot/all_objects/` | `single_robot_all_objects{,_part1,_part2}.jpg` | 12, all successes |
+| IPPO pair | `03_ippo_mappo/all_objects/ippo_*` | `ippo_all_objects*.jpg` | 12, all successes |
+| MAPPO pair | `03_ippo_mappo/all_objects/mappo_*` | `mappo_all_objects*.jpg` | 12, all successes |
+| contact planner, two robots | `04_contact_planner/all_objects/` | `planner_pair_all_objects*.jpg` | 12, all successes |
+| contact planner, three robots (helper called at 8 s) | `05_teams_2_3_4/all_objects/three_robots_*` | `three_robots_all_objects*.jpg` | 12: 9 successes; T shape, beam and split-friction box time out |
+| contact planner, four robots (three-vs-four branch, right panel) | `05_teams_2_3_4/all_objects/four_robots_*` | `four_robots_all_objects*.jpg` | 10: no four-robot run uses the beam or the split-friction box |
+
+- `_part1` holds cube to dumbbell and `_part2` holds T shape to plus (six rows each, about one page). The full sheet has all twelve rows.
+- **How each clip is chosen** (`build_library` in the script):
+  - a success when one was filmed for that object;
+  - masses in a fixed order per method: single robot 60 → 80 → 40 → 20 kg, pairs 80 → 40, planner 80 → 60 → 40 → 20, three robots 80 → 100;
+  - the scenario order rotates by object, so the set covers all four starts.
+- A failure is used only when no success exists. Its file name and row label say so (`_horizon` = timed out, `_fell` = a robot fell).
+- **Frame times:**
+  - single, pair and three-robot strips: 2%, 32%, 62% and 92% of the clip;
+  - four-robot strips: episode 17.5 s (robot 4 has just been called at 20 s minus 4), 1 s after robot 4 reaches the object, midway, and 0.5 s before the four-robot episode ends.
+  - Every four-robot frame is inside its episode.
+- **Four-robot films** come from every three-vs-four tree filmed so far: `presentation_export/05_contact_planner/3_vs_4_robots` and `logs/evals/k4*`, 329 films.
+  - A film counts only if robot 4 was called in (`t_add4` set).
+  - Films where robot 4 reaches the object and presses at least 30% of the time are ranked first.
+- **What the four-robot sheet shows,** and it is a result, not a selection artefact:
+  - Robot 4 pushes on the cube, cylinder, arch, dumbbell and L shape.
+  - On the T shape it reaches the object but presses only 18% of the time ("R4 barely pushed").
+  - On the long box, sphere, U channel and plus, robot 4 was called in every filmed episode but never reached a contact ("R4 never at contact", `_r4_not_at_contact` in the file name). The other three robots do the pushing.
+  - The cube strip is the intro film: four robots pushing, timed out 8 cm short.
+- `paper_media/library_index.csv` lists each strip with its method, object, mass, scenario, outcome and source film.
+
+Rebuild with `python scripts/paper_media.py library` (CPU only).
+
 ## 07_graphs
 
 | file | numbers |
@@ -166,6 +202,6 @@ camera is framed to its object, so compare sizes using the squares, not the tile
 Rebuild with `python scripts/paper_media.py objects`, which uses software EGL and needs no GPU.
 
 Pending, to be added when the runs finish:
-- the unmirrored half of the turning test;
+- the unmirrored half of the turning test (run finished; numbers not yet added here);
 - the 140 s benchmark;
 - the 3 → 4 size and entry trees (placed vs walk-in robot 4).
