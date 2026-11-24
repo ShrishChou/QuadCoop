@@ -4,7 +4,7 @@ CPU only (ffmpeg from imageio-ffmpeg, matplotlib, torch on CPU). Sources: presen
 presentation_videos/ (films), evals_present/ and logs/evals/ (numbers). Re-run to rebuild; existing outputs are
 overwritten.
 
-    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects] [starts] [teaser]     (default: all)
+    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects] [starts] [intro]     (default: all)
 
 objects and starts render in MuJoCo with software EGL (no GPU): the twelve objects, and the single robot's start positions.
 """
@@ -800,162 +800,68 @@ def build_starts(obj="t_shape"):
     grid(tiles, 4, "single_robot_start_A_all_objects", 600)
 
 
-def build_teaser(obj="cube", scale=1.5):
-    """Title-page figure: one, two, three and four ANYmals pushing the same object toward the same goal, one panel
-    each, identical camera and crop. Robots stand at contacts with the front bumper just touching the object: one
-    or two on the back face, then robots on the side faces. The object is the cube with its footprint enlarged
-    1.5x (as in the team-size trees at scale 1.5), so four robots fit around it; the goal is the green square ahead.
-    A static illustration (standing pose), not a simulation frame."""
-    import math
-    _egl_software()
-    import mujoco
-
-    from quadcoop.stage2.shapes import SHAPES2
-
-    shape = next(s_ for s_ in SHAPES2 if s_.name == obj)
-    hx, hy, hz = (p.size for p in shape.parts[:1]).__next__()
-    hx, hy = hx * scale, hy * scale
-    HALF = 0.55
-    # contacts (face, offset along the face): "back" pushes toward the goal (+x), "left" / "right" push on the side
-    # faces (-y / +y) near the front, as the planner does to steer; every footprint (the planner's 0.55 x 0.30 m
-    # half-extent rectangle) is clear of the others
-    LAYOUT = {1: (("back", 0.0),), 2: (("back", -0.32), ("back", 0.32)),
-              3: (("back", -0.32), ("back", 0.32), ("right", 0.15)),
-              4: (("back", -0.32), ("back", 0.32), ("right", 0.15), ("left", 0.15))}
-    GX = 2.6  # goal centre, straight ahead
-    W, H = 1400, 1050
-    out = OUT / "00_title"
+def build_intro():
+    """Intro figure from real evaluation films: the cube at 80 kg, goal 3 m straight ahead, pushed by one, two, three
+    and four ANYmals, one frame each, mid-push.
+      1 robot   the single-robot push policy (02_anymal_single_robot_push, success)
+      2 robots  the contact planner's pair (05_contact_planner, success)
+      3 / 4     one branched contact-planner run at the same instant, 26 s (10 s into the film): left panel the trio
+                continues (success at 49.6 s), right panel robot 4 joined at 20 s (R2, R3, R4 pushing, R1 at its
+                contact; this branch timed out 0.08 m short)
+    Each frame is cropped (boxes set by eye) to the team, the cube and the goal, at a similar robot size."""
+    P = PE
+    B = P / "05_contact_planner" / "3_vs_4_robots" / "80kg" / "cube_80kg_A_straight_r2__k3-success__k4-horizon.mp4"
+    _joined(B, "t_add4")
+    src = [(P / "02_anymal_single_robot_push" / "80kg" / "cube_80kg_A_straight_rep4__success.mp4", 0.5, None, "1 robot"),
+           (P / "05_contact_planner" / "80kg" / "cube_80kg_A_straight_r5__success.mp4", 0.6, None, "2 robots"),
+           (B, 10.0, "left", "3 robots"), (B, 10.0, "right", "4 robots")]
+    frames = [frames_at(v, [t], w)[0][0] for v, t, w, _ in src]
+    # crop boxes (fractions of the frame, 4:3 in pixels), set by eye: team, object and goal square, with a robot
+    # about a fifth of the panel wide in every panel
+    crops = [(0.31, 0.17, 0.73, 0.78), (0.24, 0.0, 0.76, 0.79), (0.25, 0.0, 0.86, 0.76), (0.25, 0.0, 0.86, 0.76)]
+    out = OUT / "intro"
     out.mkdir(parents=True, exist_ok=True)
-    rgb = " ".join(map(str, shape.rgba[:3]))
-
-    def pose(face, off):  # robot base (x, y, yaw): front bumper 2 cm off the face, facing along its inward normal
-        d_ = HALF + 0.02
-        if face == "back":
-            return -hx - d_, off, 0.0
-        if face == "left":
-            return off, hy + d_, -math.pi / 2
-        return off, -hy - d_, math.pi / 2
-
-    for n, lay in LAYOUT.items():  # footprints must not overlap (separating axis on the 4 rectangle axes)
-        rects = []
-        for f, o in lay:
-            x, y, yw = pose(f, o)
-            c, s_ = math.cos(yw), math.sin(yw)
-            rects.append(np.array([[x + c * a - s_ * b, y + s_ * a + c * b] for a, b in
-                                   ((0.55, 0.30), (0.55, -0.30), (-0.55, -0.30), (-0.55, 0.30))]))
-        for i in range(len(rects)):
-            for j in range(i + 1, len(rects)):
-                sep = False
-                for R in (rects[i], rects[j]):
-                    for e in range(2):
-                        ax = R[e + 1] - R[e]
-                        nrm = np.array([-ax[1], ax[0]])
-                        pi_, pj_ = rects[i] @ nrm, rects[j] @ nrm
-                        sep |= pi_.max() <= pj_.min() or pj_.max() <= pi_.min()
-                assert sep, f"teaser layout {n}: robots {i} and {j} overlap"
-
-    imgs = []
-    for n, lay in LAYOUT.items():
-        scene = mujoco.MjSpec.from_string(f"""<mujoco><compiler angle="radian"/>
-<visual><global offwidth="{W}" offheight="{H}"/><quality shadowsize="8192" offsamples="8"/>
-<headlight ambient=".35 .35 .35" diffuse=".35 .35 .35" specular="0 0 0"/><map shadowclip="5" shadowscale=".35" znear=".05"/></visual>
-<statistic center="0.8 0 0" extent="3.5"/>
-<asset><texture type="skybox" builtin="flat" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
-<texture name="g" type="2d" builtin="checker" rgb1=".93 .93 .93" rgb2=".82 .82 .82" width="64" height="64"/>
-<material name="g" texture="g" texuniform="true" texrepeat="1 1" specular="0" shininess="0"/></asset>
-<worldbody><light pos="0 0 6" dir="-.3 .45 -1" directional="true" castshadow="true" diffuse=".6 .6 .6"/>
-<geom type="plane" size="6 6 .1" pos="0.5 0 0" material="g"/>
-<geom type="box" size="{hx} {hy} {hz}" pos="0 0 {hz}" rgba="{rgb} 1"/>
-<geom type="box" size="{hx} {hy} 0.003" pos="{GX} 0 0.003" rgba=".10 .85 .25 .45" contype="0" conaffinity="0"/>
-{"".join(f'<geom type="box" size="0.07 0.018 0.002" pos="{x:.3f} 0 0.004" rgba=".25 .25 .25 1" contype="0" conaffinity="0"/>' for x in np.arange(hx + 0.15, GX - hx - 0.05, 0.28))}
-<geom type="box" size="0.002 0.002 0.002" pos="{GX - hx - 0.02} 0 0.004" rgba="0 0 0 0" contype="0" conaffinity="0"/>
-{"".join(f'<frame name="f{k}"/>' for k in range(n))}</worldbody></mujoco>""")
-        for k in range(n):
-            robot = mujoco.MjSpec.from_file(str(ROOT / "src/quadcoop/assets/anymal_c/anymal_c.xml"))
-            for li in list(robot.lights):
-                robot.delete(li)
-            scene.attach(robot, prefix=f"r{k}_", frame=scene.frame(f"f{k}"))
-        m = scene.compile()
-        d = mujoco.MjData(m)
-        init = {"HAA": 0.0, "LF_HFE": 0.4, "RF_HFE": 0.4, "LH_HFE": -0.4, "RH_HFE": -0.4,
-                "LF_KFE": -0.8, "RF_KFE": -0.8, "LH_KFE": 0.8, "RH_KFE": 0.8}
-        for j in range(m.njnt):
-            jn = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) or ""
-            for key, v in init.items():
-                if jn.endswith(key):
-                    d.qpos[m.jnt_qposadr[j]] = v
-        frees = [j for j in range(m.njnt) if m.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
-        for k, j in enumerate(frees):
-            x, y, yaw = pose(*lay[k])
-            a0 = m.jnt_qposadr[j]
-            d.qpos[a0:a0 + 7] = [x, y, 0.6, math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]
-        mujoco.mj_forward(m, d)
-        feet = [i for i in range(m.ngeom) if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i) or "").endswith("_foot")]
-        low = min(d.geom_xpos[i][2] - m.geom_size[i][0] for i in feet)
-        for j in frees:
-            d.qpos[m.jnt_qposadr[j] + 2] -= low
-        mujoco.mj_forward(m, d)
-        cam = mujoco.MjvCamera()
-        cam.lookat[:] = (0.05, 0.0, 0.2)
-        cam.azimuth, cam.elevation, cam.distance = 30.0, -38.0, 5.6
-        opt = mujoco.MjvOption()
-        opt.geomgroup[:] = [1, 1, 1, 0, 0, 0]
-        r = mujoco.Renderer(m, H, W)
-        r.update_scene(d, camera=cam, scene_option=opt)
-        img = Image.fromarray(r.render())
-        r.close()
-        imgs.append(img)
-        print("teaser", n)
-
+    tiles = []
+    for (v, t, w, lab), f, (fx0, fy0, fx1, fy1) in zip(src, frames, crops):
+        x0, x1 = fx0 * f.width, fx1 * f.width
+        y0 = fy0 * f.height
+        y1 = y0 + (x1 - x0) * 3 / 4
+        im = f.crop((int(x0), int(y0), int(x1), int(min(y1, f.height)))).resize((900, 675), Image.LANCZOS)
+        im.save(out / f"{lab.replace(' ', '_')}_cube_80kg.jpg", quality=95)
+        tiles.append(im)
     try:
         import matplotlib
-        font = ImageFont.truetype(str(Path(matplotlib.get_data_path()) / "fonts/ttf/DejaVuSans-Bold.ttf"), 56)
+        font = ImageFont.truetype(str(Path(matplotlib.get_data_path()) / "fonts/ttf/DejaVuSans-Bold.ttf"), 48)
     except (OSError, ImportError):
         font = ImageFont.load_default()
-    names = ["1 robot", "2 robots", "3 robots", "4 robots"]
 
-    def tile(img, txt):
-        band = 90
-        t = Image.new("RGB", (img.width, img.height + band), (255, 255, 255))
-        t.paste(img, (0, band))
-        dr = ImageDraw.Draw(t)
+    def titled(img, txt):
+        band = 76
+        t_ = Image.new("RGB", (img.width, img.height + band), (255, 255, 255))
+        t_.paste(img, (0, band))
+        dr = ImageDraw.Draw(t_)
         x0, y0, x1, y1 = dr.textbbox((0, 0), txt, font=font)
         dr.text(((img.width - (x1 - x0)) // 2 - x0, (band - (y1 - y0)) // 2 - y0), txt, fill=(20, 20, 20), font=font)
-        return t
+        return t_
 
-    # one crop for every panel (same scale): the coloured content (robots, object, goal: saturated pixels) of the
-    # four-robot panel, plus a margin, widened to 4:3
-    arr = np.asarray(imgs[-1]).astype(np.int16)
-    sat = arr.max(-1) - arr.min(-1)
-    ys, xs = np.nonzero((sat > 60) | (arr.max(-1) < 70))   # coloured, or dark (legs, feet)
-    x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
-    mx, my = 0.12 * (x1 - x0), 0.12 * (y1 - y0)
-    x0, x1, y0, y1 = x0 - mx, x1 + mx, y0 - my, y1 + my
-    cx, cy, w_, h_ = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
-    w_, h_ = max(w_, h_ * 4 / 3), max(h_, w_ * 3 / 4)
-    box = tuple(int(round(v)) for v in (max(0, cx - w_ / 2), max(0, cy - h_ / 2), min(W, cx + w_ / 2), min(H, cy + h_ / 2)))
-    imgs = [i.crop(box).resize((1200, round(1200 * (box[3] - box[1]) / (box[2] - box[0]))), Image.LANCZOS) for i in imgs]
-    for k, im in enumerate(imgs):
-        im.save(out / f"team_{k + 1}.png")
-    tiles = [tile(i, t) for i, t in zip(imgs, names)]
+    tiles = [titled(i, s_[3]) for i, s_ in zip(tiles, src)]
     gap = 16
     tw, th = tiles[0].size
     row = Image.new("RGB", (4 * tw + 3 * gap, th), (255, 255, 255))
-    for i, t in enumerate(tiles):
-        row.paste(t, (i * (tw + gap), 0))
-    row.save(out / "teaser_1_2_3_4_robots_row.png")
-    row.save(out / "teaser_1_2_3_4_robots_row.jpg", quality=95)
+    for i, t_ in enumerate(tiles):
+        row.paste(t_, (i * (tw + gap), 0))
     sq = Image.new("RGB", (2 * tw + gap, 2 * th + gap), (255, 255, 255))
-    for i, t in enumerate(tiles):
-        sq.paste(t, ((i % 2) * (tw + gap), (i // 2) * (th + gap)))
-    sq.save(out / "teaser_1_2_3_4_robots_grid.png")
-    sq.save(out / "teaser_1_2_3_4_robots_grid.jpg", quality=95)
+    for i, t_ in enumerate(tiles):
+        sq.paste(t_, ((i % 2) * (tw + gap), (i // 2) * (th + gap)))
     for im, nm in ((row, "row"), (sq, "grid")):
-        im.save(out / f"teaser_1_2_3_4_robots_{nm}.pdf", resolution=300)
+        im.save(out / f"intro_1_2_3_4_robots_cube_80kg_{nm}.png")
+        im.save(out / f"intro_1_2_3_4_robots_cube_80kg_{nm}.jpg", quality=95)
+        im.save(out / f"intro_1_2_3_4_robots_cube_80kg_{nm}.pdf", resolution=300)
+    print("intro done")
 
 
 if __name__ == "__main__":
-    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects", "starts", "teaser"]
+    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects", "starts", "intro"]
     for w in what:
         {"frames": build_frames, "maps": build_maps, "graphs": build_graphs, "copy": build_copy,
-         "objects": build_objects, "starts": build_starts, "teaser": build_teaser}[w]()
+         "objects": build_objects, "starts": build_starts, "intro": build_intro}[w]()

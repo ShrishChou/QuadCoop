@@ -13,28 +13,28 @@ Rebuild everything with `python scripts/paper_media.py` (CPU only). It reads the
   - a ball above each robot shows which robot it is;
   - the green patch is the goal pose.
 
-## 00_title: title-page figure
+## intro: one, two, three and four robots on the same task
 
-One, two, three and four ANYmals pushing the same object toward the same goal. Every panel has the same camera
-and crop. Rendered in MuJoCo (`python scripts/paper_media.py teaser`, no GPU).
+One frame from real evaluation films for each team size, all on the same task: the **cube at 80 kg, goal 3 m
+straight ahead** (the green square). Rebuild with `python scripts/paper_media.py intro`.
+
+| panel | source | moment shown |
+|---|---|---|
+| 1 robot | the single-robot push policy with the object-map CNN (`02_anymal_single_robot_push`) | mid-push; this run succeeds |
+| 2 robots | the contact planner's pair (`05_contact_planner`) | both robots on the cube; the arrows above them are the planner's assigned push directions; this run succeeds |
+| 3 robots | one branched contact-planner run (`3_vs_4_robots/80kg/cube_80kg_A_straight_r2`), left panel: the trio continues | 26 s into the episode, robots 1 and 2 pushing; this branch succeeds at 49.6 s |
+| 4 robots | the same run and the same instant, right panel: robot 4 (orange ball) called at 20 s | robots 2, 3 and 4 pushing, robot 1 at its contact; this branch times out 0.08 m short |
 
 | file | use |
 |---|---|
-| `teaser_1_2_3_4_robots_row.png/.jpg/.pdf` | 1 × 4 strip, for a full-width figure under the title |
-| `teaser_1_2_3_4_robots_grid.png/.jpg/.pdf` | 2 × 2, for a single column |
-| `team_<n>.png` | each panel alone, unlabelled |
+| `intro_1_2_3_4_robots_cube_80kg_row.png/.jpg/.pdf` | 1 × 4 strip, for a full-width figure under the title |
+| `intro_1_2_3_4_robots_cube_80kg_grid.png/.jpg/.pdf` | 2 × 2, for a single column |
+| `<n>_robot(s)_cube_80kg.jpg` | each panel alone, unlabelled (900 × 675) |
 
-- **Object:** the cube with its footprint enlarged 1.5× (0.9 m, as in the team-size trees at scale 1.5), so four robots
-  fit around it.
-- **Robots:** each stands with its front bumper 2 cm from a face, pushing along that face's normal. With one or two
-  robots they are on the back face; the third and fourth are on the side faces near the front, where the planner
-  places robots to steer.
-- **Clearance:** the script checks that no two robots' footprints overlap, using the planner's 0.55 × 0.30 m
-  half-extent rectangle.
-- **Goal:** the green square 2.6 m ahead.
-
-This is a posed illustration in the standing pose, not a frame from a run. For real runs with 1–4 robots, use the
-stills in 02–05.
+- **Crops:** set by eye to show the team, the cube and the goal, with a robot about a fifth of the panel wide.
+  The single-robot and pair films are 1080p; the branched film is 960 × 720 per panel, so panels 3 and 4 are a
+  little softer.
+- **Markers:** the coloured balls and arrows in panels 2–4 are the planner's markers (see the top of this file).
 
 ## 01_robots_walkers: the robots and the frozen walkers
 
