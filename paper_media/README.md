@@ -83,6 +83,24 @@ Long object, 80 kg, turned 60° in place (fresh placements):
 | `penalty_turning_test` | turning in place on fresh placements (mirrored turns, 160 tasks): 72.5% → 86.2%, +13.8 pp [+6.9, +20.6] |
 | `regret_contact_game_*` | the regret-minimisation contact game: learning curves and payoff examples |
 
+## object: the twelve objects
+
+Each object at nominal size (size factors 1.0), rendered in MuJoCo with its simulation colour. The camera is raised to a
+three-quarter view: 45° between the object's x and y axes, looking down at 30°. The floor squares are 0.5 m. Each
+camera is framed to its object, so compare sizes using the squares, not the tile.
+
+| file | shows |
+|---|---|
+| `objects_grid.png` / `.jpg` | all twelve, 4 × 3 |
+| `<name>.png` | one 900 × 900 render per object |
+
+- Single-robot pusher training set: cube, long, sphere, cylinder, arch, dumbbell, T shape.
+- Held out for it: beam, L shape, split-friction box, U channel, plus.
+- The ten-object pairs and the contact-planner benchmarks use the first seven plus the L shape, U channel and plus.
+- Split-friction box: two halves with friction 0.15 (light) and 0.9 (darkened in the render only).
+
+Rebuild with `python scripts/paper_media.py objects`, which uses software EGL and needs no GPU.
+
 Pending, to be added when the runs finish:
 - the unmirrored half of the turning test;
 - the 140 s benchmark;

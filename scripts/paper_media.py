@@ -4,7 +4,9 @@ CPU only (ffmpeg from imageio-ffmpeg, matplotlib, torch on CPU). Sources: presen
 presentation_videos/ (films), evals_present/ and logs/evals/ (numbers). Re-run to rebuild; existing outputs are
 overwritten.
 
-    python scripts/paper_media.py [frames] [maps] [graphs] [copy]     (default: all)
+    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects]     (default: all)
+
+objects renders the twelve objects in MuJoCo with software EGL (no GPU).
 """
 
 from __future__ import annotations
@@ -64,8 +66,9 @@ def label(img: Image.Image, text: str) -> Image.Image:
     d = ImageDraw.Draw(img)
     size = max(14, img.width // 28)
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", size)
-    except OSError:
+        import matplotlib
+        font = ImageFont.truetype(str(Path(matplotlib.get_data_path()) / "fonts/ttf/DejaVuSans-Bold.ttf"), size)
+    except (OSError, ImportError):
         font = ImageFont.load_default()
     x0, y0, x1, y1 = d.textbbox((0, 0), text, font=font)
     pad = size // 3
@@ -511,7 +514,79 @@ def build_copy():
     print("copies done")
 
 
+# ---------------------------------------------------------------- object renders
+def build_objects():
+    """Each of the twelve objects at nominal size, rendered in MuJoCo from a raised three-quarter view (camera 45°
+    off the object's x and y axes, 30° above the floor), on 0.5 m floor squares for scale. Software EGL (Mesa
+    llvmpipe), so it runs without a GPU."""
+    import os
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("EGL_PLATFORM", "surfaceless")
+    mesa = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+    if mesa.exists():
+        os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", str(mesa))
+    import mujoco
+
+    from quadcoop.stage1b.shapes import _Q_AXIS_Y
+    from quadcoop.stage2.shapes import SHAPES2
+
+    W = H = 900
+    kinds = {0: "plane", 2: "sphere", 3: "capsule", 5: "cylinder", 6: "box"}  # mjtGeom ids used by Part.kind
+    pretty = {"t_shape": "T shape", "l_shape": "L shape", "u_channel": "U channel", "asym": "split-friction box"}
+    out = OUT / "object"
+    out.mkdir(parents=True, exist_ok=True)
+    tiles = []
+    for s in SHAPES2:
+        geoms, reach, top = [], 0.0, 0.0
+        for i, p in enumerate(s.parts):
+            size = list(p.size) + [0.0] * (3 - len(p.size))
+            if int(p.kind) == 6 and i:
+                size[2] -= 0.001 * i   # overlapping boxes share a top face: drop later parts 1 mm (no z-fighting)
+            rgb = s.rgba[:3]
+            if p.friction is not None and p.friction > 0.5:   # split-friction box: the high-friction half darker
+                rgb = tuple(0.55 * c for c in rgb)
+            q = f' quat="{" ".join(map(str, _Q_AXIS_Y))}"' if p.axis_y else ""
+            geoms.append(f'<geom type="{kinds[int(p.kind)]}" size="{" ".join(map(str, size))}" '
+                         f'pos="{" ".join(map(str, p.pos))}"{q} rgba="{" ".join(map(str, rgb))} 1"/>')
+            ext = max(size[:2]) if int(p.kind) == 6 else max(size[0], size[1] if p.axis_y else size[0])
+            reach = max(reach, float(np.hypot(p.pos[0], p.pos[1])) + ext)
+            hz = size[2] if int(p.kind) == 6 else size[0]
+            top = max(top, s.rest_height + p.pos[2] + hz)
+        xml = f"""<mujoco><visual><global offwidth="{W}" offheight="{H}"/><quality shadowsize="4096" offsamples="8"/>
+<headlight ambient=".35 .35 .35" diffuse=".35 .35 .35" specular="0 0 0"/></visual>
+<asset><texture type="skybox" builtin="flat" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
+<texture name="g" type="2d" builtin="checker" rgb1=".93 .93 .93" rgb2=".82 .82 .82" width="64" height="64"/>
+<material name="g" texture="g" texuniform="true" texrepeat="1 1"/></asset>
+<worldbody><light pos="2.5 -1.5 5" dir="-.45 .3 -1" directional="true" castshadow="true" diffuse=".6 .6 .6"/>
+<geom type="plane" size="6 6 .1" material="g"/>
+<body pos="0 0 {s.rest_height}">{"".join(geoms)}</body></worldbody></mujoco>"""
+        m = mujoco.MjModel.from_xml_string(xml)
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        cam = mujoco.MjvCamera()
+        cam.lookat[:] = (0.0, 0.0, 0.45 * top)
+        cam.azimuth, cam.elevation = 225.0, -30.0   # looking from (+x, +y) toward the object, down 30°
+        cam.distance = 1.0 + 2.6 * max(reach, top, 0.6)
+        r = mujoco.Renderer(m, H, W)
+        r.update_scene(d, camera=cam)
+        img = Image.fromarray(r.render())
+        r.close()
+        img.save(out / f"{s.name}.png")
+        name = pretty.get(s.name, s.name.replace("_", " "))
+        tiles.append(label(img.copy(), name))
+        print("object", s.name)
+    cols, gap, tw = 4, 8, 600
+    tiles = [t.resize((tw, tw), Image.LANCZOS) for t in tiles]
+    rows = (len(tiles) + cols - 1) // cols
+    g = Image.new("RGB", (cols * tw + (cols - 1) * gap, rows * tw + (rows - 1) * gap), (255, 255, 255))
+    for i, t in enumerate(tiles):
+        g.paste(t, ((i % cols) * (tw + gap), (i // cols) * (tw + gap)))
+    g.save(out / "objects_grid.png")
+    g.save(out / "objects_grid.jpg", quality=93)
+
+
 if __name__ == "__main__":
-    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy"]
+    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects"]
     for w in what:
-        {"frames": build_frames, "maps": build_maps, "graphs": build_graphs, "copy": build_copy}[w]()
+        {"frames": build_frames, "maps": build_maps, "graphs": build_graphs, "copy": build_copy,
+         "objects": build_objects}[w]()
