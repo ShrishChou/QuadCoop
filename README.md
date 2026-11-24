@@ -52,8 +52,26 @@ thousands of parallel environments per run.
 Two robots trained end to end. MAPPO has a shared critic; IPPO trains each robot on its own. Both start from the
 single-robot pusher and keep a **KL anchor** to it during training.
 
-<p align="center"><img src="paper_media/03_ippo_mappo/ippo_mappo_objects_grid.jpg" width="820"><br>
-<sub>Top: MAPPO on the cylinder, dumbbell and plus. Bottom: IPPO on the cube, sphere and L shape. All 80 kg successes.</sub></p>
+<table>
+<tr>
+<td align="center"><img src="media/mappo_dumbbell_80kg.gif" width="400"><br><sub><b>MAPPO</b>: dumbbell, 80 kg, straight (4×)</sub></td>
+<td align="center"><img src="media/mappo_plus_80kg_left.gif" width="400"><br><sub><b>MAPPO</b>: plus, 80 kg, goal 60° left (7×)</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="media/ippo_cube_80kg_far_turn.gif" width="400"><br><sub><b>IPPO</b>: cube, 80 kg, 5 m with a 90° turn (4×)</sub></td>
+<td align="center"><img src="media/ippo_sphere_80kg_backright.gif" width="400"><br><sub><b>IPPO</b>: sphere, 80 kg, goal behind on the right (2×)</sub></td>
+</tr>
+</table>
+
+What goes wrong without joint training, without the anchor, and on heavy objects:
+
+<table>
+<tr>
+<td align="center"><img src="media/s3_frozen_pair_collide.gif" width="270"><br><sub>Two single-robot pushers side by side, never trained together: they collide</sub></td>
+<td align="center"><img src="media/mappo_no_anchor_plus_60kg_fell.gif" width="270"><br><sub>MAPPO without the KL anchor: plus, 60 kg, a robot falls (1×)</sub></td>
+<td align="center"><img src="media/s3_mappo_80kg_timeout.gif" width="270"><br><sub>MAPPO at 80 kg: the two rarely push at the same time, and the task times out</sub></td>
+</tr>
+</table>
 
 - **The KL anchor is essential.** Without it the pair forgets how to push: MAPPO succeeds 35% of the time instead of 58%
   (+22.7 pp [+18.6, +26.9] with the anchor), and fading the anchor out during training gives 23% instead of 65%.
@@ -85,8 +103,16 @@ A planner decides *where* each robot pushes; a learned executor per robot walks 
 </tr>
 </table>
 
-<p align="center"><img src="paper_media/04_contact_planner/planner_objects_grid.jpg" width="820"><br>
-<sub>The contact planner at 80 kg: cube, cylinder, sphere, L shape, plus and U channel (all successes).</sub></p>
+<table>
+<tr>
+<td align="center"><img src="media/planner_cylinder_80kg.gif" width="270"><br><sub>Cylinder, 80 kg, straight (2×)</sub></td>
+<td align="center"><img src="media/planner_sphere_80kg_backright.gif" width="270"><br><sub>Sphere, 80 kg, goal behind on the right (2×)</sub></td>
+<td align="center"><img src="media/planner_l_shape_80kg_left.gif" width="270"><br><sub>L shape, 80 kg, goal 60° left (4×)</sub></td>
+</tr>
+</table>
+
+<p align="center"><img src="media/s4_timeout.gif" width="320"><br>
+<sub>The typical failure is a timeout: here the beam ends 9 cm / 7° from the goal; the last degrees of turning never come.</sub></p>
 
 ### Benchmark: every method on the same tasks
 
@@ -124,8 +150,13 @@ A planner decides *where* each robot pushes; a learned executor per robot walks 
 Branched trees: the same two-robot episode is copied mid-push and continued as two robots, with robot 3 called at 8 s,
 or with robot 4 called at 20 s. 5 seeds × 120 tasks per point, 20–100 kg.
 
-<p align="center"><img src="paper_media/05_teams_2_3_4/team_sizes_2_3_4.jpg" width="820"><br>
-<sub>Two robots (plus, 100 kg), three robots (sphere, 100 kg), four robots (cylinder, 40 kg).</sub></p>
+<p align="center"><img src="media/branch_2_vs_3_plus_100kg.gif" width="760"><br>
+<sub><b>2 vs 3</b>, plus, 100 kg, the same episode from 16 s (5×). Left: the pair continues and succeeds at 45.9 s.
+Right: robot 3 (magenta) is called at 20 s and the trio succeeds at 38.9 s.</sub></p>
+
+<p align="center"><img src="media/branch_3_vs_4_cube_80kg.gif" width="760"><br>
+<sub><b>3 vs 4</b>, cube, 80 kg, the same episode from 16 s (6×; ends just after the trio finishes). Left: three robots
+succeed at 49.6 s. Right: robot 4 (orange) is called at 20 s; the four crowd the cube and time out 8 cm short.</sub></p>
 
 <table>
 <tr>
@@ -153,9 +184,14 @@ or with robot 4 called at 20 s. 5 seeds × 120 tasks per point, 20–100 kg.
 The original planner keeps returning to contact pairs that are not moving the object. The penalty remembers a pair
 that has failed in two 2 s windows and ranks it lower; progress halves the count.
 
-| Original planner: keeps the same corners, times out | With the penalty: one robot moves to the long face, the box turns |
-|---|---|
-| ![](paper_media/06_online_learning/original_planner_long_80kg_turn60_strip.jpg) | ![](paper_media/06_online_learning/penalty_planner_long_80kg_turn60_strip.jpg) |
+Long box, 80 kg, turned 60° in place; the same placement for both:
+
+<table>
+<tr>
+<td align="center"><img src="media/penalty_off_long_80kg_turn60.gif" width="400"><br><sub><b>Original planner</b>: keeps pushing the same diagonal corners and times out (8×)</sub></td>
+<td align="center"><img src="media/penalty_on_long_80kg_turn60.gif" width="400"><br><sub><b>With the penalty</b>: after two failed windows a robot moves to the long face and the box turns (7×)</sub></td>
+</tr>
+</table>
 
 <table>
 <tr>
@@ -172,6 +208,9 @@ that has failed in two 2 s windows and ranks it lower; progress halves the count
 </table>
 
 ### 3. Longer time limit (80 s → 140 s)
+
+<p align="center"><img src="media/planner_140s_l_shape_80kg_far_turn.gif" width="400"><br>
+<sub>L shape, 80 kg, 5 m with a 90° turn: delivered at 126 s, a task the 80 s limit would have counted as a failure (10×).</sub></p>
 
 <table>
 <tr>
