@@ -477,7 +477,118 @@ def build_graphs():
     team_graph(plt)
     # 6. penalty after repeated failed pushes
     penalty_graph(plt)
+    # 7. 80 s vs 140 s; every turning-test arm; robot 4 placed vs walking in
+    horizon_graph(plt)
+    turning_arms_graph(plt)
+    place_graph(plt)
     print("graphs done")
+
+
+def _boot(d, n=4000):
+    """Mean and 95% bootstrap interval (over tasks) of a paired difference, in points."""
+    d = np.asarray(d, float)
+    b = np.random.default_rng(0).choice(d, (n, len(d))).mean(1)
+    return 100 * d.mean(), 100 * np.percentile(b, 2.5), 100 * np.percentile(b, 97.5)
+
+
+def _pair_runs(*names):
+    """Task -> success averaged over runs (logs/evals/<name>/pair/episodes.csv)."""
+    acc = {}
+    for nm in names:
+        for r in _rows(ROOT / "logs/evals" / nm / "pair/episodes.csv"):
+            acc.setdefault((r["object"], int(float(r["mass"])), r["scenario"], r["rep"]), []).append(float(r["success"]))
+    return {k: np.mean(v) for k, v in acc.items()}
+
+
+def horizon_graph(plt):
+    """The 480-task planner benchmark at 80 s and 140 s, original planner (A) and penalty (B2), two runs each."""
+    runs = {(a, h): [f"{p}-{a}-r{r}-expert" for r in (1, 2)] for a in ("A", "B2") for h, p in ((80, "olp"), (140, "olp140"))}
+    if not all((ROOT / "logs/evals" / n / "pair/episodes.csv").exists() for v in runs.values() for n in v):
+        return
+    S = {k: _pair_runs(*v) for k, v in runs.items()}
+    masses = sorted({k[1] for k in S[("A", 80)]})
+    fig, ax = plt.subplots(figsize=(5.4, 3.4))
+    for (a, h), c, ls in ((("A", 80), "#999999", "--"), (("B2", 80), "#2ca02c", "--"),
+                          (("A", 140), "#555555", "-"), (("B2", 140), "#1a7f1a", "-")):
+        y = [100 * np.mean([v for k, v in S[(a, h)].items() if k[1] == m]) for m in masses]
+        lab = ("original planner" if a == "A" else "penalty after repeated failures") + f", {h} s"
+        ax.plot(masses, y, "o" + ls, color=c, label=lab)
+    ax.set_xlabel("object mass (kg)")
+    ax.set_ylabel("success (%)")
+    ax.set_xticks(masses)
+    ax.set_ylim(0, 100)
+    ax.legend(frameon=False, fontsize=8, loc="lower left")
+    d80 = _boot([S[("B2", 80)][k] - S[("A", 80)][k] for k in S[("A", 80)]])
+    d140 = _boot([S[("B2", 140)][k] - S[("A", 140)][k] for k in S[("A", 140)]])
+    ax.set_title(f"Planner time limit (480 tasks, 2 runs). Penalty - original: 80 s {d80[0]:+.1f} "
+                 f"[{d80[1]:+.1f}, {d80[2]:+.1f}], 140 s {d140[0]:+.1f} [{d140[1]:+.1f}, {d140[2]:+.1f}]", fontsize=8)
+    _save(fig, "planner_time_limit_80_vs_140")
+    plt.close(fig)
+
+
+def turning_arms_graph(plt):
+    """Held-out turning test (seed 7300): every planner arm minus the original planner, paired by task, with 95%
+    bootstrap intervals; turns in both directions."""
+    arms = [("B", "exact-pair penalty"), ("C", "similar-push penalty"), ("D", "one forced switch"),
+            ("B2", "penalty after 2 failures")]
+    fig, ax = plt.subplots(figsize=(6.4, 3.2))
+    x = np.arange(len(arms))
+    done = False
+    for j, (t, lab, c) in enumerate((("turn", "turns", "#1f77b4"), ("turn_mirror", "mirrored turns", "#ff7f0e"))):
+        names = [f"fm-test-{a}-{t}-expert" for a, _ in [("A", "")] + arms]
+        if not all((ROOT / "logs/evals" / n / "pair/episodes.csv").exists() for n in names):
+            continue
+        A = _pair_runs(names[0])
+        res = []
+        for a, _ in arms:
+            B = _pair_runs(f"fm-test-{a}-{t}-expert")
+            res.append(_boot([B[k] - A[k] for k in A if k in B]))
+        m = np.array([r[0] for r in res])
+        err = np.array([[r[0] - r[1] for r in res], [r[2] - r[0] for r in res]])
+        ax.bar(x + (j - 0.5) * 0.36, m, 0.36, yerr=err, capsize=3, color=c,
+               label=f"{lab} (original planner {100 * np.mean(list(A.values())):.0f}%)")
+        done = True
+    if not done:
+        plt.close(fig)
+        return
+    ax.axhline(0, color="black", lw=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([lab for _, lab in arms], fontsize=8)
+    ax.set_ylabel("success gain over original (pp)")
+    ax.legend(frameon=False, fontsize=8)
+    ax.set_title("Turning test, fresh placements (long and arch, 60-80 kg, 160 tasks per bar)", fontsize=9)
+    _save(fig, "penalty_turning_test_all_arms")
+    plt.close(fig)
+
+
+def place_graph(plt):
+    """The ten 3 -> 4 place trees (k4p-*): 2, 3, 4 robots and robot 4 placed at its contact, from the same branched
+    states, per mass and footprint."""
+    for tag, sc, title in (("original", "s10", "original footprint"), ("enlarged_1p5", "s15", "footprint x 1.5")):
+        acc = {}
+        for s in (1001, 1002, 1003, 8401, 8402):
+            p = ROOT / "logs/evals" / f"k4p-{sc}-s{s}" / "episodes.csv"
+            if p.exists():
+                for r in _rows(p):
+                    acc.setdefault((r["arm"], int(float(r["mass"]))), []).append(float(r["success"]))
+        if not acc:
+            continue
+        masses = sorted({m for _, m in acc})
+        fig, ax = plt.subplots(figsize=(5.4, 3.4))
+        for a, lab, c, ls in (("k2", "2 robots", "#7f7f7f", "-"), ("k3", "3 robots", "#1f77b4", "-"),
+                              ("k4", "4 robots, robot 4 walks in", "#d62728", "-"),
+                              ("k4p", "4 robots, robot 4 placed at its contact", "#d62728", "--")):
+            ax.plot(masses, [100 * np.mean(acc[(a, m)]) for m in masses], "o" + ls, color=c, label=lab,
+                    mfc="white" if a == "k4p" else c)
+        ax.set_xlabel("object mass (kg)")
+        ax.set_ylabel("success (%)")
+        ax.set_xticks(masses)
+        ax.set_ylim(0, 100)
+        ax.legend(frameon=False, fontsize=8)
+        ax.set_title(f"Robot 4 placed vs walking in ({title}, 5 seeds, n = {len(acc[('k3', masses[0])])} per point)",
+                     fontsize=9)
+        _save(fig, f"team_size_placed_vs_walkin_{tag}")
+        plt.close(fig)
 
 
 def _rows(path: Path):

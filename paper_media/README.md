@@ -181,6 +181,9 @@ Rebuild with `python scripts/paper_media.py library` (CPU only).
 | `team_size_2_3_4_enlarged_1p5` | footprint × 1.5, the same design: 2 robots 26.6%, 3 robots 51.7%, 4 robots 45.7% |
 | `penalty_benchmark_by_object` | the penalty on ordinary deliveries (480 tasks, 2 runs each): 62.3% vs 62.4%, no change overall |
 | `penalty_turning_test` | turning in place on fresh placements (mirrored turns, 160 tasks): 72.5% → 86.2%, +13.8 pp [+6.9, +20.6] |
+| `planner_time_limit_80_vs_140` | the planner benchmark at 80 s and 140 s (480 tasks, 2 runs each). 140 s lifts the original planner 62.3% → 71.8% and the penalty 62.4% → 74.8%, almost all at 60–80 kg. The penalty beats the original only at 140 s: +3.0 pp [+0.1, +6.0]. |
+| `penalty_turning_test_all_arms` | every planner arm minus the original on the turning test (fresh placements, 160 tasks per bar), both turn directions. B2: +6.9 and +13.8 pp; one forced switch is weakest. |
+| `team_size_placed_vs_walkin_{original,enlarged_1p5}` | the ten 3 → 4 place trees (5 seeds × 360 tasks per footprint). Four robots are 7 points below three at both sizes. Placing robot 4 at its contact instead of walking it in changes nothing (+0.8 and −0.3 pp). |
 | `regret_contact_game_*` | the regret-minimisation contact game: learning curves and payoff examples |
 
 ## object: the twelve objects
@@ -201,7 +204,4 @@ camera is framed to its object, so compare sizes using the squares, not the tile
 
 Rebuild with `python scripts/paper_media.py objects`, which uses software EGL and needs no GPU.
 
-Pending, to be added when the runs finish:
-- the unmirrored half of the turning test (run finished; numbers not yet added here);
-- the 140 s benchmark;
-- the 3 → 4 size and entry trees (placed vs walk-in robot 4).
+Pending, to be added when the runs finish: the learned three- and four-robot teams, with and without the KL anchor (docs/marl_teams.md).

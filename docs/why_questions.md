@@ -88,6 +88,8 @@ Design: masses 20, 60 and 100 kg; the same seeds as the original-footprint trees
 same arms (stay at k, request k + 1, repeat stay). Validation job 30092686 runs 6 objects at 60 kg, at 1.5 and at 1.0.
 The full trees are queued after it passes.
 
+Results for 3 -> 4 (the place trees): "Results (2026-11-24)", 3B. A fourth robot costs 7 points at both footprints.
+
 Primary number in every cell: success after the request minus success after staying. Questions:
 - At the same mass, does enlarging raise that gain?
 - At the same footprint, does more mass raise it?
@@ -232,6 +234,7 @@ Open: why the unmodified planner relocks clockwise but switches 6-12 times count
 index (argmin takes the first) would treat mirrored pairs differently. Not yet checked.
 
 Test (seed 7300, settings unchanged from development): jobs 30165806-20, `fm-test-*`.
+Results: "Results (2026-11-24)", 2B test, at the end of this document.
 Films: `presentation_export/05_contact_planner/failed_push_memory/`.
 
 ## Protocols fixed 2026-11-23 (before results)
@@ -299,3 +302,134 @@ every task, so any rule is scored on the same tasks.
   many test tasks as the learned rule.
 - **4 -> 5:** only if 3B shows a fourth robot can add value under at least one condition. The frozen 3 -> 4 rule is
   tried first. A rule refitted on 4 -> 5 data is reported separately.
+
+## Results (2026-11-24)
+
+All comparisons are paired by task, with 95% bootstrap intervals over tasks. Scripts for the pooled numbers:
+`paper_media.py` graphs (`horizon_graph`, `turning_arms_graph`, `place_graph`) and the tables below.
+
+### 2B test: the turning test on fresh placements (seed 7300)
+
+Jobs 30165806-20, 30199702-3 and 30255365 (`fm-test-{A,B,C,D,B2}-{turn,turn_mirror}`). Long and arch, 60 and 80 kg,
+eight turns, 10 placements: 160 tasks per arm and direction. Settings are unchanged from development.
+
+| gain over A (pp) | turns (A 80.0%) | mirrored turns (A 72.5%) |
+|---|---|---|
+| B exact pair | +5.0 [−0.6, +11.2] | +6.9 [−0.6, +14.4] |
+| C similar pushes | **+7.5 [+1.2, +13.8]** | **+11.9 [+4.4, +19.4]** |
+| D forced switch | +3.8 [−1.9, +9.4] | +5.0 [−1.9, +11.9] |
+| B2 penalty after 2 failures | **+6.9 [+1.2, +12.5]** | **+13.8 [+6.9, +20.6]** |
+
+- **The development result replicates on new placements,** at about half its size (development: +11 for B and C).
+  The memory helps in both turn directions.
+- **The ranking is the same as in development.** One forced switch (D) is the weakest. The penalty has to keep
+  holding the stalled pair down, or the planner returns to it.
+- **B2, the version chosen for the benchmark, is as good as C.** Waiting for two failed windows costs nothing on turns.
+- **Most of the gain is at 80 kg:** B2 +8.8 and +12.5. At 60 kg: +5.0 and +15.0.
+
+Graph: `paper_media/07_graphs/penalty_turning_test_all_arms`.
+
+### 2C: the penalty on ordinary deliveries, at 80 s and 140 s
+
+80 s: jobs 30199680-1 and 30199700-1 (`olp-{A,B2}-r{1,2}`). 140 s: jobs 30224995 and 30224997-9
+(`olp140-{A,B2}-r{1,2}`, `slurm/submit_penalty_place.sh bench140`). The 480 ten-object tasks, two runs per arm. The
+unit is the task, using the mean of its two runs.
+
+| mass | A 80 s | B2 80 s | B2 − A, 80 s | A 140 s | B2 140 s | B2 − A, 140 s |
+|---|---|---|---|---|---|---|
+| 20 | 76.7 | 77.1 | +0.4 [−6.7, +7.5] | 81.7 | 85.8 | +4.2 [−1.7, +10.0] |
+| 40 | 78.3 | 77.1 | −1.2 [−8.3, +5.8] | 78.8 | 87.1 | **+8.3 [+2.5, +14.2]** |
+| 60 | 55.8 | 56.7 | +0.8 [−5.0, +7.1] | 71.7 | 72.5 | +0.8 [−5.4, +7.1] |
+| 80 | 38.3 | 38.8 | +0.4 [−4.2, +5.4] | 55.0 | 53.8 | −1.2 [−7.5, +4.6] |
+| all | 62.3 | 62.4 | +0.1 [−2.9, +3.2] | 71.8 | 74.8 | **+3.0 [+0.1, +6.0]** |
+
+Effect of the time limit, 80 → 140 s: A +9.5 [+5.9, +12.9], B2 +12.4 [+9.2, +15.7]. At 60 and 80 kg both planners
+gain +15 to +17.
+
+- **Many heavy-object failures at 80 s were slow, not stuck.** 11-15% of 140 s successes arrive after 80 s. In the
+  films they are mostly far-turn tasks finishing the final turn.
+- **The penalty needs time to pay off.**
+  - At 80 s it changes nothing.
+  - At 140 s it is 3 points ahead. The interval just clears zero.
+  - By object at 140 s: T shape +11.5 [+3.1, +19.8], cube +6.2 [+0.0, +12.5]. No object loses reliably: the
+    dumbbell is −8.3 [−18.8, +2.1] and the arch −6.2 [−13.5, +1.0].
+- **How often it acts (run 1):**
+
+  | | 80 s | 140 s |
+  |---|---|---|
+  | B2: episodes with a changed decision | 12% | 15% |
+  | B2: changes per episode | 0.29 | 0.66 |
+  | A: episodes where the rule would change a decision | 15% | 22% |
+  | A: would-be changes per episode | 1.9 | 5.1 |
+
+  The original planner keeps returning to pairs that have failed; it does so more often given more time.
+- **Falls:** B2 at 140 s is 7.7% and 6.2% in its two runs, against 5.4% and 5.8% for A; at 80 s both are 4-5%. This is
+  a possible small cost and is not tested.
+
+Graphs: `paper_media/07_graphs/planner_time_limit_80_vs_140`, `penalty_benchmark_by_object`. Films:
+`presentation_export/07_longer_planner_contact` (A, 140 s) and `08_penalizing_longer_planner_contact` (B2, 140 s).
+
+### 3B: 3 → 4, footprint × entry (the ten place trees)
+
+Jobs 30255367-87 (`k4p-{s10,s15}-s{1001,1002,1003,8401,8402}`). 360 tasks per tree (ten objects × 4
+starts × 3 reps × 3 masses), five seeds per footprint: 1,800 tasks per footprint. Success after the branch.
+
+| | original footprint | footprint × 1.5 |
+|---|---|---|
+| 2 robots (k2) | 55% | 29% |
+| 3 robots (k3) | 63% | 53% |
+| 4 robots, walk-in (k4) | 56% | 46% |
+| 4 robots, placed (k4p) | 57% | 46% |
+| k3 − k2 | **+8.8 [+6.7, +10.9]** | **+23.8 [+21.4, +26.2]** |
+| k4 − k3 | **−7.2 [−9.1, −5.4]** | **−6.6 [−8.4, −4.8]** |
+| k4p − k3 | **−6.4 [−8.2, −4.6]** | **−6.9 [−8.7, −5.1]** |
+| k4p − k4 | +0.8 [−1.0, +2.6] | −0.3 [−2.0, +1.3] |
+
+By mass, k4 − k3:
+
+| mass | original | × 1.5 |
+|---|---|---|
+| 20 kg | −5.3 | −7.2 |
+| 60 kg | −12.2 | −11.3 |
+| 100 kg | −4.2 | −1.2 |
+
+- **Development and test seeds agree in sign everywhere:** original −8.1 vs −6.0; × 1.5 −4.7 vs −9.3.
+- **No object gains from robot 4 at either size.** The best are the sphere (−1.7, +1.7) and the cube and cylinder at
+  × 1.5 (−0.6, −1.1).
+
+**Entry is not the problem.**
+- Placement happened in 242 of 1,057 joins at the original size and 721 of 1,425 at × 1.5. In the rest, robot 4's
+  assigned stance overlaps another robot or the object.
+- In the placed tasks robot 4 reached its contact every time. Walking in, it got there 67% of the time (original)
+  and 12% (× 1.5).
+- On those same tasks, placed and walk-in still tie: +0.8 [−5.4, +7.0] and −1.0 [−4.0, +2.1]. Both are 9-10 points
+  below staying at three: k4p − k3 −10.3 and −8.7.
+
+**Force.** Mean goal-directed force from t2 on, in N:
+
+| | robots 1-3 | robot 4 |
+|---|---|---|
+| original: k3 → k4 | 89 → 69 | 12 |
+| × 1.5: k3 → k4 | 72 → 63 | 2 |
+
+The fourth robot costs the incumbents more force than it adds. Falls (any robot) rise from 14% to 18% at the original
+size and from 12% to 17% at × 1.5.
+
+**Readings (protocol above).** Both k4 and k4p are below k3, and k4p does not beat k4. So the approach is not what
+costs; a fourth robot at this contact spacing interferes. Staying at three is right. The scaling hypothesis
+(k4 > k3 at × 1.5) is rejected.
+
+Graphs: `paper_media/07_graphs/team_size_placed_vs_walkin_{original,enlarged_1p5}`.
+
+### 4B: does the planner know when to ask? (consequence of 3B)
+
+The ceiling for any 3 → 4 recruitment rule is low.
+- k4 succeeds where k3 fails in 4.9% of tasks (original size) and 4.6% (× 1.5). The reverse happens in 12.1% and 11.1%.
+- The noise floor is about the same size: the two copies of k3 (k3 and k3null) disagree on 10.3% and 10.5% of tasks,
+  so about 5% in each direction.
+- The tasks where four "win" are therefore indistinguishable from noise. An oracle reaches 68% and 57% against 63%
+  and 53% for always staying, but no observable rule can be expected to find those tasks.
+
+**Decision:** always stay at three is the 3 → 4 rule. By the protocol, 4 → 5 is not run, since 3B shows no condition
+where a fourth robot adds value. The learned-rule fit is kept for 2 → 3, where k3 − k2 is large and depends on mass
+and footprint.
