@@ -4,9 +4,9 @@ CPU only (ffmpeg from imageio-ffmpeg, matplotlib, torch on CPU). Sources: presen
 presentation_videos/ (films), evals_present/ and logs/evals/ (numbers). Re-run to rebuild; existing outputs are
 overwritten.
 
-    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects]     (default: all)
+    python scripts/paper_media.py [frames] [maps] [graphs] [copy] [objects] [starts]     (default: all)
 
-objects renders the twelve objects in MuJoCo with software EGL (no GPU).
+objects and starts render in MuJoCo with software EGL (no GPU): the twelve objects, and the single robot's start positions.
 """
 
 from __future__ import annotations
@@ -95,12 +95,14 @@ def save_still(v, t, name, which=None, crop=True):
     return p
 
 
-def save_strip(v, times, name, which=None, crop=True, width=640, stamp=True):
+def save_strip(v, times, name, which=None, crop=True, width=640, stamp=True, t0=0.0):
+    """times: fractions of the clip (<= 1) or seconds into it (> 1). t0 is added to the stamped time (a branch film
+    starts 4 s before its 20 s decision, so t0 = 16 stamps episode time)."""
     fr = frames_at(v, times, which, crop)
     ims = []
     for img, t in fr:
         img = img.resize((width, round(img.height * width / img.width)), Image.LANCZOS)
-        ims.append(label(img, f"t = {t:.0f} s") if stamp else img)
+        ims.append(label(img, f"t = {t + t0:.0f} s") if stamp else img)
     gap = 6
     h = min(i.height for i in ims)
     strip = Image.new("RGB", (len(ims) * width + (len(ims) - 1) * gap, h), (255, 255, 255))
@@ -131,6 +133,19 @@ def grid_stills(items, name, cols, width=640):
     return p
 
 
+def _one(folder: Path, prefix: str) -> Path:
+    """The first successful clip in folder whose name starts with prefix."""
+    return sorted(folder.glob(f"{prefix}*__success.mp4"))[0]
+
+
+def _joined(v: Path, key: str) -> None:
+    """A team clip must show the added robot: its JSON's right-hand arm has key (t_add3 / t_add4) set."""
+    import json
+    js = json.loads(v.with_suffix(".json").read_text())
+    if not re.findall(rf'"{key}": (\d)', json.dumps(js)):
+        raise SystemExit(f"{v.name}: the added robot never joined ({key} empty), pick another clip")
+
+
 # ---------------------------------------------------------------- frames
 def build_frames():
     W = PE / "01_walkers"
@@ -151,56 +166,99 @@ def build_frames():
     save_strip(W / "anymal_push_cube_30kg_side.mp4", [0.05, 0.35, 0.65, 0.95],
                "01_robots_walkers/anymal_cube_push_strip.jpg", crop=False)
 
+    # Objects are spread across the folders (not only the arch and the long box). Every clip below is a success, and
+    # every team clip is one where the added robot joined (checked against the clip's JSON).
+    Q = [0.02, 0.33, 0.66, 0.98]
+
     # single robot with its push policy (map + CNN)
     S = PE / "02_anymal_single_robot_push"
-    save_strip(S / "40kg" / "arch_40kg_C_backright_rep0__success.mp4", [0.02, 0.33, 0.66, 0.98],
-               "02_single_robot/single_anymal_arch_40kg_strip.jpg")
-    save_still(S / "40kg" / "arch_40kg_C_backright_rep0__success.mp4", 0.5, "02_single_robot/single_anymal_arch_40kg.jpg")
+    save_strip(S / "60kg" / "cube_60kg_D_far_turn_rep7__success.mp4", Q, "02_single_robot/single_anymal_cube_60kg_far_turn_strip.jpg")
+    save_strip(S / "80kg" / "t_shape_80kg_C_backright_rep4__success.mp4", Q,
+               "02_single_robot/single_anymal_t_shape_80kg_backright_strip.jpg")
+    save_strip(S / "80kg" / "sphere_80kg_D_far_turn_rep3__success.mp4", Q,
+               "02_single_robot/single_anymal_sphere_80kg_far_turn_strip.jpg")
+    save_strip(S / "40kg" / "arch_40kg_C_backright_rep0__success.mp4", Q, "02_single_robot/single_anymal_arch_40kg_strip.jpg")
+    grid_stills([(_one(S / "60kg", "cube_60kg_A"), 0.5, None, "cube 60 kg"),
+                 (_one(S / "80kg", "sphere_80kg_B"), 0.5, None, "sphere 80 kg"),
+                 (_one(S / "80kg", "cylinder_80kg_A"), 0.5, None, "cylinder 80 kg"),
+                 (_one(S / "60kg", "dumbbell_60kg_A"), 0.5, None, "dumbbell 60 kg"),
+                 (_one(S / "60kg", "l_shape_60kg_A"), 0.5, None, "L shape 60 kg"),
+                 (_one(S / "40kg", "u_channel_40kg_A"), 0.5, None, "U channel 40 kg")],
+                "02_single_robot/single_anymal_objects_grid.jpg", 3)
 
     # IPPO / MAPPO pairs
     F = PV / "05_ippo_mappo_final_trained"
-    save_strip(F / "mappo_long_80kg__success.mp4", [0.02, 0.33, 0.66, 0.98], "03_ippo_mappo/mappo_long_80kg_strip.jpg")
-    save_strip(F / "ippo_l_shape_80kg__success.mp4", [0.02, 0.33, 0.66, 0.98], "03_ippo_mappo/ippo_l_shape_80kg_strip.jpg")
-    save_strip(F / "mappo_long_40kg_far_turn__success.mp4", [0.02, 0.33, 0.66, 0.98],
-               "03_ippo_mappo/mappo_long_40kg_far_turn_strip.jpg")
-    save_still(F / "mappo_long_80kg__success.mp4", 0.66, "03_ippo_mappo/mappo_pair_pushing.jpg")
+    I, M = PE / "03_anymal_ippo_pair", PE / "04_anymal_mappo_pair"
+    save_strip(M / "mappo_dumbbell_80kg_A_straight_rep0__success.mp4", Q, "03_ippo_mappo/mappo_dumbbell_80kg_strip.jpg")
+    save_strip(M / "mappo_plus_80kg_B_left_rep0__success.mp4", Q, "03_ippo_mappo/mappo_plus_80kg_left_strip.jpg")
+    save_strip(I / "ippo_cube_80kg_D_far_turn_rep0__success.mp4", Q, "03_ippo_mappo/ippo_cube_80kg_far_turn_strip.jpg")
+    save_strip(I / "ippo_sphere_80kg_C_backright_rep0__success.mp4", Q, "03_ippo_mappo/ippo_sphere_80kg_backright_strip.jpg")
+    save_strip(F / "ippo_l_shape_80kg__success.mp4", Q, "03_ippo_mappo/ippo_l_shape_80kg_strip.jpg")
+    save_strip(F / "mappo_long_40kg_far_turn__success.mp4", Q, "03_ippo_mappo/mappo_long_40kg_far_turn_strip.jpg")
+    save_still(M / "mappo_dumbbell_80kg_A_straight_rep0__success.mp4", 0.5, "03_ippo_mappo/mappo_pair_pushing.jpg")
     save_still(F / "ippo_l_shape_80kg__success.mp4", 0.5, "03_ippo_mappo/ippo_pair_pushing.jpg")
+    grid_stills([(M / "mappo_cylinder_80kg_A_straight_rep0__success.mp4", 0.5, None, "MAPPO cylinder 80 kg"),
+                 (M / "mappo_dumbbell_80kg_A_straight_rep0__success.mp4", 0.5, None, "MAPPO dumbbell 80 kg"),
+                 (M / "mappo_plus_80kg_B_left_rep0__success.mp4", 0.5, None, "MAPPO plus 80 kg"),
+                 (I / "ippo_cube_80kg_D_far_turn_rep0__success.mp4", 0.5, None, "IPPO cube 80 kg"),
+                 (I / "ippo_sphere_80kg_C_backright_rep0__success.mp4", 0.5, None, "IPPO sphere 80 kg"),
+                 (I / "ippo_l_shape_80kg_A_straight_rep0__success.mp4", 0.5, None, "IPPO L shape 80 kg")],
+                "03_ippo_mappo/ippo_mappo_objects_grid.jpg", 3)
     save_strip(PV / "03_frozen_pair_untrained" / sorted(p.name for p in (PV / "03_frozen_pair_untrained").glob("*.mp4"))[0],
-               [0.02, 0.33, 0.66, 0.98], "03_ippo_mappo/frozen_pair_untrained_strip.jpg")
+               Q, "03_ippo_mappo/frozen_pair_untrained_strip.jpg")
 
     # contact planner, two robots
-    C = PV / "06_contact_planner"
+    C, C8 = PV / "06_contact_planner", PE / "05_contact_planner" / "80kg"
     save_strip(C / "planner_long_40kg_far_turn__success.mp4", [0.02, 0.3, 0.6, 0.98],
                "04_contact_planner/planner_long_40kg_far_turn_strip.jpg")
-    save_strip(C / "planner_arch_80kg_far_turn__success.mp4", [0.02, 0.33, 0.66, 0.98],
-               "04_contact_planner/planner_arch_80kg_far_turn_strip.jpg")
-    save_still(C / "planner_long_40kg_far_turn__success.mp4", 0.6, "04_contact_planner/planner_pair_contacts.jpg")
+    save_strip(C8 / "dumbbell_80kg_D_far_turn_r4__success.mp4", Q, "04_contact_planner/planner_dumbbell_80kg_far_turn_strip.jpg")
+    save_strip(C8 / "t_shape_80kg_C_backright_r9__success.mp4", Q, "04_contact_planner/planner_t_shape_80kg_backright_strip.jpg")
+    save_strip(C8 / "u_channel_80kg_B_left_r0__success.mp4", Q, "04_contact_planner/planner_u_channel_80kg_left_strip.jpg")
+    save_still(C8 / "plus_80kg_D_far_turn_r4__success.mp4", 0.4, "04_contact_planner/planner_pair_contacts.jpg")
+    grid_stills([(C8 / "cube_80kg_B_left_r3__success.mp4", 0.4, None, "cube 80 kg"),
+                 (C8 / "cylinder_80kg_A_straight_r3__success.mp4", 0.4, None, "cylinder 80 kg"),
+                 (C8 / "sphere_80kg_C_backright_r7__success.mp4", 0.4, None, "sphere 80 kg"),
+                 (C8 / "l_shape_80kg_D_far_turn_r3__success.mp4", 0.4, None, "L shape 80 kg"),
+                 (C8 / "plus_80kg_A_straight_r0__success.mp4", 0.4, None, "plus 80 kg"),
+                 (C8 / "u_channel_80kg_C_backright_r6__success.mp4", 0.4, None, "U channel 80 kg")],
+                "04_contact_planner/planner_objects_grid.jpg", 3)
 
-    # teams of 2, 3, 4 (same task family; contact posts: cyan / yellow pair, magenta helper)
+    # teams of 2, 3, 4 (contact posts: cyan / yellow pair, magenta robot 3, orange robot 4)
     T = PE / "05_contact_planner" / "3_vs_4_robots"
-    t23 = T / "2_vs_3" / "80kg" / "arch_80kg_B_left_r1__k2-success__k3b-success.mp4"
-    t34 = T / "100kg" / "cube_100kg_C_backright_r2__k3-success__k4-success.mp4"
-    h3 = PE / "10_planner_three_robots" / "arch_80kg_B_left_r0_helper__success.mp4"
-    save_strip(h3, [0.02, 0.3, 0.6, 0.98], "05_teams_2_3_4/three_robots_arch_80kg_strip.jpg")
-    save_still(h3, 0.98, "05_teams_2_3_4/three_robots_arch_80kg.jpg")
-    if t23.exists():
-        save_strip(t23, [0.02, 0.35, 0.7, 0.98], "05_teams_2_3_4/two_robots_arch_80kg_strip.jpg", which="left")
-        save_strip(t23, [0.02, 0.35, 0.7, 0.98], "05_teams_2_3_4/three_robots_branch_arch_80kg_strip.jpg", which="right")
-    save_strip(t34, [0.02, 0.35, 0.7, 0.98], "05_teams_2_3_4/three_robots_cube_100kg_strip.jpg", which="left")
-    save_strip(t34, [0.02, 0.35, 0.7, 0.98], "05_teams_2_3_4/four_robots_cube_100kg_strip.jpg", which="right")
-    items = []
-    if t23.exists():
-        items.append((t23, 0.7, "left", "2 robots"))
-    items += [(h3, 0.9, None, "3 robots"), (t34, 0.7, "right", "4 robots")]
-    grid_stills(items, "05_teams_2_3_4/team_sizes_2_3_4.jpg", len(items))
+    t23 = T / "2_vs_3" / "100kg" / "plus_100kg_B_left_r0__k2-success__k3b-success.mp4"
+    t34 = T / "40kg" / "cylinder_40kg_A_straight_r2__k3-horizon__k4-success.mp4"
+    _joined(t23, "t_add3")
+    _joined(t34, "t_add4")
+    H3 = PE / "10_planner_three_robots"
+    h3 = H3 / "sphere_100kg_B_left_r0_helper__success.mp4"
+    save_strip(h3, Q, "05_teams_2_3_4/three_robots_sphere_100kg_strip.jpg")
+    save_strip(H3 / "u_channel_80kg_C_backright_r0_helper__success.mp4", Q,
+               "05_teams_2_3_4/three_robots_u_channel_80kg_strip.jpg")
+    save_strip(H3 / "arch_80kg_B_left_r0_helper__success.mp4", [0.02, 0.3, 0.6, 0.98],
+               "05_teams_2_3_4/three_robots_arch_80kg_strip.jpg")
+    save_still(H3 / "dumbbell_80kg_B_left_r0_helper__success.mp4", 0.6, "05_teams_2_3_4/three_robots_dumbbell_80kg.jpg")
+    # branch films start at 16 s (4 s before the decision); every frame is inside its own panel's episode:
+    # plus 100 kg: pair success at 45.9 s, robot 3 at 20 s -> success at 38.9 s;
+    # cylinder 40 kg: trio times out at 80 s, robot 4 at 20 s -> success at 27.1 s (no falls)
+    save_strip(t23, [1.5, 10, 20, 29], "05_teams_2_3_4/two_robots_plus_100kg_strip.jpg", which="left", t0=16)
+    save_strip(t23, [1.5, 8, 15, 22.5], "05_teams_2_3_4/three_robots_branch_plus_100kg_strip.jpg", which="right", t0=16)
+    save_strip(t34, [1.5, 5, 8, 11], "05_teams_2_3_4/three_robots_cylinder_40kg_strip.jpg", which="left", t0=16)
+    save_strip(t34, [1.5, 5, 8, 11], "05_teams_2_3_4/four_robots_cylinder_40kg_strip.jpg", which="right", t0=16)
+    grid_stills([(t23, 20, "left", "2 robots"), (h3, 0.6, None, "3 robots"), (t34, 9, "right", "4 robots")],
+                "05_teams_2_3_4/team_sizes_2_3_4.jpg", 3)
 
-    # online learning: penalty after repeated failed pushes, long object 80 kg turned 60 deg
+    # online learning: penalty after repeated failed pushes
     P = PE / "06_contact_planner_online_learning" / "turning_test_mirror" / "penalty_acted" / "long_80kg_T60_m_r1"
     if P.exists():
         a = next(P.glob("A_original__*.mp4"))
         b = next(P.glob("B2_penalty__*.mp4"))
         save_strip(a, [0.02, 0.3, 0.6, 0.98], "06_online_learning/original_planner_long_80kg_turn60_strip.jpg")
         save_strip(b, [0.02, 0.3, 0.6, 0.98], "06_online_learning/penalty_planner_long_80kg_turn60_strip.jpg")
+    BW = PE / "06_contact_planner_online_learning" / "benchmark" / "B2_won"
+    for task, tag in (("l_shape_80kg_A_straight_r0", "l_shape_80kg"), ("u_channel_40kg_C_backright_r0", "u_channel_40kg")):
+        if (BW / task).exists():
+            save_strip(next((BW / task).glob("A_original__*.mp4")), Q, f"06_online_learning/original_planner_{tag}_strip.jpg")
+            save_strip(next((BW / task).glob("B2_penalty__*.mp4")), Q, f"06_online_learning/penalty_planner_{tag}_strip.jpg")
     print("frames done")
 
 
@@ -585,8 +643,165 @@ def build_objects():
     g.save(out / "objects_grid.jpg", quality=93)
 
 
+def _egl_software():
+    import os
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("EGL_PLATFORM", "surfaceless")
+    mesa = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+    if mesa.exists():
+        os.environ.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES", str(mesa))
+
+
+# the single-robot benchmark (pres-solo-*: scripts/eval_coop2.py --solo anymal1, standard formation): the object at the
+# origin, heading 0; the robot behind it at bearing 180 - 35 deg + U(-10, 10) deg, its base (object reach radius
+# + ANYmal half length 0.55 m + a U(0.3, 0.6) m gap) from the object's centre, facing the centre
+START_SCENARIOS = (  # name, goal distance (m), goal direction (deg, + = left), turn (deg), caption
+    ("A_straight", 3.0, 0.0, 0.0, "A: goal 3 m ahead, no turn"),
+    ("B_left", 3.0, 60.0, 30.0, "B: goal 3 m at 60\u00b0 left, turn +30\u00b0"),
+    ("C_backright", 3.0, -135.0, -60.0, "C: goal 3 m at 135\u00b0 right, turn \u221260\u00b0"),
+    ("D_far_turn", 5.0, 0.0, 90.0, "D: goal 5 m ahead, turn 90\u00b0"),
+)
+
+
+def build_starts(obj="t_shape"):
+    """The single robot's start relative to the object in each of the four benchmark scenarios: ANYmal (standing
+    pose) at its nominal start, the band of possible starts (bearing +-10 deg, gap 0.3-0.6 m) in translucent blue,
+    the goal pose as a translucent green copy of the object, and a dashed line from the object to the goal. Also
+    scenario A for every object."""
+    import math
+    _egl_software()
+    import mujoco
+
+    from quadcoop.stage1b.shapes import _Q_AXIS_Y
+    from quadcoop.stage2.shapes import SHAPES2
+
+    kinds = {2: "sphere", 5: "cylinder", 6: "box"}
+    HALF, B0, JIT, GAP = 0.55, 145.0, 10.0, (0.3, 0.6)
+
+    def obj_geoms(shape, x, y, yaw, rgba, tag):
+        out = []
+        for i, p in enumerate(shape.parts):
+            size = list(p.size) + [0.0] * (3 - len(p.size))
+            if int(p.kind) == 6 and i:
+                size[2] -= 0.001 * i
+            px, py = p.pos[0], p.pos[1]
+            cx, cy = x + px * math.cos(yaw) - py * math.sin(yaw), y + px * math.sin(yaw) + py * math.cos(yaw)
+            q = (math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
+            if p.axis_y:  # q_yaw * q_axis_y
+                a = _Q_AXIS_Y
+                q = (q[0] * a[0] - q[3] * a[3], q[0] * a[1] - q[3] * a[2], q[0] * a[2] + q[3] * a[1], q[0] * a[3] + q[3] * a[0])
+            out.append(f'<geom name="{tag}{i}" type="{kinds[int(p.kind)]}" size="{" ".join(map(str, size))}" '
+                       f'pos="{cx} {cy} {shape.rest_height + p.pos[2]}" quat="{" ".join(map(str, q))}" '
+                       f'rgba="{" ".join(map(str, rgba))}" contype="0" conaffinity="0"/>')
+        return "".join(out)
+
+    W, H = 1200, 900
+    out = OUT / "02_single_robot" / "start_positions"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def render(obj_name, scen):
+        name, gd, gdir, turn, _ = scen
+        shape = next(s for s in SHAPES2 if s.name == obj_name)
+        rad = max(float(np.hypot(abs(p.pos[0]) + p.size[0], abs(p.pos[1]) + (p.size[1] if len(p.size) > 1 and
+                  (int(p.kind) == 6 or p.axis_y) else p.size[0]))) for p in shape.parts)
+        cap = math.degrees(math.pi / shape.symmetry * 0.9) if shape.symmetry else 0.0
+        t = math.copysign(min(abs(turn), cap), turn) if shape.symmetry else 0.0
+        gx, gy, gyaw = gd * math.cos(math.radians(gdir)), gd * math.sin(math.radians(gdir)), math.radians(t)
+        # start band: tiles over bearing x gap
+        band = []
+        for k in range(16):
+            b = math.radians(B0 - JIT + (2 * JIT) * (k + 0.5) / 16)
+            r0, r1 = rad + HALF + GAP[0], rad + HALF + GAP[1]
+            w = (r0 + r1) / 2 * math.radians(2 * JIT) / 16 / 2 + 0.003
+            band.append(f'<geom type="box" size="{(r1 - r0) / 2} {w} 0.002" pos="{(r0 + r1) / 2 * math.cos(b)} '
+                        f'{(r0 + r1) / 2 * math.sin(b)} 0.002" euler="0 0 {b}" rgba=".15 .45 .95 .35" '
+                        f'contype="0" conaffinity="0"/>')
+        dash = []
+        n = int(gd / 0.25)
+        for k in range(1, n):
+            f = k / n
+            if k % 2:
+                dash.append(f'<geom type="box" size="0.08 0.02 0.002" pos="{f * gx} {f * gy} 0.003" '
+                            f'euler="0 0 {math.atan2(gy, gx)}" rgba=".2 .2 .2 1" contype="0" conaffinity="0"/>')
+        scene = mujoco.MjSpec.from_string(f"""<mujoco><compiler angle="radian"/>
+<visual><global offwidth="{W}" offheight="{H}"/><quality shadowsize="4096" offsamples="8"/>
+<headlight ambient=".35 .35 .35" diffuse=".35 .35 .35" specular="0 0 0"/><map shadowclip="12" shadowscale=".5" znear=".05"/></visual>
+<statistic center="{gx / 2} {gy / 2} 0" extent="5"/>
+<asset><texture type="skybox" builtin="flat" rgb1="1 1 1" rgb2="1 1 1" width="32" height="32"/>
+<texture name="g" type="2d" builtin="checker" rgb1=".93 .93 .93" rgb2=".82 .82 .82" width="64" height="64"/>
+<material name="g" texture="g" texuniform="true" texrepeat="1 1" specular="0" shininess="0"/></asset>
+<worldbody><light pos="{gx / 2} {gy / 2} 6" dir="-.3 .45 -1" directional="true" castshadow="true" diffuse=".6 .6 .6"/>
+<geom type="plane" size="7 7 .1" pos="{gx / 2} {gy / 2} 0" material="g"/>
+{obj_geoms(shape, 0, 0, 0, (*shape.rgba[:3], 1), "obj")}{obj_geoms(shape, gx, gy, gyaw, (.10, .85, .25, .35), "goal")}
+{"".join(band)}{"".join(dash)}<frame name="rf"/></worldbody></mujoco>""")
+        robot = mujoco.MjSpec.from_file(str(ROOT / "src/quadcoop/assets/anymal_c/anymal_c.xml"))
+        for li in list(robot.lights):  # the model's own tracking spotlight would wash out the floor around the robot
+            robot.delete(li)
+        scene.attach(robot, prefix="r_", frame=scene.frame("rf"))
+        m = scene.compile()
+        d = mujoco.MjData(m)
+        init = {"HAA": 0.0, "LF_HFE": 0.4, "RF_HFE": 0.4, "LH_HFE": -0.4, "RH_HFE": -0.4,
+                "LF_KFE": -0.8, "RF_KFE": -0.8, "LH_KFE": 0.8, "RH_KFE": 0.8}
+        for j in range(m.njnt):
+            jn = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) or ""
+            for key, v in init.items():
+                if jn.endswith(key):
+                    d.qpos[m.jnt_qposadr[j]] = v
+        b = math.radians(B0)
+        dist = rad + HALF + sum(GAP) / 2
+        yaw = b + math.pi
+        fj = next(j for j in range(m.njnt) if m.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE)
+        a0 = m.jnt_qposadr[fj]
+        d.qpos[a0:a0 + 7] = [dist * math.cos(b), dist * math.sin(b), 0.6, math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)]
+        mujoco.mj_forward(m, d)
+        feet = [i for i in range(m.ngeom) if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, i) or "").endswith("_foot")]
+        low = min(d.geom_xpos[i][2] - m.geom_size[i][0] for i in feet) if feet else 0.0
+        d.qpos[a0 + 2] -= low
+        mujoco.mj_forward(m, d)
+        pts = np.array([[0, 0], [gx, gy], [dist * math.cos(b), dist * math.sin(b)]])
+        lo, hi = pts.min(0) - 0.8, pts.max(0) + 0.8
+        cam = mujoco.MjvCamera()
+        cam.lookat[:] = (*((lo + hi) / 2), 0.2)
+        cam.azimuth, cam.elevation = 15.0, -50.0   # from behind the robot's left shoulder, looking down 50 deg
+        cam.distance = 1.0 + 1.05 * float(np.hypot(*(hi - lo)))
+        opt = mujoco.MjvOption()
+        opt.geomgroup[:] = [1, 1, 1, 0, 0, 0]
+        r = mujoco.Renderer(m, H, W)
+        r.update_scene(d, camera=cam, scene_option=opt)
+        img = Image.fromarray(r.render())
+        r.close()
+        print("start", obj_name, name)
+        return img
+
+    def grid(tiles, cols, stem, tw):
+        th = round(tw * H / W)
+        tiles = [t.resize((tw, th), Image.LANCZOS) for t in tiles]
+        rows = (len(tiles) + cols - 1) // cols
+        g = Image.new("RGB", (cols * tw + (cols - 1) * 8, rows * th + (rows - 1) * 8), (255, 255, 255))
+        for i, t in enumerate(tiles):
+            g.paste(t, ((i % cols) * (tw + 8), (i // cols) * (th + 8)))
+        g.save(out / f"{stem}.png")
+        g.save(out / f"{stem}.jpg", quality=93)
+
+    # 1. the four scenarios, one object (the T shape: no symmetry, so every turn is visible)
+    tiles = []
+    for sc in START_SCENARIOS:
+        img = render(obj, sc)
+        img.save(out / f"single_robot_start_{sc[0]}.png")
+        tiles.append(label(img.copy(), sc[4]))
+    grid(tiles, 2, "single_robot_start_positions", 900)
+    # 2. scenario A for all twelve objects: the start distance grows with the object's reach radius
+    pretty = {"t_shape": "T shape", "l_shape": "L shape", "u_channel": "U channel", "asym": "split-friction box"}
+    tiles = []
+    for s_ in SHAPES2:
+        img = render(s_.name, START_SCENARIOS[0])
+        img.save(out / f"single_robot_start_A_{s_.name}.png")
+        tiles.append(label(img.copy(), pretty.get(s_.name, s_.name)))
+    grid(tiles, 4, "single_robot_start_A_all_objects", 600)
+
+
 if __name__ == "__main__":
-    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects"]
+    what = sys.argv[1:] or ["frames", "maps", "graphs", "copy", "objects", "starts"]
     for w in what:
         {"frames": build_frames, "maps": build_maps, "graphs": build_graphs, "copy": build_copy,
-         "objects": build_objects}[w]()
+         "objects": build_objects, "starts": build_starts}[w]()

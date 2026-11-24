@@ -9,7 +9,7 @@ Rebuild everything with `python scripts/paper_media.py` (CPU only). It reads the
 - **Graphs** come as `.png` (200 dpi) and `.pdf` (vector, for LaTeX).
 - **Robot colours:** all teams are ANYmal unless named; Spot is yellow.
 - **Contact markers in planner films:**
-  - posts and arrows mark the assigned contacts (cyan = robot 1, yellow = robot 2, magenta = robot 3);
+  - posts and arrows mark the assigned contacts (cyan = robot 1, yellow = robot 2, magenta = robot 3, orange = robot 4);
   - a ball above each robot shows which robot it is;
   - the green patch is the goal pose.
 
@@ -33,41 +33,82 @@ The walker frames are 1080p renders with no captions.
 | `object_maps_robot_frame.png/.pdf` | what the deployed pusher sees: the same slice on a 4 × 4 m grid around the robot, forward up, with the robot drawn in green |
 | `object_maps_front.png` | the front silhouettes (16 × 32: height by lateral position), the second CNN input |
 | `cnn_push_policy_architecture.png/.pdf` | the encoder from `src/quadcoop/stage2/rl_cfg.py`: top map → conv 5×5/2 (16) → 3×3/2 (32) → 3×3/2 (16) → 256; front map → the same layers → 128; joined with 42 state inputs in an MLP (256-128-64) that outputs the velocity command to the frozen walker |
-| `single_anymal_arch_40kg*.jpg` | one ANYmal pushing the arch, 40 kg (success) |
+| `single_anymal_objects_grid.jpg` | one ANYmal pushing six objects: cube, sphere, cylinder, dumbbell, L shape, U channel (all successes, 40–80 kg) |
+| `single_anymal_cube_60kg_far_turn_strip.jpg` | cube, 60 kg, 5 m with a 90° turn |
+| `single_anymal_t_shape_80kg_backright_strip.jpg` | T shape, 80 kg, goal behind on the right (the robot goes around) |
+| `single_anymal_sphere_80kg_far_turn_strip.jpg` | sphere, 80 kg, far turn |
+| `single_anymal_arch_40kg_strip.jpg` | arch, 40 kg, goal behind on the right |
 
-## 03_ippo_mappo: learned pairs
+### 02_single_robot/start_positions: where the single robot starts
+
+Rendered in MuJoCo, without a GPU (`python scripts/paper_media.py starts`). Each picture uses the single-robot benchmark's
+geometry (`pres-solo-*`, `eval_coop2.py --solo anymal1`):
+- the object is at the origin;
+- ANYmal stands behind it, 145° from the object's forward direction (35° to the left of straight behind);
+- its body centre is (object reach radius + 0.55 m + gap) from the object's centre, and it faces the object.
+
+Per trial, the bearing is jittered by ±10° and the gap is 0.3–0.6 m. The **blue band** under the robot shows that
+range, and the robot stands at its middle. The **green copy** is the goal pose, and the **dashed line** runs from the
+object to the goal. The turn is capped by the object's symmetry, as in the benchmark: for example, 81° for the long
+box and 36° for the cube.
 
 | file | shows |
 |---|---|
+| `single_robot_start_positions.png/.jpg` | the four scenarios on the T shape. A: goal 3 m ahead. B: 3 m at 60° left, turned +30°. C: 3 m at 135° right, turned −60° (the robot has to walk around). D: 5 m ahead, turned 90°. |
+| `single_robot_start_<scenario>.png` | each scenario alone, 1200 × 900 |
+| `single_robot_start_A_all_objects.png/.jpg` | scenario A for all twelve objects: the start distance grows with the object's reach radius |
+| `single_robot_start_A_<object>.png` | each object alone |
+
+## 03_ippo_mappo: learned pairs
+
+All films are successes at 80 kg unless noted.
+
+| file | shows |
+|---|---|
+| `ippo_mappo_objects_grid.jpg` | MAPPO on the cylinder, dumbbell and plus; IPPO on the cube, sphere and L shape |
+| `mappo_dumbbell_80kg_strip.jpg`, `mappo_pair_pushing.jpg` | MAPPO pair, dumbbell, straight ahead |
+| `mappo_plus_80kg_left_strip.jpg` | MAPPO pair, plus, goal 60° left |
+| `mappo_long_40kg_far_turn_strip.jpg` | MAPPO pair, long box at 40 kg, 5 m with a 90° turn |
+| `ippo_cube_80kg_far_turn_strip.jpg` | IPPO pair, cube, far turn |
+| `ippo_sphere_80kg_backright_strip.jpg` | IPPO pair, sphere, goal behind on the right |
+| `ippo_l_shape_80kg_strip.jpg`, `ippo_pair_pushing.jpg` | IPPO pair, L shape |
 | `frozen_pair_untrained_strip.jpg` | two single-robot policies placed side by side, never trained together |
-| `mappo_long_80kg_strip.jpg`, `mappo_pair_pushing.jpg` | MAPPO pair, long object, 80 kg (success) |
-| `mappo_long_40kg_far_turn_strip.jpg` | MAPPO pair, 5 m with a 90° turn (success) |
-| `ippo_l_shape_80kg_strip.jpg`, `ippo_pair_pushing.jpg` | IPPO pair, L shape, 80 kg (success) |
 
 ## 04_contact_planner: two robots with the contact planner
 
 | file | shows |
 |---|---|
 | `candidate_contacts_all_objects.png` (+ `_long`, `_arch`, `_cylinder`) | the planner's candidate contacts per object: arrows = push direction, faint box = robot standing there |
-| `planner_long_40kg_far_turn_strip.jpg`, `planner_pair_contacts.jpg` | the planner turning the long object 90° on the way to a goal 5 m away (success) |
-| `planner_arch_80kg_far_turn_strip.jpg` | the arch at 80 kg, far turn (success) |
+| `planner_objects_grid.jpg` | the planner at 80 kg on the cube, cylinder, sphere, L shape, plus and U channel (all successes) |
+| `planner_dumbbell_80kg_far_turn_strip.jpg` | dumbbell, 80 kg, far turn |
+| `planner_t_shape_80kg_backright_strip.jpg` | T shape, 80 kg, goal behind on the right |
+| `planner_u_channel_80kg_left_strip.jpg` | U channel, 80 kg, goal 60° left |
+| `planner_pair_contacts.jpg` | plus, 80 kg, far turn: posts and arrows on the assigned contacts |
+| `planner_long_40kg_far_turn_strip.jpg` | the long box turned 90° on the way to a goal 5 m away |
 
 ## 05_teams_2_3_4: team size
 
+Branch films are side by side and start at 16 s, 4 s before the 20 s decision. Strip times are episode times, and
+every frame lies inside its own panel's episode. Every team clip was checked in its JSON to confirm that the added
+robot actually joined. A requested robot does not join when the planner finds no feasible contact for it, and the
+team then keeps its size. The previous four-robot strip (cube, 100 kg) was such a case: robot 4 never joined, so
+only three robots appeared, and it has been replaced.
+
 | file | shows |
 |---|---|
-| `team_sizes_2_3_4.jpg` | one still each of 2, 3 and 4 robots |
-| `two_robots_arch_80kg_strip.jpg` / `three_robots_branch_arch_80kg_strip.jpg` | the same branched state: the pair continues (left half of the branch film) vs robot 3 added (right half); both succeed |
-| `three_robots_arch_80kg_strip.jpg`, `three_robots_arch_80kg.jpg` | the planner with a helper (magenta) on the arch, 80 kg (success) |
-| `three_robots_cube_100kg_strip.jpg` / `four_robots_cube_100kg_strip.jpg` | the same branched state at 100 kg: stay at three vs call robot 4 at 20 s; both succeed (53 s vs 69 s). The four-robot strip shows the crowding at the faces. |
+| `team_sizes_2_3_4.jpg` | 2 robots (plus, 100 kg), 3 robots (sphere, 100 kg), 4 robots (cylinder, 40 kg) |
+| `two_robots_plus_100kg_strip.jpg` / `three_robots_branch_plus_100kg_strip.jpg` | the same branched state: the pair continues (success at 45.9 s) vs robot 3 added at 20 s (success at 38.9 s) |
+| `three_robots_cylinder_40kg_strip.jpg` / `four_robots_cylinder_40kg_strip.jpg` | the same branched state: stay at three (times out at 80 s) vs call robot 4 at 20 s (success at 27.1 s, no falls). This task is a rescue. Over all tasks, robot 4 does worse than staying at three (07_graphs). |
+| `three_robots_sphere_100kg_strip.jpg`, `three_robots_u_channel_80kg_strip.jpg`, `three_robots_arch_80kg_strip.jpg`, `three_robots_dumbbell_80kg.jpg` | the planner with a helper (magenta), all successes |
 
 ## 06_online_learning: penalty after repeated failed pushes
 
-Long object, 80 kg, turned 60° in place (fresh placements):
-- `original_planner_long_80kg_turn60_strip.jpg`: the original planner keeps the same diagonal corners. The object
-  barely turns, and it times out.
-- `penalty_planner_long_80kg_turn60_strip.jpg`: after two failed windows the pair is penalised. A robot moves to the
-  long face, the object turns, and it succeeds.
+Original planner (A) vs the penalty (B2), the same task:
+- `*_long_80kg_turn60_strip.jpg`: the long box at 80 kg turned 60° in place, from the turning test. A keeps the same
+  diagonal corners and times out. B2 penalises the pair after two failed windows; a robot moves to the long face, and
+  the box turns.
+- `*_l_shape_80kg_strip.jpg` (straight ahead) and `*_u_channel_40kg_strip.jpg` (goal behind on the right): from the
+  ordinary benchmark. Tasks where the penalty acted and B2 succeeded while A did not.
 
 ## 07_graphs
 
