@@ -13,6 +13,29 @@ Rebuild everything with `python scripts/paper_media.py` (CPU only). It reads the
   - a ball above each robot shows which robot it is;
   - the green patch is the goal pose.
 
+## 00_title: title-page figure
+
+One, two, three and four ANYmals pushing the same object toward the same goal. Every panel has the same camera
+and crop. Rendered in MuJoCo (`python scripts/paper_media.py teaser`, no GPU).
+
+| file | use |
+|---|---|
+| `teaser_1_2_3_4_robots_row.png/.jpg/.pdf` | 1 × 4 strip, for a full-width figure under the title |
+| `teaser_1_2_3_4_robots_grid.png/.jpg/.pdf` | 2 × 2, for a single column |
+| `team_<n>.png` | each panel alone, unlabelled |
+
+- **Object:** the cube with its footprint enlarged 1.5× (0.9 m, as in the team-size trees at scale 1.5), so four robots
+  fit around it.
+- **Robots:** each stands with its front bumper 2 cm from a face, pushing along that face's normal. With one or two
+  robots they are on the back face; the third and fourth are on the side faces near the front, where the planner
+  places robots to steer.
+- **Clearance:** the script checks that no two robots' footprints overlap, using the planner's 0.55 × 0.30 m
+  half-extent rectangle.
+- **Goal:** the green square 2.6 m ahead.
+
+This is a posed illustration in the standing pose, not a frame from a run. For real runs with 1–4 robots, use the
+stills in 02–05.
+
 ## 01_robots_walkers: the robots and the frozen walkers
 
 The walker frames are 1080p renders with no captions.
