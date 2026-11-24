@@ -1,6 +1,6 @@
 # MAPPO and IPPO with three and four robots, and whether the KL anchor helps
 
-Status (2026-11-23): queued behind every earlier job (`slurm/submit_marl_teams.sh`). Results for pairs and the
+Status (2026-11-24): resubmitted (`slurm/submit_marl_teams.sh`, smoke job 30345745). The first submission's smoke test (30233340) passed the four-robot wiring check, then ran out of memory on the L40S (44 GiB) building the four-robot simulation at 2048 environments, so nothing downstream ran. Every four-robot job now runs on a B200 (180 GB); the trios stay on L40S. Results for pairs and the existing trios are below. Four-robot and no-KL rows follow when their runs finish.
 existing trios are below. Four-robot and no-KL rows follow when their runs finish.
 
 **Questions.**

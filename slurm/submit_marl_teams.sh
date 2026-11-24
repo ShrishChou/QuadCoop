@@ -18,10 +18,13 @@ SH=cube,long,sphere,cylinder,arch,dumbbell,t_shape,l_shape,u_channel,plus
 AFTER=${AFTER:-$(squeue -u "$USER" -h -o %i | paste -sd:)}
 DEP=${AFTER:+--dependency=afterany:$AFTER}
 GPU="-G l40s:1 --exclude=node4207,node2902"
+# four robots x 2048 envs does not fit in an L40S (44 GiB: out of memory at graph capture, job 30233340), so
+# every four-robot job (smoke, training, eval) runs on a B200 (180 GB)
+QGPU="-G b200:1 --exclude=node4207,node2902"
 EV="--objects $SH --seed 7100"
 VID="--video-tasks arch,long,cube,t_shape/40,80/A_straight,D_far_turn/0"
 
-smoke=$(sbatch --parsable -p mit_normal_gpu,mit_preemptable --requeue $GPU -c 8 --mem=64G -t 01:30:00 $DEP \
+smoke=$(sbatch --parsable -p mit_normal_gpu,mit_preemptable --requeue $QGPU -c 8 --mem=64G -t 01:30:00 $DEP \
   -J qc-quad-smoke -o logs/slurm/%x-%j.out --wrap "source .venv/bin/activate && export MUJOCO_GL=egl && set -e && \
 QUADCOOP_PAIR=anymal4 python scripts/three_wiring.py && \
 for al in mappo ippo; do python train_coop2.py --algo \$al --check --pair anymal4 --num-envs 2048 --run-name quad_check_\$al \
@@ -31,17 +34,17 @@ python scripts/eval_coop2.py --name quad-smoke --checkpoint logs/marl2/mappo_aa_
   --objects cube --masses 40 --reps 1 --seed 7100 --videos 1")
 echo "smoke $smoke"
 
-ev() {  # name checkpoint pair-args dependency videos
+ev() {  # name checkpoint pair-args dependency videos gpu
   NAME="$1" CK="$2" MASSES=20,40,60,80,100,120 REPS=3 ARGS="$EV $3 $5" \
-    sbatch --parsable -p mit_normal_gpu,mit_preemptable --requeue $GPU --dependency="afterok:$4" slurm/eval_coop2.sbatch
+    sbatch --parsable -p mit_normal_gpu,mit_preemptable --requeue ${6:-$GPU} --dependency="afterok:$4" slurm/eval_coop2.sbatch
 }
 for algo in mappo ippo; do
   pair=logs/marl2/${algo}_aa_kl_ten_s0/model_4000.pt
-  e=$(ev quad-transfer-$algo "$pair" "--pair anymal4" "$smoke" "$VID")
+  e=$(ev quad-transfer-$algo "$pair" "--pair anymal4" "$smoke" "$VID" "$QGPU")
   echo "$algo: pair actors as four $e"
   for team in trio quad; do
-    pa=anymal4
-    if [ $team = trio ]; then pa=anymal3; fi
+    pa=anymal4; g=$QGPU
+    if [ $team = trio ]; then pa=anymal3; g=$GPU; fi
     for kl in 0.05 0; do
       nk=""; nd=""
       if [ "$kl" = 0 ]; then nk=_nokl; nd=-nokl; fi
@@ -53,10 +56,10 @@ for algo in mappo ippo; do
       t=$(ALGO=$algo SEED=0 RUN_NAME=$run ITERS=6000 LOGGER=wandb NUM_ENVS=2048 EXTRA="--pair $pa --init-actors $pair \
 $warm --partner-map --reward r7 --kl-ref $kl --max-actor-lr 1e-4 --fixed-difficulty --fixed-level 4 \
 --train-mass 20,120 --train-shapes $SH --start-around" \
-        sbatch --parsable -p mit_preemptable --requeue $GPU -t 12:00:00 -J qc-$run --dependency=afterok:$smoke \
+        sbatch --parsable -p mit_preemptable --requeue $g -t 12:00:00 -J qc-$run --dependency=afterok:$smoke \
           slurm/train_coop2.sbatch)
-      r1=$(ev $team-$algo$nd-it6000-dev7100 logs/marl2/$run/model_6000.pt "" "$t" "$VID")
-      r2=$(ev $team-$algo$nd-it6000-dev7100-r2 logs/marl2/$run/model_6000.pt "" "$t" "--videos 0")
+      r1=$(ev $team-$algo$nd-it6000-dev7100 logs/marl2/$run/model_6000.pt "" "$t" "$VID" "$g")
+      r2=$(ev $team-$algo$nd-it6000-dev7100-r2 logs/marl2/$run/model_6000.pt "" "$t" "--videos 0" "$g")
       echo "$algo $team KL $kl: training $t ($run), evals $r1 $r2"
     done
   done
