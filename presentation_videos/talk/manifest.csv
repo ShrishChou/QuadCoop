@@ -1,4 +1,17 @@
 file,slide,method,checkpoint,object,mass,goal,seed,rep,outcome,t_success,run
+raw/solo_20kg/cube_20kg_A_straight_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),cube,20.0,A_straight,7100,9,success,8.78,talk-A0-g0
+raw/solo_20kg/long_20kg_A_straight_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),long,20.0,A_straight,7100,9,success,7.12,talk-A0-g0
+raw/solo_20kg/sphere_20kg_A_straight_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),sphere,20.0,A_straight,7100,9,success,8.94,talk-A0-g0
+raw/solo_20kg/cylinder_20kg_B_left_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),cylinder,20.0,B_left,7100,9,success,15.8,talk-A0-g1
+raw/solo_20kg/arch_20kg_B_left_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),arch,20.0,B_left,7100,9,success,33.7,talk-A0-g1
+raw/solo_20kg/dumbbell_20kg_B_left_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),dumbbell,20.0,B_left,7100,9,success,18.58,talk-A0-g1
+raw/solo_20kg/t_shape_20kg_C_backright_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),t_shape,20.0,C_backright,7100,9,success,10.36,talk-A0-g2
+raw/solo_20kg/beam_20kg_C_backright_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),beam,20.0,C_backright,7100,9,success,45.16,talk-A0-g2
+raw/solo_20kg/l_shape_20kg_C_backright_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),l_shape,20.0,C_backright,7100,9,success,9.76,talk-A0-g2
+raw/solo_20kg/asym_20kg_D_far_turn_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),asym,20.0,D_far_turn,7100,9,success,19.92,talk-A0-g3
+raw/solo_20kg/u_channel_20kg_D_far_turn_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),u_channel,20.0,D_far_turn,7100,9,success,25.92,talk-A0-g3
+raw/solo_20kg/plus_20kg_D_far_turn_rep9__success.mp4,G0,One robot,anymal1 alone (s2b-anymal-term80),plus,20.0,D_far_turn,7100,9,success,16.38,talk-A0-g3
+grids/G0_solo_20kg.mp4,G0,One robot,Stage 2 push policy (scripts/methods.py default for --solo / --frozen-pair),12 objects,20,3 per goal,7100,9,cube:SUCCESS;long:SUCCESS;sphere:SUCCESS;cylinder:SUCCESS;arch:SUCCESS;dumbbell:SUCCESS;t_shape:SUCCESS;beam:SUCCESS;l_shape:SUCCESS;asym:SUCCESS;u_channel:SUCCESS;plus:SUCCESS,,
 raw/solo/cube_60kg_A_straight_rep9__horizon.mp4,G1,One robot,anymal1 alone (s2b-anymal-term80),cube,60.0,A_straight,7100,9,horizon,,talk-A1-g0
 raw/solo/long_60kg_A_straight_rep9__success.mp4,G1,One robot,anymal1 alone (s2b-anymal-term80),long,60.0,A_straight,7100,9,success,55.36,talk-A1-g0
 raw/solo/sphere_60kg_A_straight_rep9__success.mp4,G1,One robot,anymal1 alone (s2b-anymal-term80),sphere,60.0,A_straight,7100,9,success,10.12,talk-A1-g0

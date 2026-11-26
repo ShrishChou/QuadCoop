@@ -54,7 +54,8 @@ IPPO = "logs/marl2/ippo_aa_kl_ten_s0/model_4000.pt"
 STAGE2 = "Stage 2 push policy (scripts/methods.py default for --solo / --frozen-pair)"
 
 # grid id, method, title, render group, checkpoint, mass
-GRIDS = [("G1", "solo", "One robot", "A1", STAGE2, 60),
+GRIDS = [("G0", "solo_20kg", "One robot", "A0", STAGE2, 20),
+         ("G1", "solo", "One robot", "A1", STAGE2, 60),
          ("G2", "copies", "Two untrained copies", "A2", STAGE2, 60),
          ("G3", "ippo", "IPPO pair", "A3", IPPO, 60),
          ("G4", "mappo", "MAPPO pair", "A4", MAPPO, 60),
@@ -272,8 +273,10 @@ def raw_name(c: dict, run: int | None = None) -> str:
 
 
 # ---------------------------------------------------------------- Part A
-def part_a():
+def part_a(only=None):
     for gid, meth, title, grp, ck, mass in GRIDS:
+        if only and gid not in only:
+            continue
         clips = []
         for i in range(4):
             clips += films(f"talk-{grp}-g{i}")
@@ -595,9 +598,9 @@ def part_b():
     b6()
 
 
-def web_copies():
+def web_copies(only=None):
     for src in sorted(list((OUT / "grids").glob("*.mp4")) + list((OUT / "compare").rglob("*.mp4"))):
-        if src.stem.endswith(".tmp"):
+        if src.stem.endswith(".tmp") or (only and src.stem.split("_")[0] not in only):
             continue
         rel = src.relative_to(OUT)
         dst = WEB / rel
@@ -634,14 +637,24 @@ def jp_size(p: Path):
         return im.size
 
 
-def write_csvs():
+def write_csvs(only=None):
+    """only: the grid ids rebuilt this run; their rows replace theirs in the existing manifest, the rest is kept and
+    part_b_runs.csv is left as it is."""
     OUT.mkdir(parents=True, exist_ok=True)
     keys = ["file", "slide", "method", "checkpoint", "object", "mass", "goal", "seed", "rep", "outcome", "t_success", "run"]
+    rows = MANIFEST
+    if only:
+        with open(OUT / "manifest.csv", newline="") as fh:
+            old = [r for r in csv.DictReader(fh) if r["slide"][:2] not in only]
+        rows = sorted(old + MANIFEST, key=lambda r: (str(r["slide"])[0] != "G", str(r["slide"])[:2]))  # stable
     with open(tmp_of(OUT / "manifest.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, keys)
         w.writeheader()
-        for r in MANIFEST:
+        for r in rows:
             w.writerow({k: r.get(k, "") for k in keys})
+    if only:
+        os.replace(tmp_of(OUT / "manifest.csv"), OUT / "manifest.csv")
+        return
     keys = ["change", "arm", "object", "mass", "goal", "rep", "seed", "run", "step", "outcome", "t_success", "label",
             "label_match", "kept", "film"]
     os.replace(tmp_of(OUT / "manifest.csv"), OUT / "manifest.csv")
@@ -657,11 +670,17 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="AB", help="A, B or AB")
     ap.add_argument("--web", type=int, default=1)
+    ap.add_argument("--grids", default="", help="comma list of grid ids (e.g. G0): build only these, merge their rows "
+                                                 "into the existing manifest and make only their web copies")
     a = ap.parse_args()
-    if "A" in a.only:
-        part_a()
-    if "B" in a.only:
-        part_b()
-    write_csvs()
+    only = [g for g in a.grids.split(",") if g] or None
+    if only:
+        part_a(only)
+    else:
+        if "A" in a.only:
+            part_a()
+        if "B" in a.only:
+            part_b()
+    write_csvs(only)
     if a.web:
-        web_copies()
+        web_copies(only)

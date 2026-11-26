@@ -1,6 +1,6 @@
 #!/bin/bash
 # Talk media renders (6.7980 talk; composed by scripts/talk/compose_talk.py). One GROUP per job:
-#   A1..A6  12-object grid per method (one episode per object, the same 12 starts for every method)
+#   A0..A6  12-object grid per method (A0 = A1 at 20 kg) (one episode per object, the same 12 starts for every method)
 #   B1 B2 B3 B5  before/after starts, two runs per arm (B4 and B6 reuse existing films)
 # Every step writes to <name>.part and is renamed to <name> only when the script exits cleanly, so a requeued job
 # skips finished steps and reruns a step that was killed mid-write.
@@ -69,8 +69,10 @@ ct() { step ct "$@"; }
 hl() { step hl "$@"; }
 
 case $GROUP in
-A1|A2|A3|A4)
+A0|A1|A2|A3|A4)
+  M=60
   case $GROUP in
+    A0) SRC=(--solo anymal1 --pair anymal); M=20 ;;  # G0: G1 at 20 kg
     A1) SRC=(--solo anymal1 --pair anymal) ;;
     A2) SRC=(--frozen-pair --pair anymal) ;;
     A3) SRC=(--checkpoint $IPPO) ;;
@@ -78,7 +80,7 @@ A1|A2|A3|A4)
   esac
   for i in 0 1 2 3; do
     o=${GOALS[$i]%%:*}; s=${GOALS[$i]##*:}
-    ev talk-$GROUP-g$i "${SRC[@]}" $GA --masses 60 --video-tasks "$o/60/$s/$REP"
+    ev talk-$GROUP-g$i "${SRC[@]}" $GA --masses $M --video-tasks "$o/$M/$s/$REP"
   done ;;
 A5)
   for i in 0 1 2 3; do
