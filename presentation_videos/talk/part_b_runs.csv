@@ -1,0 +1,61 @@
+change,arm,object,mass,goal,rep,seed,run,step,outcome,t_success,label,label_match,kept,film
+B1,One robot,long,80.0,A_straight,0,7100,1,talk-B1-solo-a-r1,horizon,,horizon,2,1,True
+B1,One robot,long,80.0,A_straight,0,7100,2,talk-B1-solo-a-r2,horizon,,horizon,2,0,True
+B1,Two untrained copies,long,80.0,A_straight,0,7100,1,talk-B1-copies-a-r1,horizon,,horizon,2,1,True
+B1,Two untrained copies,long,80.0,A_straight,0,7100,2,talk-B1-copies-a-r2,fell_anymal2,,horizon,2,0,True
+B1,MAPPO pair,long,80.0,A_straight,0,7100,1,talk-B1-mappo-a-r1,success,63.2,success,2,1,True
+B1,MAPPO pair,long,80.0,A_straight,0,7100,2,talk-B1-mappo-a-r2,success,62.8,success,2,0,True
+B1,One robot,l_shape,80.0,A_straight,0,7100,1,talk-B1-solo-a-r1,horizon,,horizon,2,1,True
+B1,One robot,l_shape,80.0,A_straight,0,7100,2,talk-B1-solo-a-r2,horizon,,horizon,2,0,True
+B1,Two untrained copies,l_shape,80.0,A_straight,0,7100,1,talk-B1-copies-a-r1,success,31.14,success,2,1,True
+B1,Two untrained copies,l_shape,80.0,A_straight,0,7100,2,talk-B1-copies-a-r2,fell_anymal2,,success,2,0,True
+B1,MAPPO pair,l_shape,80.0,A_straight,0,7100,1,talk-B1-mappo-a-r1,success,39.26,success,2,1,True
+B1,MAPPO pair,l_shape,80.0,A_straight,0,7100,2,talk-B1-mappo-a-r2,success,39.3,success,2,0,True
+B1,One robot,t_shape,60.0,A_straight,0,7100,1,talk-B1-solo-b-r1,horizon,,horizon,2,1,True
+B1,One robot,t_shape,60.0,A_straight,0,7100,2,talk-B1-solo-b-r2,horizon,,horizon,2,0,True
+B1,Two untrained copies,t_shape,60.0,A_straight,0,7100,1,talk-B1-copies-b-r1,fell_anymal1,,horizon,2,0,True
+B1,Two untrained copies,t_shape,60.0,A_straight,0,7100,2,talk-B1-copies-b-r2,horizon,,horizon,2,1,True
+B1,MAPPO pair,t_shape,60.0,A_straight,0,7100,1,talk-B1-mappo-b-r1,success,39.7,success,2,1,True
+B1,MAPPO pair,t_shape,60.0,A_straight,0,7100,2,talk-B1-mappo-b-r2,success,27.56,success,2,0,True
+B1,One robot,u_channel,60.0,B_left,2,7100,1,talk-B1-solo-c-r1,horizon,,horizon,2,1,True
+B1,One robot,u_channel,60.0,B_left,2,7100,2,talk-B1-solo-c-r2,horizon,,horizon,2,0,True
+B1,Two untrained copies,u_channel,60.0,B_left,2,7100,1,talk-B1-copies-c-r1,success,72.36,horizon,0,1,True
+B1,Two untrained copies,u_channel,60.0,B_left,2,7100,2,talk-B1-copies-c-r2,success,66.28,horizon,0,0,True
+B1,MAPPO pair,u_channel,60.0,B_left,2,7100,1,talk-B1-mappo-c-r1,success,20.08,success,2,1,True
+B1,MAPPO pair,u_channel,60.0,B_left,2,7100,2,talk-B1-mappo-c-r2,horizon,,success,2,0,True
+B2,"MAPPO, KL anchor off",long,60.0,A_straight,0,0,1,talk-B2-nokl-a-r1,horizon,,fell_anymal1,1,1,True
+B2,"MAPPO, KL anchor off",long,60.0,A_straight,0,0,2,talk-B2-nokl-a-r2,horizon,,fell_anymal1,1,0,True
+B2,"MAPPO, KL anchor on",long,60.0,A_straight,0,0,1,talk-B2-kl-a-r1,success,16.44,success,2,1,True
+B2,"MAPPO, KL anchor on",long,60.0,A_straight,0,0,2,talk-B2-kl-a-r2,success,15.78,success,2,0,True
+B2,"MAPPO, KL anchor off",u_channel,60.0,A_straight,0,0,1,talk-B2-nokl-a-r1,horizon,,fell_anymal1,1,1,True
+B2,"MAPPO, KL anchor off",u_channel,60.0,A_straight,0,0,2,talk-B2-nokl-a-r2,horizon,,fell_anymal1,1,0,True
+B2,"MAPPO, KL anchor on",u_channel,60.0,A_straight,0,0,1,talk-B2-kl-a-r1,fell_anymal1,,success,0,1,True
+B2,"MAPPO, KL anchor on",u_channel,60.0,A_straight,0,0,2,talk-B2-kl-a-r2,fell_anymal2,,success,0,0,True
+B2,"MAPPO, KL anchor off",dumbbell,40.0,A_straight,0,0,1,talk-B2-nokl-b-r1,horizon,,horizon,2,1,True
+B2,"MAPPO, KL anchor off",dumbbell,40.0,A_straight,0,0,2,talk-B2-nokl-b-r2,horizon,,horizon,2,0,True
+B2,"MAPPO, KL anchor on",dumbbell,40.0,A_straight,0,0,1,talk-B2-kl-b-r1,success,12.6,success,2,1,True
+B2,"MAPPO, KL anchor on",dumbbell,40.0,A_straight,0,0,2,talk-B2-kl-b-r2,success,13.94,success,2,0,True
+B2,"MAPPO, KL anchor off",t_shape,40.0,A_straight,0,0,1,talk-B2-nokl-b-r1,success,21.18,horizon,0,1,True
+B2,"MAPPO, KL anchor off",t_shape,40.0,A_straight,0,0,2,talk-B2-nokl-b-r2,success,29.32,horizon,0,0,True
+B2,"MAPPO, KL anchor on",t_shape,40.0,A_straight,0,0,1,talk-B2-kl-b-r1,success,21.34,success,2,1,True
+B2,"MAPPO, KL anchor on",t_shape,40.0,A_straight,0,0,2,talk-B2-kl-b-r2,success,25.94,success,2,0,True
+B3,MAPPO pair,arch,60.0,A_straight,8,7100,1,talk-B3-mappo-a-r1,horizon,,fell_anymal1,1,1,True
+B3,MAPPO pair,arch,60.0,A_straight,8,7100,2,talk-B3-mappo-a-r2,success,59.94,fell_anymal1,1,0,True
+B3,Contact planner,arch,60.0,A_straight,8,7100,1,talk-B3-plan-a-r1-expert,success,24.52,success,2,1,True
+B3,Contact planner,arch,60.0,A_straight,8,7100,2,talk-B3-plan-a-r2-expert,success,32.24,success,2,0,True
+B3,MAPPO pair,u_channel,80.0,A_straight,8,7100,1,talk-B3-mappo-c-r1,horizon,,horizon,2,1,True
+B3,MAPPO pair,u_channel,80.0,A_straight,8,7100,2,talk-B3-mappo-c-r2,horizon,,horizon,2,0,True
+B3,Contact planner,u_channel,80.0,A_straight,8,7100,1,talk-B3-plan-c-r1-expert,success,28.82,success,2,1,True
+B3,Contact planner,u_channel,80.0,A_straight,8,7100,2,talk-B3-plan-c-r2-expert,success,43.8,success,2,0,True
+B3,MAPPO pair,asym,60.0,B_left,9,7100,1,talk-B3-mappo-b-r1,success,30.92,success,2,1,True
+B3,MAPPO pair,asym,60.0,B_left,9,7100,2,talk-B3-mappo-b-r2,success,23.68,success,2,0,True
+B3,Contact planner,asym,60.0,B_left,9,7100,1,talk-B3-plan-b-r1-expert,fell_anymal1,,horizon,1,1,True
+B3,Contact planner,asym,60.0,B_left,9,7100,2,talk-B3-plan-b-r2-expert,fell_anymal1,,horizon,1,0,True
+B5,k2,t_shape,80,B_left,0,1001,1,talk-B5-r1,horizon,,horizon,2,1,True
+B5,k3b,t_shape,80,B_left,0,1001,1,talk-B5-r1,success,72.94,success,2,1,True
+B5,k2,t_shape,80,B_left,0,1001,2,talk-B5-r2,horizon,,horizon,2,0,False
+B5,k3b,t_shape,80,B_left,0,1001,2,talk-B5-r2,horizon,,success,2,0,False
+B5,k2,cube,80,A_straight,0,1001,1,talk-B5-r1,horizon,,horizon,2,1,True
+B5,k3b,cube,80,A_straight,0,1001,1,talk-B5-r1,success,52.26,success,2,1,True
+B5,k2,cube,80,A_straight,0,1001,2,talk-B5-r2,success,57.74,horizon,2,0,False
+B5,k3b,cube,80,A_straight,0,1001,2,talk-B5-r2,success,65.72,success,2,0,False
